@@ -96,10 +96,61 @@ https://huggingface.co/datasets/TAAC2026/data_sample_1000
 4. 推理延迟基准统计
 5. 后续替换主干模块的基础接口
 
-训练 baseline：
+UCASIM v1 相比 baseline 的主要变化：
+
+1. 将 history 拆成 recent local history 与 compressed memory
+2. 用多层 candidate-aware interaction block 让候选表示逐层读取 history、memory 和 context
+3. 让 local history 与 memory 反向接受 candidate 与静态特征调制
+4. 将历史事件从扁平哈希 token 升级为分解事件编码，显式注入 sequence group、事件组件 token 和 time gap
+
+decomposed-input baseline 的作用是做结构消融：
+
+1. 保留分解事件编码
+2. 保留轻量候选感知 attention pooling
+3. 去掉 UCASIM 的多层交互 block
+
+decomposed dual-path baseline 的作用是验证更克制的结构增强：
+
+1. 保留分解事件编码
+2. 保留全局候选感知汇聚
+3. 额外引入 recent local summary 和 compressed memory summary
+4. 不引入多层复杂交互 block
+
+creatorwyx DIN adapter 的作用是集成外部 creatorwyx/TAAC2026-CTR-Baseline 的核心 DIN 注意力思想，但复用我们当前的 parquet 数据流。
+
+说明：
+
+1. 外部项目原始数据管线基于 Tenrec CSV 和自定义 mocked 字段，不能直接用于当前 TAAC parquet。
+2. 当前接入方式是保留其核心 LocalActivationUnit 风格的 DIN attention，并适配到我们现有的目标 item 与历史事件编码。
+
+creatorwyx grouped DIN adapter 的作用是在当前 strongest baseline 上继续做结构增强：
+
+1. 将 action_seq、content_seq、item_seq 三个历史组分开做 DIN attention
+2. 用 gating 融合三个分组历史摘要
+3. 保持当前 parquet 数据流和分解事件编码不变
+
+训练 creatorwyx grouped DIN adapter：
 
 ```bash
-.venv/bin/python -m taac2026.train --config configs/baseline.yaml
+.venv/bin/python -m taac2026.train --config configs/creatorwyx_grouped_din_adapter.yaml
+```
+
+分析 parquet 的 schema 与特征统计：
+
+```bash
+.venv/bin/python -m taac2026.analyze_schema
+```
+
+默认会将结果写到：
+
+```text
+outputs/schema/schema_summary.json
+```
+
+所有实验结果统一维护在：
+
+```text
+EXPERIMENTS.md
 ```
 
 ## 相关工作

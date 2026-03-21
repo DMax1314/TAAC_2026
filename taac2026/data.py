@@ -18,10 +18,19 @@ class EncodedSample:
     candidate_tokens: list[int]
     context_tokens: list[int]
     history_tokens: list[int]
+    history_component_tokens: list[list[int]]
+    history_group_ids: list[int]
     history_time_gaps: list[float]
     dense_features: list[float]
     label: float
     timestamp: int
+
+
+SEQUENCE_GROUP_IDS = {
+    "action_seq": 1,
+    "content_seq": 2,
+    "item_seq": 3,
+}
 
 
 def _is_missing(value: Any) -> bool:
@@ -88,8 +97,13 @@ def _feature_tokens_and_stats(
     return tokens, dense_stats
 
 
-def _build_sequence_events(row: pd.Series, vocab_size: int, max_seq_len: int) -> tuple[list[int], list[float], list[float]]:
-    events: list[tuple[float, int]] = []
+def _build_sequence_events(
+    row: pd.Series,
+    vocab_size: int,
+    max_seq_len: int,
+    max_event_features: int,
+) -> tuple[list[int], list[list[int]], list[int], list[float], list[float]]:
+    events: list[tuple[float, int, list[int], int]] = []
     gap_stats: list[float] = []
     row_timestamp = int(row["timestamp"])
 
@@ -122,8 +136,15 @@ def _build_sequence_events(row: pd.Series, vocab_size: int, max_seq_len: int) ->
         event_count = min(min(len(values) for _, values in arrays), max_seq_len)
         for index in range(event_count):
             parts = [group_name]
+            component_tokens: list[int] = []
             for feature_id, values in non_timestamp_arrays:
-                parts.append(f"{feature_id}:{int(values[index])}")
+                feature_value = int(values[index])
+                parts.append(f"{feature_id}:{feature_value}")
+                component_tokens.append(stable_hash(f"{group_name}|{feature_id}|{feature_value}", vocab_size))
+
+            if not component_tokens:
+                component_tokens.append(stable_hash(f"{group_name}|empty_event", vocab_size))
+            component_tokens = component_tokens[:max_event_features]
 
             token = stable_hash("|".join(parts), vocab_size)
 
@@ -132,13 +153,15 @@ def _build_sequence_events(row: pd.Series, vocab_size: int, max_seq_len: int) ->
             else:
                 gap = index
 
-            events.append((float(gap), token))
+            events.append((float(gap), token, component_tokens, SEQUENCE_GROUP_IDS.get(group_name, 0)))
             gap_stats.append(float(np.log1p(gap)))
 
     events.sort(key=lambda item: item[0])
     selected = events[:max_seq_len]
-    history_tokens = [token for _, token in selected]
-    history_time_gaps = [float(np.log1p(gap)) for gap, _ in selected]
+    history_tokens = [token for _, token, _, _ in selected]
+    history_component_tokens = [component_tokens for _, _, component_tokens, _ in selected]
+    history_group_ids = [group_id for _, _, _, group_id in selected]
+    history_time_gaps = [float(np.log1p(gap)) for gap, _, _, _ in selected]
 
     if gap_stats:
         gap_array = np.asarray(gap_stats, dtype=np.float32)
@@ -153,7 +176,7 @@ def _build_sequence_events(row: pd.Series, vocab_size: int, max_seq_len: int) ->
     else:
         dense_stats = [0.0] * 6
 
-    return history_tokens, history_time_gaps, dense_stats
+    return history_tokens, history_component_tokens, history_group_ids, history_time_gaps, dense_stats
 
 
 def encode_row(row: pd.Series, config: DataConfig, vocab_size: int) -> EncodedSample:
@@ -175,10 +198,11 @@ def encode_row(row: pd.Series, config: DataConfig, vocab_size: int) -> EncodedSa
     context_tokens.append(stable_hash(f"hour_bucket|{time_bucket}", vocab_size))
     context_tokens.append(stable_hash(f"user_id|{row['user_id']}", vocab_size))
 
-    history_tokens, history_time_gaps, history_dense = _build_sequence_events(
+    history_tokens, history_component_tokens, history_group_ids, history_time_gaps, history_dense = _build_sequence_events(
         row,
         vocab_size=vocab_size,
         max_seq_len=config.max_seq_len,
+        max_event_features=config.max_event_features,
     )
 
     label = 1.0 if any(int(entry["action_type"]) == config.label_action_type for entry in row["label"]) else 0.0
@@ -188,6 +212,8 @@ def encode_row(row: pd.Series, config: DataConfig, vocab_size: int) -> EncodedSa
         candidate_tokens=candidate_tokens[: config.max_feature_tokens],
         context_tokens=context_tokens[: config.max_feature_tokens],
         history_tokens=history_tokens,
+        history_component_tokens=history_component_tokens,
+        history_group_ids=history_group_ids,
         history_time_gaps=history_time_gaps,
         dense_features=dense_features,
         label=label,
@@ -211,6 +237,10 @@ def collate_samples(batch: list[EncodedSample]) -> dict[str, torch.Tensor]:
     max_candidate_len = max(len(sample.candidate_tokens) for sample in batch)
     max_context_len = max(len(sample.context_tokens) for sample in batch)
     max_history_len = max(max(len(sample.history_tokens), 1) for sample in batch)
+    max_history_components = max(
+        max((len(component_tokens) for component_tokens in sample.history_component_tokens), default=1)
+        for sample in batch
+    )
     dense_dim = len(batch[0].dense_features)
 
     candidate_tokens = torch.zeros((batch_size, max_candidate_len), dtype=torch.long)
@@ -219,6 +249,9 @@ def collate_samples(batch: list[EncodedSample]) -> dict[str, torch.Tensor]:
     context_mask = torch.zeros((batch_size, max_context_len), dtype=torch.bool)
     history_tokens = torch.zeros((batch_size, max_history_len), dtype=torch.long)
     history_mask = torch.zeros((batch_size, max_history_len), dtype=torch.bool)
+    history_component_tokens = torch.zeros((batch_size, max_history_len, max_history_components), dtype=torch.long)
+    history_component_mask = torch.zeros((batch_size, max_history_len, max_history_components), dtype=torch.bool)
+    history_group_ids = torch.zeros((batch_size, max_history_len), dtype=torch.long)
     history_time_gaps = torch.zeros((batch_size, max_history_len), dtype=torch.float32)
     dense_features = torch.zeros((batch_size, dense_dim), dtype=torch.float32)
     labels = torch.zeros(batch_size, dtype=torch.float32)
@@ -238,7 +271,13 @@ def collate_samples(batch: list[EncodedSample]) -> dict[str, torch.Tensor]:
         if history_length > 0:
             history_tokens[row_index, :history_length] = torch.tensor(sample.history_tokens, dtype=torch.long)
             history_mask[row_index, :history_length] = True
+            history_group_ids[row_index, :history_length] = torch.tensor(sample.history_group_ids, dtype=torch.long)
             history_time_gaps[row_index, :history_length] = torch.tensor(sample.history_time_gaps, dtype=torch.float32)
+
+            for event_index, component_tokens in enumerate(sample.history_component_tokens):
+                component_length = len(component_tokens)
+                history_component_tokens[row_index, event_index, :component_length] = torch.tensor(component_tokens, dtype=torch.long)
+                history_component_mask[row_index, event_index, :component_length] = True
 
         dense_features[row_index] = torch.tensor(sample.dense_features, dtype=torch.float32)
         labels[row_index] = sample.label
@@ -251,6 +290,9 @@ def collate_samples(batch: list[EncodedSample]) -> dict[str, torch.Tensor]:
         "context_mask": context_mask,
         "history_tokens": history_tokens,
         "history_mask": history_mask,
+        "history_component_tokens": history_component_tokens,
+        "history_component_mask": history_component_mask,
+        "history_group_ids": history_group_ids,
         "history_time_gaps": history_time_gaps,
         "dense_features": dense_features,
         "labels": labels,

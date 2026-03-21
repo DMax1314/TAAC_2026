@@ -12,7 +12,7 @@ from tqdm import tqdm
 
 from .config import ExperimentConfig, load_config
 from .data import load_dataloaders
-from .model import CandidateAwareBaseline
+from .model import build_model
 from .utils import ensure_dir, resolve_device, set_seed, write_json
 
 
@@ -128,11 +128,12 @@ def run_training(config: ExperimentConfig) -> None:
         num_workers=config.train.num_workers,
     )
 
-    model = CandidateAwareBaseline(
+    model = build_model(
         config=config.model,
         dense_dim=int(data_stats["dense_dim"]),
         max_seq_len=config.data.max_seq_len,
     ).to(device)
+    parameter_count = sum(parameter.numel() for parameter in model.parameters())
 
     pos_weight = torch.tensor([data_stats["pos_weight"]], dtype=torch.float32, device=device)
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
@@ -146,6 +147,7 @@ def run_training(config: ExperimentConfig) -> None:
     history: list[dict[str, float]] = []
 
     print(f"device={device}")
+    print(f"model={config.model.name} parameters={parameter_count}")
     print(
         f"train_size={int(data_stats['train_size'])} val_size={int(data_stats['val_size'])} train_positive_rate={data_stats['train_positive_rate']:.4f}"
     )
@@ -177,6 +179,8 @@ def run_training(config: ExperimentConfig) -> None:
 
     latency = benchmark_latency(model, val_loader, device)
     summary = {
+        "model_name": config.model.name,
+        "parameter_count": parameter_count,
         "best_val_auc": best_auc,
         "latency": latency,
         "data_stats": data_stats,

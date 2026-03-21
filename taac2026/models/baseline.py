@@ -5,8 +5,8 @@ import math
 import torch
 from torch import nn
 
-from .config import ModelConfig
-from .utils import masked_mean
+from ..config import ModelConfig
+from .common import masked_mean
 
 
 class CandidateAwareBaseline(nn.Module):
@@ -83,3 +83,6 @@ class CandidateAwareBaseline(nn.Module):
             dim=-1,
         )
         return self.output(fused).squeeze(-1)
+
+
+__all__ = ["CandidateAwareBaseline"]

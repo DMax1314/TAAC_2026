@@ -12,16 +12,23 @@ class DataConfig:
     dataset_path: str
     max_seq_len: int = 96
     max_feature_tokens: int = 64
+    max_event_features: int = 12
     val_ratio: float = 0.2
     label_action_type: int = 2
 
 
 @dataclass(slots=True)
 class ModelConfig:
+    name: str = "baseline"
     vocab_size: int = 200_003
     embedding_dim: int = 96
     hidden_dim: int = 192
     dropout: float = 0.15
+    num_layers: int = 2
+    num_heads: int = 4
+    recent_seq_len: int = 32
+    memory_slots: int = 12
+    ffn_multiplier: int = 4
 
 
 @dataclass(slots=True)
