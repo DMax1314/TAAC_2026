@@ -93,6 +93,7 @@ uv run --no-project --isolated --with zensical zensical build --clean
 3. 也可以在 Actions 页手动触发一次 `Deploy Docs`。
 
 这条 workflow 同样使用隔离的 docs-only 环境，不依赖项目主虚拟环境是否已经同步完成。
+另外，论文页里的图片资源当前由 Git LFS 管理，所以部署 workflow 的 `actions/checkout` 必须开启 `lfs: true`，否则 Pages 会把 LFS 指针文本当成图片发布出去。
 
 第一次启用时，还需要在 GitHub 仓库设置里启用 Pages，并把 Build and deployment 的 Source 设为 `GitHub Actions`。
 

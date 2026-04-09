@@ -5,6 +5,7 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 site/
+.cache/
 
 # TAAC2026 Symbiosis
 config/gen/symbiosis/
