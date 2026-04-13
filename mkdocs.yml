@@ -78,34 +78,25 @@ extra_javascript:
 
 nav:
   - 首页: index.md
-  - 上手:
-      - 快速开始: getting-started.md
-      - CLI 指南: cli.md
-  - 参考:
-      - 项目结构: project-layout.md
-      - 实验包与验证记录: experiments.md
-      - 阶段说明:
-          - GEN 阶段: stages/gen.md
-          - MAIN 阶段: stages/main.md
-      - 实验包文档:
-          - 总览: packages/index.md
-          - baseline: packages/baseline.md
-          - grok: packages/grok.md
-          - ctr_baseline: packages/ctr_baseline.md
-          - deepcontextnet: packages/deepcontextnet.md
-          - interformer: packages/interformer.md
-          - onetrans: packages/onetrans.md
-          - hyformer: packages/hyformer.md
-          - unirec: packages/unirec.md
-          - uniscaleformer: packages/uniscaleformer.md
-          - oo: packages/oo.md
-          - symbiosis: packages/symbiosis.md
-      - 论文拆解:
-          - 总览: papers/index.md
-          - InterFormer: papers/interformer.md
-          - OneTrans: papers/onetrans.md
-          - HyFormer: papers/hyformer.md
-  - 维护:
-      - 开发文档: dev.md
-      - 测试文档: testing.md
-      - 路线图: TODO.md
+  - 快速开始: getting-started.md
+  - 架构与概念: architecture.md
+  - 实验包:
+      - 总览: experiments/index.md
+      - Baseline: experiments/baseline.md
+      - CTR Baseline: experiments/ctr-baseline.md
+      - DeepContextNet: experiments/deepcontextnet.md
+      - Grok: experiments/grok.md
+      - HyFormer: experiments/hyformer.md
+      - InterFormer: experiments/interformer.md
+      - OneTrans: experiments/onetrans.md
+      - O_o: experiments/oo.md
+      - UniRec: experiments/unirec.md
+      - UniScaleFormer: experiments/uniscaleformer.md
+  - 指南:
+      - 超参数搜索: guide/search.md
+      - 测试: guide/testing.md
+      - 新增实验包: guide/contributing.md
+  - 论文:
+      - HyFormer: papers/hyformer.md
+      - InterFormer: papers/interformer.md
+      - OneTrans: papers/onetrans.md

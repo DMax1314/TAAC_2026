@@ -1,0 +1,44 @@
+# Grok
+
+**分段序列建模 + Pairwise Loss**
+
+## 概述
+
+从旧 baseline 中拆分出来的本地 Grok 方案。独特之处在于使用 `segment_count=4` 进行分段建模，并启用 pairwise ranking loss 作为辅助损失。
+
+## 模型架构
+
+- 3 层 Transformer，4 头注意力
+- Embedding 维度 128
+- 4 个行为分段（segment_count=4）
+- Recent sequence length 16
+
+## 默认配置
+
+| 参数              | 值   |
+| ----------------- | ---- |
+| `embedding_dim`   | 128  |
+| `num_layers`      | 3    |
+| `num_heads`       | 4    |
+| `segment_count`   | 4    |
+| `epochs`          | 10   |
+| `batch_size`      | 64   |
+| `learning_rate`   | 3e-4 |
+| `pairwise_weight` | 0.15 |
+
+## 快速运行
+
+```bash
+uv run taac-train --experiment config/gen/grok
+uv run taac-evaluate single --experiment config/gen/grok
+```
+
+## 输出目录
+
+```
+outputs/gen/grok/
+```
+
+## 来源
+
+本仓库原创（从历史 baseline 拆分）。

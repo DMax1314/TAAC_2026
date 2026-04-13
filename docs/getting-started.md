@@ -1,121 +1,115 @@
----
-title: 快速开始
-icon: material/rocket-launch-outline
----
-
 # 快速开始
 
-这页解决五件事：把环境拉起来、把样例数据下到仓库默认路径、把 starter baseline 跑起来、看懂输出目录、知道如何切到自己的数据路径。
+## 前置要求
 
-## 1. 环境准备
+- Python ≥ 3.12（推荐 3.13）
+- [uv](https://docs.astral.sh/uv/) 包管理器
+- GPU（可选，CPU 也可运行但较慢）
 
-仓库基于 `uv` 管理环境，依赖事实来源是 `pyproject.toml` 与 `uv.lock`。
+## 安装
 
 ```bash
+# 安装 Python
 uv python install 3.13
+
+# 克隆仓库并同步依赖
+git clone https://github.com/Puiching-Memory/TAAC_2026.git
+cd TAAC_2026
 uv sync --locked
 ```
 
-!!! info "国内镜像与锁文件一致性"
-    仓库在 `pyproject.toml` 里固定了 `uv` 的 canonical 默认索引，用来保证 `uv.lock` 在本机和 CI 间保持一致。
-    如果你的机器全局把 `uv` 换到了国内镜像，直接执行 `uv sync --locked` 仍会按项目配置工作；不要再额外传 `--default-index` 或 `--index-url` 指向镜像，否则 `uv` 会认为 `uv.lock` 需要更新。
-    如果只是想加速下载，优先使用系统代理、透明代理或企业缓存代理；如果你确实临时用镜像执行过 `uv lock`，提交前请运行 `uv lock --default-index https://pypi.org/simple --python 3.13` 把锁文件归一回仓库基线。
+!!! warning "关于 PyPI 镜像"
+    仓库在 `pyproject.toml` 里固定了 canonical PyPI 作为默认索引，以保证 `uv.lock` 在本机和 CI 间一致。不要额外传 `--default-index` 或 `--index-url` 指向国内镜像，否则 `uv` 会判定 `uv.lock` 需要更新。  
+    如果只是想加速下载，优先使用系统代理或透明代理。
 
-!!! info "PyTorch 轮子来源"
-    Linux 环境下，`torch` 通过 `pyproject.toml` 的 uv source 固定到 PyTorch 官方 `cu128` 索引。也就是说，这里的环境同步会安装 CUDA 12.8 轮子，而不是继续跟随最新版默认索引。
+## 下载样例数据
 
-## 2. 下载样例数据
-
-内置实验包默认读取 Hugging Face 数据集 `TAAC2026/data_sample_1000` 在仓库 `data/` 缓存下的本地副本，并会自动解析当前缓存里可用的 snapshot。推荐直接用 `huggingface_hub.snapshot_download`，并把缓存根目录指到仓库下的 `data/`：
+实验包默认使用 HuggingFace 上的样例数据集 [`TAAC2026/data_sample_1000`](https://huggingface.co/datasets/TAAC2026/data_sample_1000)。框架会自动从本地 HuggingFace 缓存中解析数据路径。
 
 ```bash
-uv run --with huggingface_hub python -c "from huggingface_hub import snapshot_download; print(snapshot_download(repo_id='TAAC2026/data_sample_1000', repo_type='dataset', cache_dir='data'))"
+# 下载数据到仓库根下的 data/ 目录（作为 HF 缓存根）
+uv run python -c "
+from datasets import load_dataset
+load_dataset('TAAC2026/data_sample_1000', cache_dir='data')
+"
 ```
 
-命令完成后，Hugging Face 会在下面这个缓存目录下创建 `refs/`、`snapshots/` 等结构；默认实验会从这里自动找到实际的 parquet 文件：
+下载完成后，实验包会自动在 `data/datasets--TAAC2026--data_sample_1000/` 下解析 parquet 文件，优先使用 `refs/main` 指向的快照，无需手动指定版本哈希。
 
-```text
-data/datasets--TAAC2026--data_sample_1000/
+## 训练第一个模型
+
+```bash
+uv run taac-train --experiment config/gen/baseline
 ```
 
-该样例数据是公开数据集，默认不需要登录；如果这个路径已经存在，可以直接跳到下一节。
+训练完成后，产物会写入 `outputs/gen/baseline/`：
 
-## 3. 第一次跑通
-
-=== "训练"
-
-    ```bash
-    uv run taac-train --experiment config/gen/baseline
-    ```
-
-    可选运行时优化示例：
-
-    ```bash
-    uv run taac-train --experiment config/gen/baseline --compile --amp --amp-dtype bfloat16
-    ```
-
-=== "评估"
-
-    ```bash
-    uv run taac-evaluate single --experiment config/gen/baseline
-    ```
-
-    如果要按同一套运行时优化路径复测：
-
-    ```bash
-    uv run taac-evaluate single --experiment config/gen/baseline --compile --amp --amp-dtype bfloat16
-    ```
-
-=== "搜索"
-
-    ```bash
-    uv run taac-search --experiment config/gen/baseline --trials 20
-    ```
-
-=== "回归"
-
-    ```bash
-    uv run pytest tests -q
-    ```
-
-!!! info "baseline 和 grok 的区别"
-    `config/gen/baseline` 现在是面向扩展的 starter/reference package；如果你想跑原来那条更激进的本地 unified backbone，请改用 `config/gen/grok`。
-
-## 4. 当前仓库默认怎么找数据
-
-当前实验包已经在各自的 `__init__.py` 中把默认数据目录指到 Hugging Face 缓存根目录；运行时会优先跟随 `refs/main`，再回退到 `snapshots/` 下可用的 parquet：
-
-```text
-data/datasets--TAAC2026--data_sample_1000/
+```
+outputs/gen/baseline/
+├── best.pt                 # 最佳 checkpoint（按 val AUC 选择）
+├── summary.json            # 训练摘要（指标、超参数、耗时）
+├── training_curves.json    # 逐 epoch 训练曲线
+└── profiling/              # 模型参数量、FLOPs、推理延迟
 ```
 
-当前 CLI 没有 `--dataset-path` 覆写参数。如果你要切到别的数据集，推荐做法是写一个本地 wrapper 实验包：
+## 评估
 
-```python
-from config.gen.oo import EXPERIMENT
-
-EXPERIMENT = EXPERIMENT.clone()
-EXPERIMENT.data.dataset_path = "/path/to/your.parquet"
-EXPERIMENT.train.output_dir = "outputs/custom/oo"
+```bash
+# 评估默认输出目录中的 best.pt
+uv run taac-evaluate single --experiment config/gen/baseline
 ```
 
-然后把这个本地目录传给 `--experiment`。
+评估报告包含：AUC、PR-AUC、Brier Score、LogLoss、GAUC，以及推理延迟（ms/sample）。
 
-## 5. 输出目录里会出现什么
+## 超参数搜索
 
-每次训练当前会在输出目录写入四类主要产物：
+```bash
+# 使用 Optuna 搜索 20 个 trial，自动按 GPU 显存并发调度
+uv run taac-search --experiment config/gen/baseline --trials 20
+```
 
-| 文件                   | 作用                                                                             |
-| ---------------------- | -------------------------------------------------------------------------------- |
-| `best.pt`              | 保存当前最佳 epoch 的模型参数和指标。                                            |
-| `summary.json`         | 保存最佳指标、latency、`model_profile`、`inference_profile`、`compute_profile`。 |
-| `training_curves.json` | 保存逐 epoch 的 train loss、val loss 和 val AUC。                                |
-| `training_curves.png`  | 训练过程中持续覆盖刷新的曲线图。                                                 |
+搜索默认约束：
 
-如果启用了 `torch.compile` 或 AMP，`summary.json` 和评估输出里还会包含 `runtime_optimization` 字段，用来记录请求状态、实际是否生效，以及可能的降级原因。
+- 模型参数量 ≤ 3 GiB
+- 验证集端到端推理总时长 ≤ 180 秒
 
-## 6. 初次浏览建议
+→ 详细搜索配置见 [超参数搜索](guide/search.md)
 
-1. 如果你只是想跑通链路，继续看[CLI 指南](cli.md)即可。
-2. 如果你要挑模型或看 smoke 记录，直接跳到[实验包与验证记录](experiments.md)。
-3. 如果你要新增实验包、改测试、改图表或本地预览文档站，看[开发文档](dev.md)。
+## 运行其他实验包
+
+所有实验包使用相同的 CLI 接口，只需替换 `--experiment` 路径：
+
+```bash
+# 训练 InterFormer
+uv run taac-train --experiment config/gen/interformer
+
+# 训练 OneTrans
+uv run taac-train --experiment config/gen/onetrans
+
+# 训练 HyFormer
+uv run taac-train --experiment config/gen/hyformer
+```
+
+→ 完整实验包列表见 [实验包总览](experiments/index.md)
+
+## 跑测试
+
+```bash
+# 完整回归
+uv run pytest tests -q
+
+# 快速单元测试
+uv run pytest -m unit -q
+```
+
+→ 详细测试指南见 [测试](guide/testing.md)
+
+## CLI 命令速查
+
+| 命令                          | 用途               |
+| ----------------------------- | ------------------ |
+| `taac-train`                  | 训练实验包         |
+| `taac-evaluate`               | 评估 checkpoint    |
+| `taac-search`                 | Optuna 超参数搜索  |
+| `taac-plot-model-performance` | 生成性能对比图     |
+| `taac-clean-pycache`          | 清理 `__pycache__` |

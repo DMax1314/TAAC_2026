@@ -1,113 +1,66 @@
+# TAAC 2026 Experiment Workspace
+
+**迈向统一序列建模与特征交互的大规模推荐系统**
+
 ---
-title: 首页
-hide:
-  - toc
----
 
-# TAAC 2026 文档站
+## 项目定位
 
-<div class="hero-copy" markdown>
+这是一个面向 [TAAC 2026](https://algo.qq.com/#intro) 的实验工作区。我们把共享训练底座、目录式实验包、统一输出产物和回归测试放进同一套工程里，让新实验可以更快接入、训练、评估和复核。
 
-这套文档不再让 `README.md` 独自承担全部信息，而是按“第一次上手、命令怎么用、实验包有哪些、开发边界是什么”四条线重新组织。目标很直接：让新同学第一次进仓库时，能在几分钟内找到正确入口。
+!!! note "声明"
+    本仓库是 TAAC 2026 其中一个参赛队伍的代码仓库，不代表官方。
 
-</div>
+## 核心能力
 
-!!! note "定位"
-    这是参赛队伍的工程文档，不是 TAAC 官方文档。赛题描述、时间线和数据说明仍应以 [大赛主页](https://algo.qq.com/#intro) 与 [官方样例数据页](https://huggingface.co/datasets/TAAC2026/data_sample_1000) 为准。
+| 能力             | 说明                                                          |
+| ---------------- | ------------------------------------------------------------- |
+| **统一训练框架** | 一条命令完成训练、评估、checkpoint 保存                       |
+| **目录式实验包** | 每个实验包独立管理数据、模型、损失函数，互不干扰              |
+| **超参数搜索**   | 基于 Optuna，自动检测 GPU 空闲显存并发派发 trial              |
+| **回归测试**     | Unit / Integration / Property 三层测试，CI 自动覆盖率门控     |
+| **论文复现**     | 内置 InterFormer、OneTrans、HyFormer 等已发表工作的可运行实现 |
 
-<div class="grid cards" markdown>
+## 内置实验包
 
--   :material-rocket-launch-outline: **快速开始**
+当前共 **10** 个独立实验包，覆盖从基础 baseline 到前沿论文的多种架构：
 
-    ---
+| 实验包                                          | 架构特点                        | 来源                                                                                                            |
+| ----------------------------------------------- | ------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| [Baseline](experiments/baseline.md)             | 最小参考实现，强调可扩展性      | 本仓库                                                                                                          |
+| [CTR Baseline](experiments/ctr-baseline.md)     | DIN 风格注意力                  | [creatorwyx/TAAC2026-CTR-Baseline](https://github.com/creatorwyx/TAAC2026-CTR-Baseline)                         |
+| [DeepContextNet](experiments/deepcontextnet.md) | 上下文感知建模                  | [suyanli220/TAAC-2026-Baseline](https://github.com/suyanli220/TAAC-2026-Baseline-Tencent-Advertisement-Contest) |
+| [Grok](experiments/grok.md)                     | 分段建模 + pairwise 损失        | 本仓库                                                                                                          |
+| [HyFormer](experiments/hyformer.md)             | 多序列分支 + Query Decode/Boost | [论文](https://arxiv.org/abs/2601.12681)                                                                        |
+| [InterFormer](experiments/interformer.md)       | 双向序列-特征交互               | [论文](https://arxiv.org/abs/2411.09852)                                                                        |
+| [OneTrans](experiments/onetrans.md)             | 统一 Tokenizer + 单 Transformer | [论文](https://arxiv.org/abs/2510.26104)                                                                        |
+| [O_o](experiments/oo.md)                        | 简化统一设计                    | [salmon1802/O_o](https://github.com/salmon1802/O_o)                                                             |
+| [UniRec](experiments/unirec.md)                 | 多阶段融合                      | [hojiahao/TAAC2026](https://github.com/hojiahao/TAAC2026)                                                       |
+| [UniScaleFormer](experiments/uniscaleformer.md) | 缩放序列 + 融合                 | [twx145/Unirec](https://github.com/twx145/Unirec)                                                               |
 
-    从环境同步、第一次训练、第一次评估，到如何切换数据集的本地包装实验。
+## 技术栈
 
-    [进入页面](getting-started.md){ .md-button .md-button--primary }
+- **Python** ≥ 3.12
+- **PyTorch** ≥ 2.6
+- **uv** 作为包管理器
+- **Optuna** ≥ 4.4 用于超参数搜索
+- **pytest** + Hypothesis 用于测试
 
--   :material-console-line: **CLI 指南**
+## 快速预览
 
-    ---
+```bash
+# 安装环境
+uv python install 3.13
+uv sync --locked
 
-    只覆盖当前仓库真实存在的 `taac-train`、`taac-evaluate`、`taac-search`。
+# 训练 baseline
+uv run taac-train --experiment config/gen/baseline
 
-    [查看命令](cli.md){ .md-button }
+# 评估
+uv run taac-evaluate single --experiment config/gen/baseline
 
--   :material-file-tree-outline: **项目结构**
+# 超参数搜索
+uv run taac-search --experiment config/gen/baseline --trials 20
+```
 
-    ---
-
-    把 `src/taac2026`、`config/gen`、`tests`、`tools` 的职责边界讲清楚。
-
-    [查看结构](project-layout.md){ .md-button }
-
--   :material-flask-outline: **实验包索引**
-
-    ---
-
-    汇总当前可执行实验包、可复核 smoke 结果，以及当前工作区的结论口径。
-
-    [查看实验](experiments.md){ .md-button }
-
--   :material-wrench-cog-outline: **开发维护**
-
-    ---
-
-    包括回归入口、图表刷新、文档站本地预览，以及文档更新规则。
-
-    [查看维护约定](dev.md){ .md-button }
-
--   :material-map-marker-path: **路线图**
-
-    ---
-
-    记录文档站下一步要补哪些页，项目本身还有哪些能力尚未落地。
-
-    [查看路线图](TODO.md){ .md-button }
-
-</div>
-
-## 推荐阅读顺序
-
-1. 第一次进入仓库，先看[快速开始](getting-started.md)。
-2. 想确认命令和参数范围，再看[CLI 指南](cli.md)。
-3. 想知道当前有哪些真实可跑的实验包，直接看[实验包与验证记录](experiments.md)。
-4. 要改代码、补实验、补文档时，再看[开发文档](dev.md)。
-
-## 两条最快路径
-
-=== "第一次跑通训练链路"
-
-    ```bash
-    uv python install 3.13
-    uv sync --locked
-
-    uv run taac-train --experiment config/gen/baseline
-    uv run taac-evaluate single --experiment config/gen/baseline
-    uv run pytest tests -q
-    ```
-
-    如果机器支持，也可以在训练和评估时显式打开运行时优化：
-
-    ```bash
-    uv run taac-train --experiment config/gen/baseline --compile --amp --amp-dtype bfloat16
-    uv run taac-evaluate single --experiment config/gen/baseline --compile --amp --amp-dtype bfloat16
-    ```
-
-=== "先看当前实验版图"
-
-    先打开[实验包与验证记录](experiments.md)。
-
-    这页会直接告诉你：
-
-    - 当前分支里哪些实验包是真实存在且可执行的。
-    - 各自默认输出目录和主要来源。
-    - 当前工作区里哪些 `summary.json` 可以直接复核。
-    - 哪些结论只是 sample parquet 上的 smoke 结果，不能外推成正式赛题结论。
-
-## 这次重构的原则
-
-1. 文档站按任务而不是按“历史文件名”组织。
-2. 只写当前仓库真实存在的能力，不沿用旧分支里已经消失的命令。
-3. 仓库文件路径统一写成内联代码，例如 `src/taac2026/train.py`，避免在站点里出现失效链接。
-4. 实验结果只保留能在当前工作区直接打开产物复核的记录。
+→ 详细步骤见 [快速开始](getting-started.md)
