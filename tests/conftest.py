@@ -21,6 +21,10 @@ UNIT_TEST_FILES = {
     "test_test_collection.py",
 }
 
+GPU_TEST_FILES = {
+    "test_gpu.py",
+}
+
 INTEGRATION_TEST_FILES = {
     "test_data_pipeline.py",
     "test_evaluate_cli.py",
@@ -42,6 +46,7 @@ def _build_test_file_classification() -> dict[str, str]:
 
     classification = {filename: "unit" for filename in UNIT_TEST_FILES}
     classification.update({filename: "integration" for filename in INTEGRATION_TEST_FILES})
+    classification.update({filename: "gpu" for filename in GPU_TEST_FILES})
     return classification
 
 
@@ -56,6 +61,8 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             item.add_marker(pytest.mark.unit)
         elif marker == "integration":
             item.add_marker(pytest.mark.integration)
+        elif marker == "gpu":
+            item.add_marker(pytest.mark.gpu)
         else:
             unclassified_files.add(filename)
 

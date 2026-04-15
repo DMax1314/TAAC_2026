@@ -1,46 +1,41 @@
-# TESTING
+# Testing
 
-这个文件只描述当前仓库已经实现并正在使用的测试约定，方便在改代码时快速判断该跑哪些回归。
+## 概览
+
+测试套件位于 `tests/`，使用 [pytest](https://docs.pytest.org/) 运行。所有测试按文件名自动标记为 **unit**、**integration** 或 **gpu**——无需手写 `@pytest.mark`，由 `tests/conftest.py` 中的文件名集合统一管理。
+
+CI（`.github/workflows/ci.yml`）依次执行 unit → integration，合并 coverage 后强制通过门槛检查。
+
+## 快速开始
+
+```bash
+# 同步环境（锁定版本）
+uv sync --locked
+
+# 全量回归
+uv run pytest -q
+
+# 仅单元测试
+uv run pytest -m unit -q
+
+# 仅集成测试
+uv run pytest -m integration -q
+
+# GPU 测试（需要 CUDA 硬件）
+uv run python scripts/run_gpu_tests.py
+```
 
 ## 测试分层
 
-当前 CI 真正执行的分层只有两层：`unit` 和 `integration`。
+| 标记          | 说明                           | 文件                                                                                                                                                                                                                                                                                                                       |
+| ------------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `unit`        | 纯逻辑、无外部 I/O、快速       | `test_clean_pycache` · `test_experiment_packages` · `test_metrics` · `test_model_performance_plot` · `test_model_robustness` · `test_property_based` · `test_payload` · `test_profiling_unit` · `test_runtime_optimization` · `test_schema_contract` · `test_search_trial` · `test_search_worker` · `test_test_collection` |
+| `integration` | 跨模块闭环、需要数据或文件系统 | `test_data_pipeline` · `test_evaluate_cli` · `test_profiling` · `test_runtime_integration` · `test_search` · `test_search_worker_integration` · `test_training_recovery`                                                                                                                                                   |
+| `gpu`         | 需要 CUDA 设备、CI 中单独运行  | `test_gpu`                                                                                                                                                                                                                                                                                                                 |
 
-- `Smoke`：默认指最小可运行闭环，通常体现在少量 `unit` / `integration` 回归里，而不是单独的 pytest marker。
-- `Unit`：纯逻辑、轻依赖、单模块契约测试，例如 `metrics`、`payload`、`profiling` 边界、CLI 参数解析。
-- `Fault`：失败路径和异常分支测试，当前大多归在 `unit` 或轻量 `integration`，例如坏 JSON、缺失 `EXPERIMENT`、worker 崩溃、checkpoint 不兼容。
-- `Property`：基于 Hypothesis 的性质测试，当前入口在 `tests/test_property_based.py`，并计入 `unit`。
-- `Integration`：训练、评估、搜索、数据管道、恢复等跨模块闭环测试。
+新增测试文件 **必须** 同步添加到 `tests/conftest.py` 对应的文件名集合中，否则 pytest 收集阶段会直接报错。
 
-分类落地方式见 `tests/conftest.py`。仓库目前通过文件名集合给测试动态打 `unit` / `integration` marker，而不是靠目录或每条用例手写 decorator。
-
-## 常用命令
-
-先同步环境：
-
-```bash
-uv sync --locked
-```
-
-跑完整回归：
-
-```bash
-uv run pytest tests -q
-```
-
-只跑快速单元测试：
-
-```bash
-uv run pytest -m unit -q
-```
-
-只跑集成测试：
-
-```bash
-uv run pytest -m integration -q
-```
-
-按 CI 口径收集 coverage：
+## Coverage
 
 ```bash
 uv run --with coverage coverage erase
@@ -49,58 +44,50 @@ uv run --with coverage coverage run --append -m pytest -m integration -q
 uv run --with coverage coverage report
 ```
 
-当前 coverage 统计范围与门槛由 `pyproject.toml` 控制：
+| 项目     | 值                                                                                            |
+| -------- | --------------------------------------------------------------------------------------------- |
+| 统计范围 | `src/taac2026/domain`、`src/taac2026/application/search`、`src/taac2026/application/training` |
+| 分支覆盖 | 开启                                                                                          |
+| 最低门槛 | **70 %**                                                                                      |
 
-- `src/taac2026/domain`
-- `src/taac2026/application/search`
-- `src/taac2026/application/training`
-- `branch = true`
-- `fail_under = 70`
+配置位于 `pyproject.toml` 的 `[tool.coverage.*]` 段。
 
-## 模块改动后的最小复核
+## 模块改动速查
 
-改 `src/taac2026/domain/metrics.py`：
+改完代码后，按下表选择最小验证集，快速确认不回退：
+
+| 改动范围                             | 建议运行                                                                                                |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------- |
+| `domain/metrics.py`                  | `test_metrics.py` `test_property_based.py`                                                              |
+| `infrastructure/experiments/payload` | `test_payload.py`                                                                                       |
+| `application/training/`              | `test_profiling_unit.py` `test_profiling.py` `test_runtime_optimization.py` `test_training_recovery.py` |
+| `application/search/`                | `test_search_trial.py` `test_search_worker.py` `test_search_worker_integration.py` `test_search.py`     |
+| 数据读取 / batch 组装                | `test_data_pipeline.py` `test_runtime_integration.py`                                                   |
+| GEN 实验包 (`config/gen/`)           | `test_experiment_packages.py`                                                                           |
+
+示例：
 
 ```bash
 uv run pytest tests/test_metrics.py tests/test_property_based.py -q
 ```
 
-改 `src/taac2026/infrastructure/experiments/payload.py` 或 loader：
+## 编写新测试
 
-```bash
-uv run pytest tests/test_payload.py -q
-```
+1. 在 `tests/` 新建 `test_*.py`，同步把文件名加入 `conftest.py` 的 `UNIT_TEST_FILES`、`INTEGRATION_TEST_FILES` 或 `GPU_TEST_FILES`。
+2. 统一使用 `uv run pytest ...` 运行，不要直接调 `python -m pytest`。
+3. Property-based 测试用 Hypothesis，控制 `max_examples` 保持速度。
+4. 涉及训练产出物时，验证 `best.pt`、`summary.json`、`training_curves.json`、`profiling/` 的兼容性。
+5. 涉及搜索流程时，覆盖 success、fail、pruned 三种 trial 状态。
 
-改 `src/taac2026/application/training/profiling.py`、`service.py`、`artifacts.py`、`runtime_optimization.py`：
+## CI 流程
 
-```bash
-uv run pytest tests/test_profiling_unit.py tests/test_profiling.py tests/test_runtime_optimization.py tests/test_training_recovery.py -q
-```
+CI 在 `ubuntu-latest` + Python 3.13 上运行：
 
-改 `src/taac2026/application/search/trial.py`、`worker.py`、`service.py`：
+1. `uv sync --locked` — 严格锁定环境
+2. `uv run python scripts/lint_torch.py` — torch 导入规范检查
+3. `coverage run -m pytest -m unit` — 单元测试 + 覆盖率采集
+4. `coverage run --append -m pytest -m integration` — 集成测试（追加覆盖率）
+5. `coverage report` — 门槛校验（< 70 % 失败）
+6. 上传 `coverage.xml` 为 artifact
 
-```bash
-uv run pytest tests/test_search_trial.py tests/test_search_worker.py tests/test_search_worker_integration.py tests/test_search.py -q
-```
-
-改数据读取、样本整理或 batch 组装：
-
-```bash
-uv run pytest tests/test_data_pipeline.py tests/test_runtime_integration.py -q
-```
-
-## Recovery / Fault / Property 当前覆盖点
-
-- `tests/test_property_based.py`：Metrics 边界、稳定哈希、训练 CLI 运行时参数解析。
-- `tests/test_payload.py`：缺 section、坏字段、缺 `EXPERIMENT`、导入失败。
-- `tests/test_search_worker.py`：worker 丢结果、坏 JSON、trial 执行异常。
-- `tests/test_search_worker_integration.py`：auto worker 成功 / 失败状态收敛。
-- `tests/test_training_recovery.py`：训练中断后恢复、训练曲线部分产物清理、checkpoint 重跑覆盖一致性。
-
-## 编写新测试时的约束
-
-- 新 Python 测试命令统一写成 `uv run pytest ...`，不要写裸 `pytest`。
-- 新测试文件加入后，要同步更新 `tests/conftest.py` 的文件名集合，否则 `-m unit` / `-m integration` 不会选中它。
-- Property 测试默认控制样本数，优先保持稳定和快速，不把 CI 变成随机压力测试。
-- 如果改动会影响训练输出物，至少检查 `best.pt`、`summary.json`、`training_curves.json`、`profiling/` 下计划文件的兼容性。
-- 如果改动会影响搜索运行时，至少覆盖 success、fail、pruned 三类状态中的相关分支。
+GPU 测试不在常规 CI 中运行，使用 `scripts/run_gpu_tests.py` 在本地 CUDA 机器上手动执行。
