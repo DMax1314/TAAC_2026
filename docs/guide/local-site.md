@@ -9,12 +9,15 @@
 
 ## 构建静态站点
 
-EDA 图表数据（`docs/assets/figures/eda/*.echarts.json`）不纳入版本控制，构建前需先生成：
+部分图表数据不纳入版本控制，构建前需先生成：
 
 ```bash
 uv run taac-dataset-eda
+uv run taac-tech-timeline
 uv run --no-project --isolated --with zensical zensical build --clean
 ```
+
+其中 `uv run taac-tech-timeline` 会在仓库根目录下写入本地缓存 `.cache/taac2026/.s2_cache.json`，该文件仅用于加速 Semantic Scholar 元数据抓取，不需要提交到 Git。
 
 构建产物输出到 `site/` 目录。`--clean` 会在构建前清除旧的产物。
 
