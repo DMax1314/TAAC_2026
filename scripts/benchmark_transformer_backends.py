@@ -23,6 +23,7 @@ from taac2026.infrastructure.nn.transformer import TaacCrossAttentionBlock, Taac
 DEFAULT_OUTPUT = REPO_ROOT / "outputs" / "performance" / "transformer_backends.json"
 BACKEND_CHOICES = ("torch", "triton", "te")
 SCENARIO_CHOICES = ("self-masked", "self-no-mask", "self-causal", "cross-masked", "cross-no-mask")
+TimingSummary = dict[str, float | list[float]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,7 +90,7 @@ def _synchronize(device: torch.device) -> None:
         torch.cuda.synchronize(device)
 
 
-def _summarize_times(times_ms: list[float]) -> dict[str, float]:
+def _summarize_times(times_ms: list[float]) -> TimingSummary:
     ordered = sorted(times_ms)
     median_ms = float(statistics.median(ordered))
     mean_ms = float(statistics.fmean(ordered))
@@ -106,7 +107,7 @@ def _summarize_times(times_ms: list[float]) -> dict[str, float]:
     }
 
 
-def _measure_callable(target, *, device: torch.device, warmup: int, steps: int) -> dict[str, float | list[float]]:
+def _measure_callable(target, *, device: torch.device, warmup: int, steps: int) -> TimingSummary:
     with torch.inference_mode():
         for _ in range(max(0, warmup)):
             target()

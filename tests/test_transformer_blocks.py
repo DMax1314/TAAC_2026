@@ -162,6 +162,22 @@ def test_detect_precision_support_prefers_blackwell_nvfp4(monkeypatch: pytest.Mo
     assert support["recommended_recipe"] == "nvfp4_block_scaling"
 
 
+def test_detect_precision_support_accepts_integer_cuda_index(monkeypatch: pytest.MonkeyPatch) -> None:
+    requested_devices: list[torch.device | None] = []
+
+    def fake_get_device_capability(device=None):
+        requested_devices.append(device)
+        return (9, 0)
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", fake_get_device_capability)
+
+    support = detect_precision_support(0)
+
+    assert support["compute_capability"] == [9, 0]
+    assert requested_devices == [torch.device("cuda:0")]
+
+
 def test_adapt_mask_for_te_inverts_keep_mask() -> None:
     mask = torch.tensor([[True, False, True], [False, False, True]])
 
@@ -229,6 +245,61 @@ def test_resolve_te_attention_mask_keeps_arbitrary_path_for_padding_masks() -> N
             ]
         ),
     )
+
+
+def test_detect_transformer_engine_availability_accepts_integer_cuda_index(monkeypatch: pytest.MonkeyPatch) -> None:
+    requested_devices: list[torch.device] = []
+
+    class FakeTeModule:
+        @staticmethod
+        def get_cudnn_version():
+            return (9, 3, 0)
+
+        @staticmethod
+        def is_bf16_available(*, return_reason=True):
+            return True, ""
+
+        @staticmethod
+        def is_fp8_available(*, return_reason=True):
+            return True, ""
+
+        @staticmethod
+        def is_fp8_block_scaling_available(*, return_reason=True):
+            return False, "requires newer CUDA"
+
+        @staticmethod
+        def is_mxfp8_available(*, return_reason=True):
+            return False, "requires newer GPU"
+
+        @staticmethod
+        def is_nvfp4_available(*, return_reason=True):
+            return False, "requires newer GPU"
+
+    monkeypatch.setattr(te_backend_module, "is_transformer_engine_installed", lambda: True)
+    monkeypatch.setattr(te_backend_module, "_load_transformer_engine_pytorch", lambda: FakeTeModule)
+    monkeypatch.setattr(te_backend_module, "_load_transformer_engine_root", lambda: type("FakeRoot", (), {"__version__": "2.13.0"})())
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(
+        torch.cuda,
+        "get_device_capability",
+        lambda device=None: requested_devices.append(device) or (9, 0),
+    )
+
+    report = te_backend_module.detect_transformer_engine_availability(0)
+
+    assert report["installed"] is True
+    assert report["compute_capability"] == [9, 0]
+    assert requested_devices == [torch.device("cuda:0")]
+
+
+def test_te_backends_raise_actionable_error_when_dependency_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(te_backend_module, "is_transformer_engine_installed", lambda: False)
+
+    with pytest.raises(RuntimeError, match="uv sync --locked --extra te --no-build-isolation-package transformer-engine-torch"):
+        te_backend_module.TransformerEngineAttention(hidden_dim=8, num_heads=2)
+
+    with pytest.raises(RuntimeError, match="uv sync --locked --extra te --no-build-isolation-package transformer-engine-torch"):
+        te_backend_module.TransformerEngineFeedForward(hidden_dim=8, ffn_dim=16, norm_type="layernorm")
 
 
 def test_taac_transformer_block_routes_te_backends(monkeypatch: pytest.MonkeyPatch) -> None:

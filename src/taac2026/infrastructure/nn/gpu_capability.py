@@ -18,6 +18,20 @@ _AUTO_RECIPE_BY_PRECISION: dict[RecommendedPrecision, str | None] = {
 }
 
 
+def _resolve_cuda_device(device: torch.device | int | None) -> torch.device | None:
+    if device is None:
+        return torch.device("cuda:0")
+    if isinstance(device, int):
+        return torch.device(f"cuda:{device}")
+
+    resolved_device = torch.device(device)
+    if resolved_device.type != "cuda":
+        return None
+    if resolved_device.index is None:
+        return torch.device("cuda:0")
+    return resolved_device
+
+
 def classify_gpu_architecture(capability: tuple[int, int] | None) -> GpuArchitecture:
     if capability is None:
         return "unknown"
@@ -40,8 +54,8 @@ def detect_compute_capability(device: torch.device | int | None = None) -> tuple
     if device is None:
         return torch.cuda.get_device_capability()
 
-    resolved_device = torch.device(device)
-    if resolved_device.type != "cuda":
+    resolved_device = _resolve_cuda_device(device)
+    if resolved_device is None:
         return None
     return torch.cuda.get_device_capability(resolved_device)
 

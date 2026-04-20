@@ -39,9 +39,33 @@ _AUTO_RECIPE_FOR_PRECISION: dict[str, str] = {
     "nvfp4": "nvfp4_block_scaling",
 }
 
+_TRANSFORMER_ENGINE_INSTALL_HINT = (
+    "Transformer Engine backend requires the optional 'te' dependencies. "
+    "Install them with `uv sync --locked --extra te --no-build-isolation-package transformer-engine-torch`."
+)
+
 
 def is_transformer_engine_installed() -> bool:
     return importlib.util.find_spec("transformer_engine") is not None
+
+
+def _resolve_cuda_device(device: torch.device | int | None) -> torch.device:
+    if device is None:
+        return torch.device("cuda:0")
+    if isinstance(device, int):
+        return torch.device(f"cuda:{device}")
+
+    resolved_device = torch.device(device)
+    if resolved_device.type != "cuda":
+        return resolved_device
+    if resolved_device.index is None:
+        return torch.device("cuda:0")
+    return resolved_device
+
+
+def _require_transformer_engine_installed() -> None:
+    if not is_transformer_engine_installed():
+        raise RuntimeError(_TRANSFORMER_ENGINE_INSTALL_HINT)
 
 
 @lru_cache(maxsize=1)
@@ -122,7 +146,7 @@ def detect_transformer_engine_availability(device: torch.device | int | None = N
     te_root = _load_transformer_engine_root()
     report["version"] = getattr(te_root, "__version__", "unknown")
 
-    resolved_device = torch.device(device) if device is not None else torch.device("cuda:0")
+    resolved_device = _resolve_cuda_device(device)
     if resolved_device.type != "cuda" or not torch.cuda.is_available():
         unavailable_reason = "CUDA device not available"
         report.update(
@@ -416,6 +440,7 @@ class TransformerEngineAttention(nn.Module):
         if normalized_attention_type not in {"self", "cross"}:
             raise ValueError(f"Unsupported Transformer Engine attention_type '{attention_type}'")
 
+        _require_transformer_engine_installed()
         te_module = _load_transformer_engine_pytorch()
         self.attention_type = normalized_attention_type
         self.te_precision = _normalize_precision(te_precision)
@@ -515,6 +540,7 @@ class TransformerEngineFeedForward(nn.Module):
         te_amax_history_len: int = 16,
     ) -> None:
         super().__init__()
+        _require_transformer_engine_installed()
         te_module = _load_transformer_engine_pytorch()
         self.te_precision = _normalize_precision(te_precision)
         self.te_recipe_mode = _normalize_recipe_mode(te_recipe_mode)
