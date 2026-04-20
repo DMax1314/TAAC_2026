@@ -87,30 +87,6 @@ uv run pytest tests -q
 
 更细的测试分层、Property/Fault/Recovery 回归入口和模块改动后的最小复核集合，见 `TESTING.md`。
 
-## 清理 GitHub 历史日志
-
-如果你只希望关注失败记录，可以用内置脚本批量清理旧日志（默认 dry-run，不会真正删除）：
-
-```bash
-# 先预览：保留最近 30 条 Actions、20 条 Pages 部署
-uv run taac-clean-github-logs --repo Puiching-Memory/TAAC_2026 --only-completed-runs
-
-# 确认后执行真实删除（需具备 repo 权限的 token）
-GITHUB_TOKEN=ghp_xxx uv run taac-clean-github-logs \
-  --repo Puiching-Memory/TAAC_2026 \
-  --only-completed-runs \
-  --execute
-
-# 仅清理 Actions 日志 / 仅清理 Pages 部署
-uv run taac-clean-github-logs --repo Puiching-Memory/TAAC_2026 --actions-only --execute
-uv run taac-clean-github-logs --repo Puiching-Memory/TAAC_2026 --pages-only --execute
-```
-
-说明：
-1. Actions 使用 `DELETE /repos/{owner}/{repo}/actions/runs/{run_id}/logs` 删除运行日志。
-2. Pages 会先把旧 deployment 标记为 inactive，再删除 deployment 记录。
-3. 默认从 `GITHUB_REPOSITORY` 与 `GITHUB_TOKEN` 环境变量读取仓库和令牌。
-
 ## 当前独立实验包
 
 | 实验包         | 目录                                                   | 公开来源                                                                                                                                      | 默认输出目录                 | 可复核状态                         |
