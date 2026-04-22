@@ -10,7 +10,7 @@ DEFAULT_MAX_END_TO_END_INFERENCE_SECONDS = 180.0
 
 @dataclass(slots=True)
 class DataConfig:
-    dataset_path: str
+    dataset_path: str = "TAAC2026/data_sample_1000"
     max_seq_len: int = 64
     max_feature_tokens: int = 24
     max_event_features: int = 4
