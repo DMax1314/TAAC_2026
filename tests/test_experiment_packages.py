@@ -274,7 +274,7 @@ def test_experiment_package_directory_path_loads_namespace_relative_imports(expe
         "config.oo",
     ],
 )
-def test_experiment_package_default_dataset_points_to_hf_cache_root(module_path: str) -> None:
+def test_experiment_package_default_dataset_is_hf_hub_dataset_name(module_path: str) -> None:
     experiment = importlib.import_module(module_path).EXPERIMENT
     assert experiment.data.dataset_path == "TAAC2026/data_sample_1000"
 
