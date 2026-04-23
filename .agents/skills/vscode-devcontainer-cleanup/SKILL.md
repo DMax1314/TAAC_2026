@@ -35,16 +35,16 @@ This skill performs safe housekeeping for VS Code inside a dev container:
 
 ## Procedure
 
-1. Inspect the current state first:
+1. Inspect the current state first from the repository root:
 
 ```bash
-./scripts/cleanup-vscode-devcontainer.sh inspect
+./.agents/skills/vscode-devcontainer-cleanup/scripts/cleanup-vscode-devcontainer.sh inspect
 ```
 
 2. Run the cleanup when the inspection looks correct:
 
 ```bash
-./scripts/cleanup-vscode-devcontainer.sh cleanup
+./.agents/skills/vscode-devcontainer-cleanup/scripts/cleanup-vscode-devcontainer.sh cleanup
 ```
 
 3. Review the summary at the end for:
