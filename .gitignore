@@ -9,6 +9,7 @@ __pycache__/
 *.egg-info/
 site/
 .cache/
+.ruff_cache/
 *.echarts.json
 !docs/assets/figures/eda/*.echarts.json
 !docs/assets/figures/papers/tech-timeline.echarts.json
