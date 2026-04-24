@@ -1,4 +1,4 @@
-name: CI
+name: 持续集成 (CI)
 
 on:
   pull_request:
@@ -33,7 +33,7 @@ concurrency:
 
 jobs:
   style:
-    name: Style & Policy (Python ${{ matrix.python-version }})
+    name: 代码风格与策略 (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -41,24 +41,22 @@ jobs:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
 
     steps:
-      - name: Checkout repository
+      - name: 检出仓库
         uses: actions/checkout@v5
 
-      - name: Set up Python
+      - name: 设置 Python
         uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Set up uv
+      - name: 设置 uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
-        with:
-          enable-cache: true
 
-      - name: Run Ruff style checks
+      - name: 运行 Ruff 风格检查
         run: uv run --with ruff ruff check .
 
   test:
-    name: CPU Unit Tests (Python ${{ matrix.python-version }})
+    name: CPU 单元测试 (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -66,47 +64,27 @@ jobs:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
 
     steps:
-      - name: Checkout repository
+      - name: 检出仓库
         uses: actions/checkout@v5
 
-      - name: Set up Python
+      - name: 设置 Python
         uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Set up uv
+      - name: 设置 uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
-        with:
-          enable-cache: true
 
-      - name: Sync project environment
+      - name: 同步项目环境
         run: uv sync --locked --extra cpu
 
-      - name: Run repository policy checks
+      - name: 运行仓库策略检查
         run: uv run pytest tests/unit/test_repo_policy.py -q
 
-      - name: Run unit tests with coverage
+      - name: 运行带有覆盖率的单元测试
         run: uv run --with coverage coverage run --data-file=.coverage.cpu -m pytest -m unit -v
 
-      - name: Summarize CPU test routing
-        run: |
-          uv run python - <<'PY'
-          import os
-          from tests import conftest
-
-          counts = conftest.count_classified_test_files()
-          cpu_safe_count = len(conftest.cpu_ci_safe_benchmark_files())
-          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as handle:
-              handle.write("## CPU test routing\n\n")
-              handle.write(f"- executed on ubuntu-latest with Python ${{ matrix.python-version }}: unit ({counts['unit']} files)\\n")
-              handle.write(f"- executed in the automatic CPU benchmark job: benchmark_cpu CPU-safe subset ({cpu_safe_count} files)\\n")
-              handle.write(
-                f"- delegated to local CUDA validation paths: integration ({counts['integration']} files), gpu ({counts['gpu']} files), benchmark_gpu ({counts['benchmark_gpu']} files)\\n"
-              )
-              handle.write("- reason: CUDA-linked validation stays off the fast CPU CI path so ubuntu-latest does not depend on libcuda.so.1.\\n")
-          PY
-
-      - name: Upload CPU coverage data
+      - name: 上传 CPU 覆盖率数据
         if: always() && matrix.python-version == env.CI_CANONICAL_PYTHON_VERSION
         uses: actions/upload-artifact@v7
         with:
@@ -115,80 +93,8 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
 
-  cpu-benchmarks:
-    name: CPU Benchmarks (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Set up uv
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
-        with:
-          enable-cache: true
-
-      - name: Sync project environment
-        run: uv sync --locked --extra cpu
-
-      - name: Run CPU benchmark suite
-        run: |
-          rm -rf .benchmarks outputs/performance benchmark-result-cpu.json
-          mapfile -t cpu_safe_benchmarks < <(uv run python - <<'PY'
-          from tests import conftest
-
-          for path in conftest.cpu_ci_safe_benchmark_files():
-              print(path)
-          PY
-          )
-          if [[ "${#cpu_safe_benchmarks[@]}" -eq 0 ]]; then
-            echo "No CPU-safe benchmark files found for automatic CI." >&2
-            exit 1
-          fi
-          uv run pytest "${cpu_safe_benchmarks[@]}" -m benchmark_cpu --benchmark-json=benchmark-result-cpu.json -v
-
-      - name: Summarize CPU benchmark evidence
-        run: |
-          uv run python - <<'PY'
-          import os
-          from pathlib import Path
-
-          from tests import conftest
-
-          counts = conftest.count_classified_test_files()
-          cpu_safe_count = len(conftest.cpu_ci_safe_benchmark_files())
-          cuda_runtime_count = counts["benchmark_cpu"] - cpu_safe_count
-          payloads = sorted(path.name for path in Path("outputs/performance").glob("*.json"))
-          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as handle:
-              handle.write("## CPU benchmark evidence\n\n")
-              handle.write(f"- executed CPU-safe benchmark_cpu subset: {cpu_safe_count} files on ubuntu-latest with Python ${{ matrix.python-version }}\\n")
-              if cuda_runtime_count:
-                handle.write(f"- remaining benchmark_cpu files that still require CUDA-linked TorchRec runtime: {cuda_runtime_count}\\n")
-              handle.write(f"- generated payloads: {', '.join(payloads) if payloads else 'none'}\\n")
-              handle.write("- artifacts: benchmark-result-cpu.json, outputs/performance/\\n")
-          PY
-
-      - name: Upload CPU benchmark results
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: cpu-benchmark-results-py${{ matrix.python-version }}
-          path: |
-            benchmark-result-cpu.json
-            outputs/performance
-          if-no-files-found: error
-
   coverage:
-    name: Coverage Report
+    name: 覆盖率报告
     runs-on: ubuntu-latest
     needs:
       - test
@@ -196,50 +102,47 @@ jobs:
       CPU_COVERAGE_INCLUDE: src/taac2026/domain/*,src/taac2026/application/training/__init__.py,src/taac2026/application/training/cli.py,src/taac2026/application/training/runtime_optimization.py
 
     steps:
-      - name: Checkout repository
+      - name: 检出仓库
         uses: actions/checkout@v5
 
-      - name: Set up Python
+      - name: 设置 Python
         uses: actions/setup-python@v6
         with:
           python-version: ${{ env.CI_CANONICAL_PYTHON_VERSION }}
 
-      - name: Set up uv
+      - name: 设置 uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
-        with:
-          enable-cache: true
 
-      - name: Download CPU coverage data
+      - name: 下载 CPU 覆盖率数据
         uses: actions/download-artifact@v8
         with:
           name: coverage-cpu-data-py${{ env.CI_CANONICAL_PYTHON_VERSION }}
           path: .coverage-artifacts/cpu
 
-      - name: Restore coverage data
+      - name: 恢复覆盖率数据
         run: |
           cp .coverage-artifacts/cpu/.coverage.cpu .coverage
 
-      - name: Summarize coverage scope
+      - name: 总结覆盖率范围
         run: |
           {
-            echo "## Coverage scope"
+            echo "## 覆盖率范围"
             echo
-            echo "- compatibility checks run on Python 3.10, 3.11, 3.12, and 3.13"
-            echo "- coverage gate is enforced from the canonical Python ${CI_CANONICAL_PYTHON_VERSION} unit lane using CPU-safe modules only"
-            echo "- CPU benchmarks run automatically in ci.yml but do not affect the coverage gate"
-            echo "- includes: src/taac2026/domain/*, src/taac2026/application/training/__init__.py, src/taac2026/application/training/cli.py, src/taac2026/application/training/runtime_optimization.py"
-            echo "- integration and gpu coverage is collected from local CUDA CLI runs when needed"
-            echo "- GPU-only benchmarks live under tests/benchmarks/gpu and run via local CUDA CLI"
+            echo "- 兼容性检查在 Python 3.10, 3.11, 3.12, 和 3.13 上运行"
+            echo "- 覆盖率门控从规范的 Python ${CI_CANONICAL_PYTHON_VERSION} 单元测试通道执行，仅使用 CPU 安全的模块"
+            echo "- 包含: src/taac2026/domain/*, src/taac2026/application/training/__init__.py, src/taac2026/application/training/cli.py, src/taac2026/application/training/runtime_optimization.py"
+            echo "- 集成和 GPU 覆盖率在需要时从本地 CUDA CLI 运行中收集"
+            echo "- 仅 GPU 的基准测试位于 tests/benchmarks/gpu 下，通过本地 CUDA CLI 运行"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Enforce CPU coverage gate
+      - name: 执行 CPU 覆盖率门控
         run: uv run --with coverage coverage report --fail-under=70 --include="$CPU_COVERAGE_INCLUDE"
 
-      - name: Export CPU coverage XML
+      - name: 导出 CPU 覆盖率 XML
         if: always()
         run: uv run --with coverage coverage xml --fail-under=0 --include="$CPU_COVERAGE_INCLUDE" -o coverage.xml
 
-      - name: Upload coverage artifact
+      - name: 上传覆盖率制品
         if: always()
         uses: actions/upload-artifact@v7
         with:

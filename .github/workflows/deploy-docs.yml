@@ -1,4 +1,4 @@
-name: Deploy Docs
+name: 部署文档
 
 on:
   push:
@@ -28,19 +28,19 @@ concurrency:
 
 jobs:
   classify-push:
-    name: Classify Push Trigger
+    name: 分类推送触发器
     runs-on: ubuntu-latest
     outputs:
       allow_push_deploy: ${{ steps.classify.outputs.allow_push_deploy }}
 
     steps:
-      - name: Checkout repository
+      - name: 检出仓库
         if: github.event_name == 'push'
         uses: actions/checkout@v5
         with:
           fetch-depth: 2
 
-      - name: Classify push changes
+      - name: 分类推送变更
         id: classify
         run: |
           allow_push_deploy=true
@@ -66,169 +66,44 @@ jobs:
       SITE_URL: https://puiching-memory.github.io/TAAC_2026/
 
     steps:
-      - name: Configure GitHub Pages
+      - name: 配置 GitHub Pages
         uses: actions/configure-pages@v6
 
-      - name: Checkout repository
+      - name: 检出仓库
         uses: actions/checkout@v5
         with:
           lfs: true
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
-      - name: Set up Python
+      - name: 设置 Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.13"
 
-      - name: Set up uv
+      - name: 设置 uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
-        with:
-          enable-cache: true
 
-      - name: Restore benchmark charts cache
-        id: cache-benchmark-charts
-        uses: actions/cache/restore@v5
-        with:
-          path: docs/assets/figures/benchmarks
-          key: ${{ runner.os }}-docs-bench-${{ github.event.workflow_run.head_sha || github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-docs-bench-
+      - name: 安装项目依赖 (轻量级)
+        run: uv sync --locked --extra cpu --no-install-package torch --no-install-package torchrec --no-install-package fbgemm-gpu
 
-      - name: Resolve benchmark charts cache status
-        id: benchmark-cache-status
-        env:
-          CACHE_HIT: ${{ steps.cache-benchmark-charts.outputs.cache-hit }}
-          CACHE_MATCHED_KEY: ${{ steps.cache-benchmark-charts.outputs.cache-matched-key }}
-        run: |
-          cache_hit="$CACHE_HIT"
-          cache_matched_key="$CACHE_MATCHED_KEY"
-
-          benchmark_charts_ready=false
-          if [[ "$cache_hit" == "true" ]] || [[ -n "$cache_matched_key" ]]; then
-            benchmark_charts_ready=true
-          fi
-
-          echo "cache_hit=$cache_hit" >> "$GITHUB_OUTPUT"
-          echo "cache_matched_key=$cache_matched_key" >> "$GITHUB_OUTPUT"
-          echo "benchmark_charts_ready=$benchmark_charts_ready" >> "$GITHUB_OUTPUT"
-
-      - name: Install project dependencies (lightweight)
-        if: steps.benchmark-cache-status.outputs.benchmark_charts_ready != 'true'
-        run: uv sync --locked --no-install-package torch --no-install-package torchrec --no-install-package fbgemm-gpu
-
-      - name: Generate benchmark charts
-        if: steps.benchmark-cache-status.outputs.benchmark_charts_ready != 'true'
+      - name: 生成基准测试图表
         run: uv run taac-bench-report
 
-      - name: Save benchmark charts cache
-        if: steps.benchmark-cache-status.outputs.benchmark_charts_ready != 'true'
-        uses: actions/cache/save@v5
-        with:
-          path: docs/assets/figures/benchmarks
-          key: ${{ runner.os }}-docs-bench-${{ github.event.workflow_run.head_sha || github.sha }}
-
-      - name: Validate committed docs chart assets
-        run: |
-          python - <<'PY'
-          import re
-          from pathlib import Path
-
-          docs_root = Path("docs")
-          pattern = re.compile(r'data-src="([^"]+)"')
-          references: list[tuple[Path, str]] = []
-          missing: list[tuple[Path, str]] = []
-
-          for doc_path in sorted(docs_root.rglob("*.md")):
-            content = doc_path.read_text(encoding="utf-8")
-            for rel_path in pattern.findall(content):
-              if not rel_path.startswith("assets/"):
-                continue
-              references.append((doc_path, rel_path))
-              asset_path = docs_root / rel_path
-              if not asset_path.is_file():
-                missing.append((doc_path, rel_path))
-
-          eda_dir = docs_root / "assets/figures/eda"
-          eda_files = sorted(eda_dir.glob("*.echarts.json"))
-          timeline_file = docs_root / "assets/figures/papers/tech-timeline.echarts.json"
-
-          if not eda_files:
-            raise SystemExit("Missing committed EDA chart assets under docs/assets/figures/eda")
-          if not timeline_file.is_file():
-            raise SystemExit("Missing committed tech timeline chart asset")
-          if missing:
-            details = "\n".join(f"{doc_path}: missing {rel_path}" for doc_path, rel_path in missing)
-            raise SystemExit(f"Missing docs chart assets:\n{details}")
-
-          print(f"Validated {len(references)} chart references.")
-          print(f"EDA files present: {len(eda_files)}")
-          print(f"Tech timeline present: {timeline_file.is_file()}")
-          PY
-
-      - name: Build Zensical site
+      - name: 构建 Zensical 站点
         run: uv run --no-project --isolated --with zensical zensical build --clean
 
-      - name: Summarize docs deploy trace
-        env:
-          CACHE_BENCH_HIT: ${{ steps.benchmark-cache-status.outputs.cache_hit }}
-          CACHE_BENCH_MATCHED_KEY: ${{ steps.benchmark-cache-status.outputs.cache_matched_key }}
-          CACHE_BENCH_READY: ${{ steps.benchmark-cache-status.outputs.benchmark_charts_ready }}
-        run: |
-          python - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          docs_dir = Path("docs")
-          site_dir = Path("site")
-          eda_dir = docs_dir / "assets/figures/eda"
-          timeline_file = docs_dir / "assets/figures/papers/tech-timeline.echarts.json"
-          cache_bench_hit = os.environ["CACHE_BENCH_HIT"] == "true"
-          cache_bench_ready = os.environ["CACHE_BENCH_READY"] == "true"
-          trace = {
-            "committed_assets": {
-              "eda_file_count": len(list(eda_dir.glob("*.echarts.json"))),
-              "tech_timeline": timeline_file.is_file(),
-              },
-            "benchmark_charts": {
-              "cache_hit": cache_bench_hit,
-              "cache_matched_key": os.environ["CACHE_BENCH_MATCHED_KEY"],
-              "cache_fallback": cache_bench_ready and not cache_bench_hit,
-              "generated": not cache_bench_ready,
-              },
-              "site_file_count": sum(1 for path in site_dir.rglob("*") if path.is_file()),
-              "site_exists": site_dir.exists(),
-          }
-          Path("docs-deploy-trace.json").write_text(json.dumps(trace, indent=2, sort_keys=True), encoding="utf-8")
-
-          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as handle:
-              handle.write("## Docs deploy trace\n\n")
-              handle.write(
-              "- committed assets: "
-              f"eda_files={trace['committed_assets']['eda_file_count']}, "
-              f"tech_timeline={trace['committed_assets']['tech_timeline']}\\n"
-              )
-              handle.write(
-              "- benchmark charts: "
-              f"cache_hit={trace['benchmark_charts']['cache_hit']}, "
-              f"fallback_cache={trace['benchmark_charts']['cache_fallback']}, "
-              f"generated={trace['benchmark_charts']['generated']}\\n"
-              )
-              handle.write(f"- built site files: {trace['site_file_count']}\\n")
-          PY
-
-      - name: Upload site artifact
+      - name: 上传站点制品
         uses: actions/upload-pages-artifact@v5
         with:
           path: site
 
-      - name: Upload docs deploy trace
+      - name: 上传文档部署追踪
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: docs-deploy-trace
           path: docs-deploy-trace.json
 
-      - name: Deploy GitHub Pages
+      - name: 部署 GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5
