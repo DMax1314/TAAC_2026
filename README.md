@@ -5,12 +5,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Puiching-Memory/TAAC_2026/actions/workflows/ci.yml">
-    <img src="https://github.com/Puiching-Memory/TAAC_2026/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI Status (main)">
-  </a>
-  <a href="https://puiching-memory.github.io/TAAC_2026/">
-    <img src="https://img.shields.io/website?label=Docs&up_message=Online&down_message=Offline&up_color=0A7B83&url=https%3A%2F%2Fpuiching-memory.github.io%2FTAAC_2026%2F" alt="Online Docs Status">
-  </a>
+  <a href="https://github.com/Puiching-Memory/TAAC_2026/actions/workflows/ci.yml"><img src="https://github.com/Puiching-Memory/TAAC_2026/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI Status (main)"></a>
+  <a href="https://puiching-memory.github.io/TAAC_2026/"><img src="https://img.shields.io/website?label=Docs&up_message=Online&down_message=Offline&up_color=0A7B83&url=https%3A%2F%2Fpuiching-memory.github.io%2FTAAC_2026%2F" alt="Online Docs Status"></a>
   <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License">
   <img src="https://img.shields.io/badge/Python-3.10%2B-blue.svg" alt="Python">
   <img src="https://img.shields.io/badge/PyTorch-2.6%2B-EE4C2C.svg" alt="PyTorch">
