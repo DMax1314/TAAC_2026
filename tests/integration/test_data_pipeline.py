@@ -6,12 +6,13 @@ from pathlib import Path
 
 import pytest
 import torch
+from taac2026.infrastructure.io import default_data_pipeline
 
 from config.baseline.data import DENSE_FEATURE_DIM, load_dataloaders
 from taac2026.domain.config import ModelConfig
 from taac2026.domain.features import FeatureTableSpec, build_default_feature_schema
 from taac2026.infrastructure.io.files import stable_hash64
-from tests.support import TestWorkspace, build_edge_case_rows, create_test_workspace
+from tests.support import TestWorkspace, build_edge_case_rows, build_row, create_test_workspace
 
 
 LEGACY_SEQUENCE_FIELD_NAMES = (
@@ -199,6 +200,120 @@ def test_train_split_item_logq_tracks_frequency(test_workspace: TestWorkspace) -
     assert item_logq_by_index[repeated_item] > item_logq_by_index[single_item]
     assert item_logq_by_index[repeated_item] == pytest.approx(math.log(2.0 / 3.0), abs=1e-5)
     assert item_logq_by_index[single_item] == pytest.approx(math.log(1.0 / 3.0), abs=1e-5)
+
+
+def test_train_loader_shuffles_deterministically_with_seed(tmp_path: Path) -> None:
+    base_timestamp = 1_770_000_000
+    shuffle_workspace = create_test_workspace(
+        tmp_path / "seed_shuffle",
+        rows=[
+            build_row(
+                index,
+                base_timestamp + index * 10,
+                positive=index % 2 == 0,
+                user_id=f"u{index}",
+                item_id=100 + index,
+            )
+            for index in range(12)
+        ],
+    )
+
+    train_loader_a, val_loader_a, _ = load_dataloaders(
+        config=shuffle_workspace.data_config,
+        vocab_size=257,
+        batch_size=2,
+        eval_batch_size=2,
+        num_workers=0,
+        seed=7,
+    )
+    train_loader_b, val_loader_b, _ = load_dataloaders(
+        config=shuffle_workspace.data_config,
+        vocab_size=257,
+        batch_size=2,
+        eval_batch_size=2,
+        num_workers=0,
+        seed=7,
+    )
+    train_loader_c, _, _ = load_dataloaders(
+        config=shuffle_workspace.data_config,
+        vocab_size=257,
+        batch_size=2,
+        eval_batch_size=2,
+        num_workers=0,
+        seed=11,
+    )
+
+    train_indices_a = list(train_loader_a.sampler)
+    train_indices_b = list(train_loader_b.sampler)
+    train_indices_c = list(train_loader_c.sampler)
+    val_indices_a = list(val_loader_a.sampler)
+    val_indices_b = list(val_loader_b.sampler)
+    expected_train_indices = list(range(len(train_loader_a.dataset)))
+    expected_val_indices = list(range(len(val_loader_a.dataset)))
+
+    assert train_indices_a == train_indices_b
+    assert sorted(train_indices_a) == expected_train_indices
+    assert train_indices_a != expected_train_indices
+    assert train_indices_c != train_indices_a
+    assert val_indices_a == val_indices_b
+    assert val_indices_a == expected_val_indices
+
+
+def test_streaming_pipeline_encodes_rows_lazily_in_stream_chunks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_timestamp = 1_770_000_000
+    lazy_workspace = create_test_workspace(
+        tmp_path / "lazy_streaming",
+        rows=[
+            build_row(
+                index,
+                base_timestamp + index * 10,
+                positive=index % 2 == 0,
+                user_id=f"lazy_u{index}",
+                item_id=200 + index,
+            )
+            for index in range(6)
+        ],
+    )
+    lazy_workspace.data_config.val_ratio = 0.5
+    lazy_workspace.data_config.stream_batch_rows = 2
+    encode_calls: list[int] = []
+    original_encode_row = default_data_pipeline._encode_row
+
+    def tracking_encode_row(*args, **kwargs):
+        row = args[0]
+        encode_calls.append(int(row["__sample_index__"]))
+        return original_encode_row(*args, **kwargs)
+
+    monkeypatch.setattr(default_data_pipeline, "_encode_row", tracking_encode_row)
+
+    train_loader, val_loader, _ = load_dataloaders(
+        config=lazy_workspace.data_config,
+        vocab_size=257,
+        batch_size=2,
+        eval_batch_size=1,
+        num_workers=0,
+        seed=7,
+    )
+
+    assert encode_calls == []
+
+    train_size = len(train_loader.dataset)
+    val_dataset = val_loader.dataset
+
+    first_val_sample = val_dataset[0]
+    assert encode_calls == [train_size, train_size + 1]
+    assert first_val_sample.sample_index == train_size
+
+    second_val_sample = val_dataset[1]
+    assert encode_calls == [train_size, train_size + 1]
+    assert second_val_sample.sample_index == train_size + 1
+
+    third_val_sample = val_dataset[2]
+    assert encode_calls == [train_size, train_size + 1, train_size + 2]
+    assert third_val_sample.sample_index == train_size + 2
 
 
 def test_streaming_pipeline_handles_sparse_and_truncated_sequences(tmp_path: Path) -> None:

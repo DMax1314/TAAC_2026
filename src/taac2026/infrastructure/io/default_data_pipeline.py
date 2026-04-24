@@ -80,14 +80,54 @@ class _SequenceEvent:
 
 
 class _EncodedDataset(Dataset[_EncodedSample]):
-	def __init__(self, samples: list[_EncodedSample]) -> None:
-		self._samples = samples
+	def __init__(
+		self,
+		*,
+		rows: Any,
+		row_offset: int,
+		row_count: int,
+		config: DataConfig,
+		pipeline_schema: _PipelineSchema,
+		item_logq_lookup: dict[int, float],
+		default_item_logq: float,
+		chunk_size: int,
+	) -> None:
+		self._rows = rows
+		self._row_offset = int(row_offset)
+		self._row_count = int(row_count)
+		self._config = config
+		self._pipeline_schema = pipeline_schema
+		self._item_logq_lookup = item_logq_lookup
+		self._default_item_logq = float(default_item_logq)
+		self._chunk_size = max(1, int(chunk_size))
+		self._cached_chunk_start = -1
+		self._cached_chunk: tuple[_EncodedSample, ...] = ()
 
 	def __len__(self) -> int:
-		return len(self._samples)
+		return self._row_count
 
 	def __getitem__(self, index: int) -> _EncodedSample:
-		return self._samples[index]
+		if index < 0 or index >= self._row_count:
+			raise IndexError(index)
+		chunk_start = (index // self._chunk_size) * self._chunk_size
+		if chunk_start != self._cached_chunk_start:
+			self._cached_chunk = self._encode_chunk(chunk_start)
+			self._cached_chunk_start = chunk_start
+		return self._cached_chunk[index - chunk_start]
+
+	def _encode_chunk(self, chunk_start: int) -> tuple[_EncodedSample, ...]:
+		absolute_start = self._row_offset + chunk_start
+		absolute_stop = min(self._row_offset + self._row_count, absolute_start + self._chunk_size)
+		return tuple(
+			_encode_row(
+				dict(self._rows[absolute_index], __sample_index__=absolute_index),
+				self._config,
+				self._pipeline_schema,
+				self._item_logq_lookup,
+				self._default_item_logq,
+			)
+			for absolute_index in range(absolute_start, absolute_stop)
+		)
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,22 +214,22 @@ def _resolve_pipeline_schema(
 	)
 
 
-def _sort_rows_by_timestamp(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+def _sort_rows_by_timestamp(rows: Iterable[dict[str, Any]]) -> Any:
+	if not isinstance(rows, list) and hasattr(rows, "sort") and hasattr(rows, "__getitem__") and hasattr(rows, "__len__"):
+		return rows.sort("timestamp")
 	materialized = list(rows)
 	materialized.sort(key=lambda row: int(row.get("timestamp", 0) or 0))
 	return materialized
 
 
-def _time_split(rows: list[dict[str, Any]], val_ratio: float) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-	if not rows:
-		return [], []
-	if len(rows) == 1:
-		return rows, rows
-	train_size = int(len(rows) * (1.0 - val_ratio))
-	train_size = max(1, min(len(rows) - 1, train_size))
-	train_rows = rows[:train_size]
-	val_rows = rows[train_size:] or rows[-1:]
-	return train_rows, val_rows
+def _time_split_ranges(row_count: int, val_ratio: float) -> tuple[tuple[int, int], tuple[int, int]]:
+	if row_count <= 0:
+		return (0, 0), (0, 0)
+	if row_count == 1:
+		return (0, 1), (0, 1)
+	train_size = int(row_count * (1.0 - val_ratio))
+	train_size = max(1, min(row_count - 1, train_size))
+	return (0, train_size), (train_size, row_count - train_size)
 
 
 def _token_id(signature: str, vocab_size: int) -> int:
@@ -727,16 +767,27 @@ def _normalize_metadata_value(value: Any) -> Any:
 	return value
 
 
-def _build_item_logq_lookup(train_rows: list[dict[str, Any]]) -> tuple[dict[int, float], float]:
+
+def _summarize_train_rows(
+	rows: Any,
+	*,
+	row_offset: int,
+	row_count: int,
+	label_action_type: int,
+) -> tuple[dict[int, float], float, float]:
 	counts: dict[int, int] = {}
-	for row in train_rows:
+	positive_count = 0.0
+	for absolute_index in range(row_offset, row_offset + row_count):
+		row = rows[absolute_index]
 		item_index = stable_hash64(f"item|{row.get('item_id', 0)}")
 		counts[item_index] = counts.get(item_index, 0) + 1
+		if int(row.get("label_type", 0) or 0) == label_action_type:
+			positive_count += 1.0
 	total = sum(counts.values())
 	if total <= 0:
-		return {}, 0.0
+		return {}, 0.0, positive_count
 	lookup = {item_index: math.log(count / total) for item_index, count in counts.items()}
-	return lookup, math.log(1.0 / total)
+	return lookup, math.log(1.0 / total), positive_count
 
 
 
@@ -820,49 +871,67 @@ def load_dataloaders(
 	seed: int,
 	feature_schema: FeatureSchema | None = None,
 ) -> tuple[DataLoader[BatchTensors], DataLoader[BatchTensors], DataStats]:
-	del seed
 	pipeline_schema = _resolve_pipeline_schema(config, vocab_size, feature_schema)
-	sorted_rows = [
-		dict(row, __sample_index__=index)
-		for index, row in enumerate(_sort_rows_by_timestamp(iter_dataset_rows(config.dataset_path)))
-	]
-	train_rows, val_rows = _time_split(sorted_rows, config.val_ratio)
-	item_logq_lookup, default_item_logq = _build_item_logq_lookup(train_rows)
+	sorted_rows = _sort_rows_by_timestamp(iter_dataset_rows(config.dataset_path))
+	(train_offset, train_count), (val_offset, val_count) = _time_split_ranges(len(sorted_rows), config.val_ratio)
+	item_logq_lookup, default_item_logq, positive_count = _summarize_train_rows(
+		sorted_rows,
+		row_offset=train_offset,
+		row_count=train_count,
+		label_action_type=config.label_action_type,
+	)
 
-	train_samples = [
-		_encode_row(row, config, pipeline_schema, item_logq_lookup, default_item_logq)
-		for row in train_rows
-	]
-	val_samples = [
-		_encode_row(row, config, pipeline_schema, item_logq_lookup, default_item_logq)
-		for row in val_rows
-	]
-
-	positive_count = sum(sample.label for sample in train_samples)
-	negative_count = max(0.0, len(train_samples) - positive_count)
+	negative_count = max(0.0, train_count - positive_count)
 	pos_weight = negative_count / positive_count if positive_count > 0 else 1.0
+	chunk_size = max(1, int(config.stream_batch_rows), max(1, batch_size), max(1, eval_batch_size))
+	train_dataset = _EncodedDataset(
+		rows=sorted_rows,
+		row_offset=train_offset,
+		row_count=train_count,
+		config=config,
+		pipeline_schema=pipeline_schema,
+		item_logq_lookup=item_logq_lookup,
+		default_item_logq=default_item_logq,
+		chunk_size=chunk_size,
+	)
+	val_dataset = _EncodedDataset(
+		rows=sorted_rows,
+		row_offset=val_offset,
+		row_count=val_count,
+		config=config,
+		pipeline_schema=pipeline_schema,
+		item_logq_lookup=item_logq_lookup,
+		default_item_logq=default_item_logq,
+		chunk_size=chunk_size,
+	)
 
 	stats = DataStats(
 		dense_dim=config.dense_feature_dim,
 		pos_weight=float(pos_weight),
-		train_size=len(train_samples),
-		val_size=len(val_samples),
+		train_size=len(train_dataset),
+		val_size=len(val_dataset),
 	)
 	collate_batch = partial(
 		_collate_batch,
 		sequence_names=pipeline_schema.sequence_names,
 		feature_schema=feature_schema,
 	)
+	train_shuffle = len(train_dataset) > 0
+	train_generator = None
+	if train_shuffle:
+		train_generator = torch.Generator()
+		train_generator.manual_seed(int(seed))
 
 	train_loader = DataLoader(
-		_EncodedDataset(train_samples),
+		train_dataset,
 		batch_size=max(1, batch_size),
-		shuffle=False,
+		shuffle=train_shuffle,
 		num_workers=num_workers,
+		generator=train_generator,
 		collate_fn=collate_batch,
 	)
 	val_loader = DataLoader(
-		_EncodedDataset(val_samples),
+		val_dataset,
 		batch_size=max(1, eval_batch_size),
 		shuffle=False,
 		num_workers=num_workers,
