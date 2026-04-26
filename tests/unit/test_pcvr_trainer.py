@@ -39,7 +39,9 @@ def test_train_logs_progress_when_tqdm_is_disabled(monkeypatch, tmp_path, caplog
     )
 
     losses = iter((0.5, 0.4, 0.3, 0.2))
+    monotonic_values = iter((100.0, 101.0, 102.0, 103.0, 104.0))
     monkeypatch.setattr(trainer_module, "_use_interactive_progress", lambda: False)
+    monkeypatch.setattr(trainer_module.time, "monotonic", lambda: next(monotonic_values))
     monkeypatch.setattr(trainer, "_train_step", lambda batch: next(losses))
     monkeypatch.setattr(trainer, "evaluate", lambda epoch=None: (0.75, 0.25))
 
@@ -47,6 +49,6 @@ def test_train_logs_progress_when_tqdm_is_disabled(monkeypatch, tmp_path, caplog
         trainer.train()
 
     messages = [record.getMessage() for record in caplog.records]
-    assert "Train epoch 1 progress 1/4 (25.0%) | loss=0.5000" in messages
-    assert "Train epoch 1 progress 4/4 (100.0%) | loss=0.2000" in messages
+    assert "Train epoch 1 progress 1/4 (25.0%) | eta=0:00:03 | loss=0.5000" in messages
+    assert "Train epoch 1 progress 4/4 (100.0%) | eta=0:00:00 | loss=0.2000" in messages
     assert "Epoch 1, Average Loss: 0.35" in messages

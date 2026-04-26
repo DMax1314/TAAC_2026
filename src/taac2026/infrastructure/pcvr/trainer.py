@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 import shutil
 import sys
+import time
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +36,10 @@ def _progress_log_interval(total_batches: int) -> int:
 
 def _should_log_progress(current_batch: int, total_batches: int, interval: int) -> bool:
     return current_batch == 1 or current_batch == total_batches or current_batch % interval == 0
+
+
+def _format_duration(seconds: float) -> str:
+    return str(timedelta(seconds=max(0, round(seconds))))
 
 
 class PCVRPointwiseTrainer:
@@ -209,6 +215,7 @@ class PCVRPointwiseTrainer:
         total_batches: int,
         *,
         epoch: int | None = None,
+        loop_started_at: float | None = None,
         loss: float | None = None,
     ) -> None:
         prefix = f"{phase} progress"
@@ -216,6 +223,10 @@ class PCVRPointwiseTrainer:
             prefix = f"{phase} epoch {epoch} progress"
 
         message = f"{prefix} {current_batch}/{total_batches} ({current_batch / total_batches:.1%})"
+        if loop_started_at is not None and current_batch > 0:
+            elapsed_seconds = max(0.0, time.monotonic() - loop_started_at)
+            eta_seconds = elapsed_seconds * max(0, total_batches - current_batch) / current_batch
+            message = f"{message} | eta={_format_duration(eta_seconds)}"
         if loss is not None:
             message = f"{message} | loss={loss:.4f}"
         logging.info(message)
@@ -229,6 +240,7 @@ class PCVRPointwiseTrainer:
             total_train_batches = len(self.train_loader)
             use_tqdm = _use_interactive_progress()
             log_interval = _progress_log_interval(total_train_batches)
+            loop_started_at = time.monotonic()
             train_iter = enumerate(self.train_loader)
             train_pbar = (
                 tqdm(train_iter, total=total_train_batches, dynamic_ncols=True)
@@ -249,7 +261,14 @@ class PCVRPointwiseTrainer:
                 if use_tqdm:
                     train_pbar.set_postfix({"loss": f"{loss:.4f}"})
                 elif _should_log_progress(current_batch, total_train_batches, log_interval):
-                    self._log_loop_progress("Train", current_batch, total_train_batches, epoch=epoch, loss=loss)
+                    self._log_loop_progress(
+                        "Train",
+                        current_batch,
+                        total_train_batches,
+                        epoch=epoch,
+                        loop_started_at=loop_started_at,
+                        loss=loss,
+                    )
 
                 if self.eval_every_n_steps > 0 and total_step % self.eval_every_n_steps == 0:
                     logging.info("Evaluating at step %s", total_step)
@@ -350,6 +369,7 @@ class PCVRPointwiseTrainer:
         total_valid_batches = len(self.valid_loader)
         use_tqdm = _use_interactive_progress()
         log_interval = _progress_log_interval(total_valid_batches)
+        loop_started_at = time.monotonic()
         valid_iter = enumerate(self.valid_loader)
         pbar = (
             tqdm(valid_iter, total=total_valid_batches, dynamic_ncols=True)
@@ -367,7 +387,13 @@ class PCVRPointwiseTrainer:
 
                 current_batch = step_index + 1
                 if not use_tqdm and _should_log_progress(current_batch, total_valid_batches, log_interval):
-                    self._log_loop_progress("Validation", current_batch, total_valid_batches, epoch=epoch)
+                    self._log_loop_progress(
+                        "Validation",
+                        current_batch,
+                        total_valid_batches,
+                        epoch=epoch,
+                        loop_started_at=loop_started_at,
+                    )
 
         if use_tqdm:
             pbar.close()
