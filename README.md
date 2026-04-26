@@ -81,10 +81,6 @@ bash run.sh val --experiment config/baseline \
   --schema-path /path/to/dataset_dir/schema.json
 ```
 
-本地仓库默认通过 [.python-version](.python-version) 固定到 Python 3.10.20，以便和当前线上 competition Conda 环境对齐；项目兼容范围仍保持在 [pyproject.toml](pyproject.toml) 声明的 3.10-3.13。
-
-官方 HyFormer 实验包位于 [config/baseline](config/baseline)，只保留实验定义、模型和 NS 分组资产；PCVR 数据管线、训练编排、trainer 和 checkpoint 协议已下沉到 [src/taac2026/infrastructure/pcvr](src/taac2026/infrastructure/pcvr) 与 [src/taac2026/infrastructure/training](src/taac2026/infrastructure/training)。统一入口 [run.sh](run.sh) 负责本地训练、验证、测试和打包，也兼容线上平台直接执行；仓库环境统一固定为 Linux + `cuda126`，本地 `TAAC_CUDA_PROFILE`/`--cuda-profile` 仅支持 `cuda126`，线上上传包默认使用平台已激活的 Python/Conda 环境并通过 `PYTHONPATH` 载入代码。`--dataset-path` 可以指向 parquet 文件或包含 parquet 的目录；如果 `schema.json` 与 parquet 位于同一目录，可以省略 `--schema-path`。线上如果只执行 `run.sh`，设置 `TAAC_DATASET_PATH`、`TAAC_SCHEMA_PATH` 和 `TAAC_EXPERIMENT` 即可，默认命令就是训练。
-
 ```bash
 # 生成线上训练上传文件
 bash run.sh package --experiment config/baseline
@@ -93,16 +89,14 @@ bash run.sh package --experiment config/baseline
 bash run.sh test tests -q
 ```
 
-当前统一使用 `uv sync --locked --extra cuda126`；pytest、hypothesis 和 benchmark 工具已经并入默认依赖。当前可执行测试集中在 `tests/unit/`，更细的测试文件说明和模块改动后的最小复核集合，见 [docs/guide/testing.md](docs/guide/testing.md)。
-
 ## 当前支持实验包
 
 | 实验包         | 目录                                           | 公开来源                                                                                                                                      |
 | -------------- | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| Baseline       | [config/baseline](config/baseline)             | 官方 Day0 HyFormer baseline；训练、评估、打包与 checkpoint runtime 已下沉到 [src/taac2026](src/taac2026)                                      |
+| Baseline       | [config/baseline](config/baseline)             | 官方 DHyFormer baseline                                                                                                                       |
 | Symbiosis      | [config/symbiosis](config/symbiosis)           | 本仓库维护的比赛用融合实验模型                                                                                                                |
-| CTR Baseline   | [config/ctr_baseline](config/ctr_baseline)     | [creatorwyx/TAAC2026-CTR-Baseline](https://github.com/creatorwyx/TAAC2026-CTR-Baseline) 启发的轻量 CTR 实验包                                 |
-| DeepContextNet | [config/deepcontextnet](config/deepcontextnet) | [suyanli220/TAAC-2026-Baseline-Tencent-Advertisement-Contest](https://github.com/suyanli220/TAAC-2026-Baseline-Tencent-Advertisement-Contest) 启发的上下文实验包 |
+| CTR Baseline   | [config/ctr_baseline](config/ctr_baseline)     | [creatorwyx/TAAC2026-CTR-Baseline](https://github.com/creatorwyx/TAAC2026-CTR-Baseline)                                                       |
+| DeepContextNet | [config/deepcontextnet](config/deepcontextnet) | [suyanli220/TAAC-2026-Baseline-Tencent-Advertisement-Contest](https://github.com/suyanli220/TAAC-2026-Baseline-Tencent-Advertisement-Contest) |
 | InterFormer    | [config/interformer](config/interformer)       | [InterFormer paper](https://arxiv.org/abs/2411.09852)                                                                                         |
 | OneTrans       | [config/onetrans](config/onetrans)             | [OneTrans paper](https://arxiv.org/abs/2510.26104)                                                                                            |
 | HyFormer       | [config/hyformer](config/hyformer)             | [HyFormer paper](https://arxiv.org/abs/2601.12681)                                                                                            |
