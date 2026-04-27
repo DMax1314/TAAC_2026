@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 import zipfile
-from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import NamedTuple
@@ -30,30 +28,10 @@ from taac2026.infrastructure.pcvr.protocol import (
     resolve_ns_groups_path,
     resolve_schema_path,
 )
+from tests.unit._pcvr_experiment_matrix import ExperimentCase, REPO_ROOT, discover_pcvr_experiment_cases, load_model_module
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-
-
-@dataclass(frozen=True, slots=True)
-class ExperimentCase:
-    path: str
-    module: str
-    name: str
-    model_class: str
-
-
-EXPERIMENT_CASES = (
-    ExperimentCase("config/baseline", "config.baseline", "pcvr_hyformer", "PCVRHyFormer"),
-    ExperimentCase("config/symbiosis", "config.symbiosis", "pcvr_symbiosis", "PCVRSymbiosis"),
-    ExperimentCase("config/ctr_baseline", "config.ctr_baseline", "pcvr_ctr_baseline", "PCVRCTRBaseline"),
-    ExperimentCase("config/deepcontextnet", "config.deepcontextnet", "pcvr_deepcontextnet", "PCVRDeepContextNet"),
-    ExperimentCase("config/interformer", "config.interformer", "pcvr_interformer", "PCVRInterFormer"),
-    ExperimentCase("config/onetrans", "config.onetrans", "pcvr_onetrans", "PCVROneTrans"),
-    ExperimentCase("config/hyformer", "config.hyformer", "pcvr_hyformer_paper", "PCVRHyFormer"),
-    ExperimentCase("config/unirec", "config.unirec", "pcvr_unirec", "PCVRUniRec"),
-    ExperimentCase("config/uniscaleformer", "config.uniscaleformer", "pcvr_uniscaleformer", "PCVRUniScaleFormer"),
-)
+EXPERIMENT_CASES = discover_pcvr_experiment_cases()
 
 
 class _ModelInput(NamedTuple):
@@ -89,17 +67,6 @@ def _dataset(user_count: int, item_count: int) -> SimpleNamespace:
         seq_domain_vocab_sizes={"seq_a": [7, 9], "seq_b": [5]},
     )
 
-
-def _load_model_module(experiment_case: ExperimentCase):
-    model_path = REPO_ROOT / experiment_case.path / "model.py"
-    spec = importlib.util.spec_from_file_location(experiment_case.module + "_model", model_path)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def _code_package_names(code_package_path: Path) -> set[str]:
     with zipfile.ZipFile(code_package_path) as archive:
         return set(archive.namelist())
@@ -122,7 +89,7 @@ def loaded_experiment(experiment_case: ExperimentCase):
 
 @pytest.fixture(scope="module")
 def loaded_model_module(experiment_case: ExperimentCase):
-    return _load_model_module(experiment_case)
+    return load_model_module(experiment_case)
 
 
 @pytest.fixture(scope="module")

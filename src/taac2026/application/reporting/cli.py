@@ -23,6 +23,7 @@ from tqdm.auto import tqdm
 
 import taac2026.infrastructure.pcvr.data as pcvr_data
 from taac2026.domain.config import EvalRequest, TrainRequest
+from taac2026.infrastructure.experiments.discovery import discover_experiment_paths
 from taac2026.infrastructure.experiments.loader import load_experiment_package
 from taac2026.infrastructure.io.files import repo_root
 from taac2026.infrastructure.pcvr.protocol import batch_to_model_input, build_pcvr_model, parse_seq_max_lens, resolve_schema_path
@@ -51,19 +52,6 @@ class BenchmarkResult:
     batch_size: int
     train_steps_per_epoch: int
     num_epochs: int
-
-
-def discover_experiment_paths(config_root: Path) -> list[str]:
-    experiment_paths: list[str] = []
-    root = config_root.expanduser().resolve()
-    for child in sorted(root.iterdir()):
-        if not child.is_dir() or child.name.startswith("__"):
-            continue
-        required = ("__init__.py", "model.py", "ns_groups.json")
-        if all((child / name).exists() for name in required):
-            experiment_paths.append(child.relative_to(root.parent).as_posix())
-    return experiment_paths
-
 
 def compute_pareto_frontier(rows: list[dict[str, Any]], *, x_key: str, y_key: str) -> list[dict[str, Any]]:
     frontier: list[dict[str, Any]] = []

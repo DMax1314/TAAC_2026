@@ -8,6 +8,10 @@ import pytest
 
 import taac2026.application.maintenance.package_training as package_training
 from taac2026.application.maintenance.package_training import BundleResult, build_training_bundle
+from tests.unit._pcvr_experiment_matrix import discover_nonbaseline_pcvr_experiment_paths
+
+
+NON_BASELINE_EXPERIMENTS = discover_nonbaseline_pcvr_experiment_paths()
 
 
 def _code_package_names(code_package_path: Path) -> set[str]:
@@ -61,16 +65,7 @@ def test_build_training_bundle_contains_runtime_sources(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "experiment",
-    [
-        "config/symbiosis",
-        "config/ctr_baseline",
-        "config/deepcontextnet",
-        "config/interformer",
-        "config/onetrans",
-        "config/hyformer",
-        "config/unirec",
-        "config/uniscaleformer",
-    ],
+    NON_BASELINE_EXPERIMENTS,
 )
 def test_build_training_bundle_contains_experiment_ns_groups(tmp_path: Path, experiment: str) -> None:
     output_dir = tmp_path / f"{Path(experiment).name}_bundle"

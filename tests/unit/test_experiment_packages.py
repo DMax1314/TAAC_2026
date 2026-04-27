@@ -1,54 +1,18 @@
 from __future__ import annotations
 
-import importlib.util
-from pathlib import Path
+import re
 
 import pytest
 import torch
+import torch._dynamo as dynamo
+from torch._dynamo.utils import counters
 
 from taac2026.infrastructure.experiments.loader import load_experiment_package
+from taac2026.infrastructure.pcvr.modeling import safe_key_padding_mask
+from tests.unit._pcvr_experiment_matrix import discover_pcvr_experiment_cases, get_experiment_case, load_model_module
 
 
-EXPERIMENTS = [
-    "config/symbiosis",
-    "config/ctr_baseline",
-    "config/deepcontextnet",
-    "config/interformer",
-    "config/onetrans",
-    "config/hyformer",
-    "config/unirec",
-    "config/uniscaleformer",
-]
-MODEL_CLASSES = {
-    "config/symbiosis": "PCVRSymbiosis",
-    "config/ctr_baseline": "PCVRCTRBaseline",
-    "config/deepcontextnet": "PCVRDeepContextNet",
-    "config/interformer": "PCVRInterFormer",
-    "config/onetrans": "PCVROneTrans",
-    "config/hyformer": "PCVRHyFormer",
-    "config/unirec": "PCVRUniRec",
-    "config/uniscaleformer": "PCVRUniScaleFormer",
-}
-EXPERIMENT_NAMES = {
-    "config/symbiosis": "pcvr_symbiosis",
-    "config/ctr_baseline": "pcvr_ctr_baseline",
-    "config/deepcontextnet": "pcvr_deepcontextnet",
-    "config/interformer": "pcvr_interformer",
-    "config/onetrans": "pcvr_onetrans",
-    "config/hyformer": "pcvr_hyformer_paper",
-    "config/unirec": "pcvr_unirec",
-    "config/uniscaleformer": "pcvr_uniscaleformer",
-}
-
-
-def _load_model_module(experiment_path: str):
-    model_path = Path(__file__).resolve().parents[2] / experiment_path / "model.py"
-    spec = importlib.util.spec_from_file_location(experiment_path.replace("/", "_") + "_model", model_path)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+EXPERIMENT_CASES = discover_pcvr_experiment_cases()
 
 
 def _sample_model_input(model_module):
@@ -78,9 +42,9 @@ def _sample_model_input(model_module):
     )
 
 
-def _make_model(experiment_path: str, model_module):
-    model_class = getattr(model_module, MODEL_CLASSES[experiment_path])
-    return model_class(
+def _make_model(experiment_case, model_module):
+    model_class = getattr(model_module, experiment_case.model_class)
+    model_kwargs = dict(
         user_int_feature_specs=[(8, 0, 1), (7, 1, 2)],
         item_int_feature_specs=[(5, 0, 1)],
         user_dense_dim=2,
@@ -100,30 +64,38 @@ def _make_model(experiment_path: str, model_module):
         user_ns_tokens=2,
         item_ns_tokens=1,
     )
+    try:
+        return model_class(**model_kwargs)
+    except ValueError as error:
+        match = re.search(r"=(\d+)\. Valid T values", str(error))
+        if "must be divisible by T" not in str(error) or match is None:
+            raise
+        model_kwargs["d_model"] = max(int(match.group(1)) * 4, model_kwargs["d_model"])
+        return model_class(**model_kwargs)
 
 
-@pytest.mark.parametrize("experiment_path", EXPERIMENTS)
-def test_new_experiment_packages_load(experiment_path: str) -> None:
-    experiment = load_experiment_package(experiment_path)
+@pytest.mark.parametrize("experiment_case", EXPERIMENT_CASES, ids=lambda case: case.path)
+def test_discovered_experiment_packages_load(experiment_case) -> None:
+    experiment = load_experiment_package(experiment_case.path)
 
-    assert experiment.name == EXPERIMENT_NAMES[experiment_path]
-    assert experiment.package_dir is not None
+    assert experiment.name == experiment_case.name
+    assert experiment.package_dir == experiment_case.package_dir
     assert experiment.default_train_args
     assert experiment.metadata["kind"] == "pcvr"
-    assert experiment.metadata["model_class"] == MODEL_CLASSES[experiment_path]
+    assert experiment.metadata["model_class"] == experiment_case.model_class
     assert (experiment.package_dir / "ns_groups.json").exists()
     assert "--ns_groups_json" in experiment.default_train_args
     assert "ns_groups.json" in experiment.default_train_args
     assert "--num_hyformer_blocks" not in experiment.default_train_args
 
 
-@pytest.mark.parametrize("experiment_path", EXPERIMENTS)
-def test_new_experiment_models_forward_and_predict(experiment_path: str) -> None:
-    model_module = _load_model_module(experiment_path)
-    if experiment_path != "config/hyformer":
+@pytest.mark.parametrize("experiment_case", EXPERIMENT_CASES, ids=lambda case: case.path)
+def test_discovered_experiment_models_forward_and_predict(experiment_case) -> None:
+    model_module = load_model_module(experiment_case)
+    if experiment_case.path not in {"config/baseline", "config/hyformer"}:
         assert not hasattr(model_module, "PCVRHyFormer")
-    assert hasattr(model_module, MODEL_CLASSES[experiment_path])
-    model = _make_model(experiment_path, model_module)
+    assert hasattr(model_module, experiment_case.model_class)
+    model = _make_model(experiment_case, model_module)
     model_input = _sample_model_input(model_module)
 
     logits = model(model_input)
@@ -142,9 +114,19 @@ def test_new_experiment_models_forward_and_predict(experiment_path: str) -> None
     assert torch.isfinite(predicted_logits).all()
 
 
-def test_symbiosis_trims_sequence_padding_before_attention() -> None:
-    model_module = _load_model_module("config/symbiosis")
-    model = _make_model("config/symbiosis", model_module)
+def test_symbiosis_enables_amp_and_compile_by_default() -> None:
+    experiment = load_experiment_package("config/symbiosis")
+
+    assert "--amp" in experiment.default_train_args
+    assert "--amp-dtype" in experiment.default_train_args
+    assert "bfloat16" in experiment.default_train_args
+    assert "--compile" in experiment.default_train_args
+
+
+def test_symbiosis_keeps_sequence_width_stable_for_compile() -> None:
+    experiment_case = get_experiment_case("config/symbiosis")
+    model_module = load_model_module(experiment_case)
+    model = _make_model(experiment_case, model_module)
     model_input = model_module.ModelInput(
         user_int_feats=torch.tensor([[1, 2, 3], [4, 0, 1]], dtype=torch.long),
         item_int_feats=torch.tensor([[1], [2]], dtype=torch.long),
@@ -172,14 +154,73 @@ def test_symbiosis_trims_sequence_padding_before_attention() -> None:
 
     sequences, masks, lengths = model._encode_sequences(model_input)
 
-    assert [tensor.shape[1] for tensor in sequences] == [3, 2]
-    assert [mask.shape[1] for mask in masks] == [3, 2]
+    assert [tensor.shape[1] for tensor in sequences] == [6, 5]
+    assert [mask.shape[1] for mask in masks] == [6, 5]
     assert [length.tolist() for length in lengths] == [[2, 3], [1, 2]]
 
 
+def test_safe_key_padding_mask_unmasks_first_position_for_fully_padded_rows() -> None:
+    mask = torch.tensor(
+        [
+            [True, True, True],
+            [False, True, True],
+        ],
+        dtype=torch.bool,
+    )
+
+    safe_mask = safe_key_padding_mask(mask)
+
+    assert torch.equal(
+        safe_mask,
+        torch.tensor(
+            [
+                [False, True, True],
+                [False, True, True],
+            ],
+            dtype=torch.bool,
+        ),
+    )
+
+
+def test_symbiosis_compile_reuses_a_single_graph_across_sequence_lengths() -> None:
+    experiment_case = get_experiment_case("config/symbiosis")
+    model_module = load_model_module(experiment_case)
+    model = _make_model(experiment_case, model_module)
+    input_a = _sample_model_input(model_module)
+    input_b = input_a._replace(
+        seq_lens={
+            "seq_a": torch.tensor([1, 2], dtype=torch.long),
+            "seq_b": torch.tensor([3, 1], dtype=torch.long),
+        },
+        seq_time_buckets={
+            "seq_a": torch.tensor([[0, 1, 2, 3], [1, 2, 3, 4]], dtype=torch.long),
+            "seq_b": torch.tensor([[0, 1, 2], [2, 1, 0]], dtype=torch.long),
+        },
+    )
+
+    dynamo.reset()
+    counters.clear()
+    compiled = torch.compile(model, backend="eager")
+    try:
+        with torch.no_grad():
+            logits_a = compiled(input_a)
+            logits_b = compiled(input_b)
+    finally:
+        graph_breaks = dict(counters["graph_break"])
+        unique_graphs = counters["stats"].get("unique_graphs", 0)
+        dynamo.reset()
+        counters.clear()
+
+    assert logits_a.shape == (2, 1)
+    assert logits_b.shape == (2, 1)
+    assert graph_breaks == {}
+    assert unique_graphs == 1
+
+
 def test_symbiosis_unified_attention_uses_context_bottleneck() -> None:
-    model_module = _load_model_module("config/symbiosis")
-    model = _make_model("config/symbiosis", model_module)
+    experiment_case = get_experiment_case("config/symbiosis")
+    model_module = load_model_module(experiment_case)
+    model = _make_model(experiment_case, model_module)
     model_input = _sample_model_input(model_module)
     observed_self_attention_lengths: list[int] = []
 
