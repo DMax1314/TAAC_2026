@@ -205,9 +205,19 @@ data/sample_1000_raw/
 比赛采用两阶段评估框架，逐步强调预测准确性、可扩展性、效率和可复现性。在第一轮（开放初赛阶段），所有团队将在隐藏测试集上根据官方评估指标进行排名，同时实施严格的防过拟合控制（如提交限制和延迟反馈）。如有必要，将实施容量感知滚动准入机制（支持多达5,000支并发团队），以确保公平的资源访问。第一轮结束时，排行榜将被冻结，前50名学术团队和前20名工业团队将仅根据官方指标表现晋级第二轮。
 第二轮在约10倍更大规模的数据集上评估模型的鲁棒性和大规模建模能力，同时设置严格的推理延迟限制，以鼓励采用GPU高效统一架构。每支决赛团队将获得相当的计算资源，且所有提交必须通过官方环境中的可复现性和规则合规性验证。
 
-## 交流讨论
+## 社区
 
 欢迎加入 TAAC2026(民间群) 交流训练、复现、实验管理和线上提交经验。QQ群：1098676137。
+
+![Alt](https://repobeats.axiom.co/api/embed/fa09d4072a7dc3cf21ed2a9fcccdd2847ce9c2f7.svg "Repobeats analytics image")
+
+<a href="https://www.star-history.com/?repos=Puiching-Memory%2FTAAC_2026&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=Puiching-Memory/TAAC_2026&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=Puiching-Memory/TAAC_2026&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=Puiching-Memory/TAAC_2026&type=date&legend=top-left" />
+ </picture>
+</a>
 
 ## 相关工作
 以下按公开可访问资料整理，优先保留能直接借鉴代码、EDA、方法说明和赛事资料的链接，持续补充。
