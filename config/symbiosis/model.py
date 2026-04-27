@@ -347,16 +347,7 @@ class PCVRSymbiosis(EmbeddingParameterMixin, nn.Module):
 		for domain in self.seq_domains:
 			raw_sequence = inputs.seq_data[domain]
 			seq_len = inputs.seq_lens[domain].to(raw_sequence.device)
-			max_len = int(seq_len.max().item()) if seq_len.numel() > 0 else 0
-			if max_len <= 0:
-				max_len = 1
-			if raw_sequence.shape[2] > max_len:
-				raw_sequence = raw_sequence[:, :, :max_len]
-				time_buckets = inputs.seq_time_buckets.get(domain)
-				if time_buckets is not None:
-					time_buckets = time_buckets[:, :max_len]
-			else:
-				time_buckets = inputs.seq_time_buckets.get(domain)
+			time_buckets = inputs.seq_time_buckets.get(domain)
 			tokens = self.sequence_tokenizers[domain](raw_sequence, time_buckets)
 			tokens = tokens + sinusoidal_positions(tokens.shape[1], self.d_model, tokens.device).unsqueeze(0)
 			time_tokens = self.time_encoders[domain](time_buckets, dtype=tokens.dtype)

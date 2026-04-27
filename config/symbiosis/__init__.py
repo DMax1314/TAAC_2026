@@ -14,6 +14,10 @@ EXPERIMENT = PCVRExperiment(
     default_train_args=(
         "--batch_size",
         "128",
+        "--amp",
+        "--amp-dtype",
+        "bfloat16",
+        "--compile",
         "--ns_tokenizer_type",
         "rankmixer",
         "--user_ns_tokens",

@@ -198,6 +198,9 @@ if [[ $# -gt 0 ]]; then
 			COMMAND="$1"
 			shift
 			;;
+		--*)
+			COMMAND="train"
+			;;
 		test)
 			echo "run.sh no longer supports 'test'; use 'uv run pytest ...' directly" >&2
 			exit 2

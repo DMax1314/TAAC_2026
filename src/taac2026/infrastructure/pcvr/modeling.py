@@ -29,12 +29,12 @@ def make_padding_mask(lengths: torch.Tensor, max_len: int) -> torch.Tensor:
 def safe_key_padding_mask(mask: torch.Tensor) -> torch.Tensor:
     if mask.numel() == 0:
         return mask
-    all_masked = mask.all(dim=1)
-    if not bool(all_masked.any()):
+    all_masked = mask.all(dim=1, keepdim=True)
+    if mask.shape[1] == 0:
         return mask
-    mask = mask.clone()
-    mask[all_masked, 0] = False
-    return mask
+    first_column = torch.zeros_like(mask)
+    first_column[:, :1] = True
+    return torch.where(all_masked, mask & ~first_column, mask)
 
 
 def masked_mean(tokens: torch.Tensor, padding_mask: torch.Tensor | None = None) -> torch.Tensor:
