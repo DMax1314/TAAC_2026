@@ -41,8 +41,7 @@ _AUTO_RECIPE_FOR_PRECISION: dict[str, str] = {
 
 _TRANSFORMER_ENGINE_INSTALL_HINT = (
     "Transformer Engine backend requires the optional 'te' dependencies. "
-    "Install them with `uv sync --locked --extra cuda128 --extra te --no-build-isolation-package transformer-engine-torch`, "
-    "and replace cuda128 with whichever profile you want to use: cuda126, cuda128, or cuda130."
+    "Install them with `uv sync --locked --extra cuda126 --extra te --no-build-isolation-package transformer-engine-torch`."
 )
 
 

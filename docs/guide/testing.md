@@ -24,8 +24,7 @@ icon: lucide/clipboard-list
 uv sync --locked --extra cpu
 
 # 如果要跑 integration / gpu / benchmark_gpu
-# 手动选择与你本机 CUDA 对应的 profile
-uv sync --locked --extra cuda128
+uv sync --locked --extra cuda126
 
 # 完整回归
 uv run pytest tests -q

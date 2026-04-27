@@ -33,7 +33,7 @@ def test_build_training_bundle_writes_single_zip_with_expected_layout(tmp_path: 
         manifest = json.loads(bundle_archive.read("bundle_manifest.json").decode("utf-8"))
 
     assert "TAAC_DATASET_PATH" in run_sh
-    assert 'CUDA_PROFILE="${TAAC_CUDA_PROFILE:-cuda128}"' in run_sh
+    assert 'CUDA_PROFILE="${TAAC_CUDA_PROFILE:-cuda126}"' in run_sh
     assert 'uv sync --locked --extra "$CUDA_PROFILE" "${UV_SYNC_EXTRA_ARGS[@]}"' in run_sh
     assert "Unsupported CUDA profile" in run_sh
     assert 'uv run taac-train --experiment "./config/baseline"' in run_sh

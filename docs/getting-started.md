@@ -6,10 +6,10 @@ icon: lucide/rocket
 
 ## 前置要求
 
-- Linux 环境，推荐 Ubuntu 24.04
-- Python 3.13（仓库支持范围为 3.10-3.13）
+- Linux 环境，推荐 Ubuntu 22.04
+- Python 3.10.20
 - [uv](https://docs.astral.sh/uv/) 包管理器
-- NVIDIA GPU + CUDA 12.6 / 12.8 / 13.0 驱动栈之一用于完整训练；GPU 测试与 GPU benchmark 通过本地 CUDA CLI 复现
+- NVIDIA GPU + CUDA 12.6 驱动栈用于完整训练；GPU 测试与 GPU benchmark 通过本地 CUDA CLI 复现
 
 !!! important "平台支持"
     仓库只支持 Linux 运行时。Windows 与 WSL 不在支持范围内。
@@ -23,15 +23,14 @@ cd TAAC_2026
 git lfs install
 git lfs pull
 
-# 安装并固定 Python 3.13
-uv python install 3.13
+# 安装并固定 Python 3.10.20
+uv python install 3.10.20
 
 # CPU-only profile：文档、unit、CPU benchmark
 uv sync --locked --extra cpu
 
 # GPU profile：训练，以及本地 integration / GPU 测试 / GPU benchmark
-# 手动选择与你本机 CUDA 对应的 profile；如需切换可改成 cuda126 / cuda128 / cuda130
-uv sync --locked --extra cuda128
+uv sync --locked --extra cuda126
 ```
 
 文档站提交的 EDA 与技术时间线图表 JSON 由 Git LFS 管理；如果你看到 `docs/assets/figures/**/*.echarts.json` 只有 pointer 文本，先重新执行 `git lfs pull`。

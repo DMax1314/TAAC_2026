@@ -136,7 +136,7 @@ def _render_run_sh(bundled_experiment_path: str) -> str:
             "workdir_expr": f"${{{DEFAULT_WORKDIR_ENV_VAR}:-$SCRIPT_DIR/runtime}}",
             "dataset_path_expr": f"${{{DEFAULT_DATASET_ENV_VAR}:-}}",
             "output_dir_expr": f"${{{DEFAULT_OUTPUT_ENV_VAR}:-$SCRIPT_DIR/outputs}}",
-            "cuda_profile_expr": f"${{{DEFAULT_CUDA_PROFILE_ENV_VAR}:-cuda128}}",
+            "cuda_profile_expr": f"${{{DEFAULT_CUDA_PROFILE_ENV_VAR}:-cuda126}}",
             "enable_te_expr": f"${{{DEFAULT_ENABLE_TE_ENV_VAR}:-0}}",
             "force_extract_expr": f"${{{DEFAULT_FORCE_EXTRACT_ENV_VAR}:-0}}",
             "bundled_experiment_path": bundled_experiment_path,

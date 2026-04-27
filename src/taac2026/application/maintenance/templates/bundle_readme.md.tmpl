@@ -20,6 +20,6 @@ uv run taac-train --experiment ./{{bundled_experiment_path}} --dataset-path "{{d
 
 可选环境变量：
 - {{workdir_env_var}}：控制 payload 解压后的工作目录。
-- {{cuda_profile_env_var}}：选择运行时 profile，支持 `cpu`、`cuda126`、`cuda128`、`cuda130`，默认 `cuda128`。
+- {{cuda_profile_env_var}}：选择运行时 profile，支持 `cpu`、`cuda126`，默认 `cuda126`。
 - {{enable_te_env_var}}=1：安装并启用 transformer-engine 额外依赖。
 - {{force_extract_env_var}}=1：强制重新解压 payload。

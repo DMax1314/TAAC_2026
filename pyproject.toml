@@ -34,18 +34,6 @@ cuda126 = [
 	"fbgemm-gpu>=1.2; platform_system == 'Linux'",
 	"torchrec>=1.0; platform_system == 'Linux'",
 ]
-cuda128 = [
-	"torch>=2.6; platform_system == 'Linux'",
-	"torchao>=0.17; platform_system == 'Linux'",
-	"fbgemm-gpu>=1.2; platform_system == 'Linux'",
-	"torchrec>=1.0; platform_system == 'Linux'",
-]
-cuda130 = [
-	"torch>=2.6; platform_system == 'Linux'",
-	"torchao>=0.17; platform_system == 'Linux'",
-	"fbgemm-gpu>=1.2; platform_system == 'Linux'",
-	"torchrec>=1.0; platform_system == 'Linux'",
-]
 te = [
 	"transformer-engine[pytorch]>=2.13; platform_system == 'Linux'",
 ]
@@ -54,19 +42,13 @@ te = [
 torch = [
 	{ index = "pytorch-cpu", marker = "platform_system == 'Linux'", extra = "cpu" },
 	{ index = "pytorch-cu126", marker = "platform_system == 'Linux'", extra = "cuda126" },
-	{ index = "pytorch-cu128", marker = "platform_system == 'Linux'", extra = "cuda128" },
-	{ index = "pytorch-cu130", marker = "platform_system == 'Linux'", extra = "cuda130" },
 ]
 torchao = [
 	{ index = "pytorch-cpu", marker = "platform_system == 'Linux'", extra = "cpu" },
 	{ index = "pytorch-cu126", marker = "platform_system == 'Linux'", extra = "cuda126" },
-	{ index = "pytorch-cu128", marker = "platform_system == 'Linux'", extra = "cuda128" },
-	{ index = "pytorch-cu130", marker = "platform_system == 'Linux'", extra = "cuda130" },
 ]
 "fbgemm-gpu" = [
 	{ index = "pytorch-cu126", marker = "platform_system == 'Linux'", extra = "cuda126" },
-	{ index = "pytorch-cu128", marker = "platform_system == 'Linux'", extra = "cuda128" },
-	{ index = "pytorch-cu130", marker = "platform_system == 'Linux'", extra = "cuda130" },
 ]
 
 [[tool.uv.index]]
@@ -84,42 +66,12 @@ name = "pytorch-cu126"
 url = "https://download.pytorch.org/whl/cu126"
 explicit = true
 
-[[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
-explicit = true
-
-[[tool.uv.index]]
-name = "pytorch-cu130"
-url = "https://download.pytorch.org/whl/cu130"
-explicit = true
-
 [tool.uv]
 environments = ["sys_platform == 'linux'"]
 conflicts = [
 	[
 		{ extra = "cpu" },
 		{ extra = "cuda126" },
-	],
-	[
-		{ extra = "cpu" },
-		{ extra = "cuda128" },
-	],
-	[
-		{ extra = "cpu" },
-		{ extra = "cuda130" },
-	],
-	[
-		{ extra = "cuda126" },
-		{ extra = "cuda128" },
-	],
-	[
-		{ extra = "cuda126" },
-		{ extra = "cuda130" },
-	],
-	[
-		{ extra = "cuda128" },
-		{ extra = "cuda130" },
 	],
 ]
 

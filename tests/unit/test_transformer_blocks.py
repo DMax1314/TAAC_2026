@@ -295,10 +295,10 @@ def test_detect_transformer_engine_availability_accepts_integer_cuda_index(monke
 def test_te_backends_raise_actionable_error_when_dependency_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(te_backend_module, "is_transformer_engine_installed", lambda: False)
 
-    with pytest.raises(RuntimeError, match="uv sync --locked --extra cuda128 --extra te --no-build-isolation-package transformer-engine-torch"):
+    with pytest.raises(RuntimeError, match="uv sync --locked --extra cuda126 --extra te --no-build-isolation-package transformer-engine-torch"):
         te_backend_module.TransformerEngineAttention(hidden_dim=8, num_heads=2)
 
-    with pytest.raises(RuntimeError, match="uv sync --locked --extra cuda128 --extra te --no-build-isolation-package transformer-engine-torch"):
+    with pytest.raises(RuntimeError, match="uv sync --locked --extra cuda126 --extra te --no-build-isolation-package transformer-engine-torch"):
         te_backend_module.TransformerEngineFeedForward(hidden_dim=8, ffn_dim=16, norm_type="layernorm")
 
 

@@ -67,14 +67,13 @@
 ## 快速开始
 
 ```bash
-uv python install 3.13
+uv python install 3.10.20
 
 # CPU-only profile: unit tests, docs, CPU benchmarks
 uv sync --locked --extra cpu
 
 # GPU profile: training, local integration / GPU tests / GPU benchmarks
-# 手动选择与你本机 CUDA 对应的 profile：cuda126 / cuda128 / cuda130
-uv sync --locked --extra cuda128
+uv sync --locked --extra cuda126
 
 # 训练 starter baseline
 uv run taac-train --experiment config/baseline
@@ -112,7 +111,7 @@ uv run taac-train --experiment config/baseline --dataset-path some_owner/some_da
 
 ### 设计原则
 
-- 使用单个参数化 `Dockerfile`，通过 `UV_EXTRA=cpu|cuda126|cuda128|cuda130` 选择依赖栈。
+- 使用单个参数化 `Dockerfile`，通过 `UV_EXTRA=cpu|cuda126` 选择依赖栈。
 - 开发服务挂载源码目录，训练/评估/搜索服务使用命名卷持久化输出与 HuggingFace 缓存。
 - 默认数据集仍然使用 HuggingFace `TAAC2026/data_sample_1000`，首次运行会在容器内自动下载。
 - GPU 服务要求宿主机已安装 NVIDIA Container Toolkit。
@@ -120,17 +119,15 @@ uv run taac-train --experiment config/baseline --dataset-path some_owner/some_da
 ### 常用命令
 
 ```bash
-# GPU 开发容器（默认 cuda128）
+# GPU 开发容器（默认 cuda126）
 docker compose --profile dev up -d --build
 docker compose --profile dev exec dev bash
 
 # 训练 baseline
 docker compose --profile train up --build
 
-# 训练其他实验包 / 切换 CUDA profile
-EXPERIMENT=interformer UV_EXTRA=cuda126 \
-BASE_IMAGE=nvidia/cuda:12.6.0-devel-ubuntu24.04 \
-docker compose --profile train up --build
+# 训练其他实验包
+EXPERIMENT=interformer docker compose --profile train up --build
 
 # 评估
 docker compose --profile evaluate up --build
@@ -146,9 +143,9 @@ docker compose --profile ci up --build
 
 | 变量 | 默认值 | 作用 |
 | --- | --- | --- |
-| `UV_EXTRA` | `cuda128` | 选择依赖 profile，可选 `cpu` / `cuda126` / `cuda128` / `cuda130` |
-| `BASE_IMAGE` | `nvidia/cuda:12.8.0-devel-ubuntu24.04` | GPU 镜像基础镜像 |
-| `CPU_BASE_IMAGE` | `python:3.13-slim-bookworm` | CI 服务基础镜像 |
+| `UV_EXTRA` | `cuda126` | 选择依赖 profile，可选 `cpu` / `cuda126` |
+| `BASE_IMAGE` | `nvidia/cuda:12.6.0-devel-ubuntu22.04` | GPU 镜像基础镜像 |
+| `PYTHON_VERSION` | `3.10.20` | 容器内 Python 版本 |
 | `EXPERIMENT` | `baseline` | 训练、评估、搜索使用的实验包 |
 | `TAAC_DATASET_PATH` | 空 | 留空时使用默认 HuggingFace 数据集；设置后覆盖为本地 parquet / 目录 / Hub 名称 |
 | `TRAIN_ARGS` | 空 | 追加给 `taac-train` 的参数 |

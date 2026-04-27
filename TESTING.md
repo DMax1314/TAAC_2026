@@ -13,8 +13,7 @@
 uv sync --locked --extra cpu
 
 # 如果要跑 integration / gpu / 本地 benchmark
-# 手动选择与你本机 CUDA 对应的 profile
-uv sync --locked --extra cuda128
+uv sync --locked --extra cuda126
 
 # 全量回归
 uv run pytest -q
@@ -118,7 +117,7 @@ uv run pytest tests/unit/test_metrics.py tests/unit/test_property_based.py -q
 
 ## CI 流程
 
-快速 CI 在 `ubuntu-latest` + Python 3.13 上运行 CPU 纯逻辑测试、CPU-safe benchmark 子集，并只对 CPU-safe 子集执行 coverage 门槛。GPU 测试与 GPU benchmark 仅保留本地 CUDA CLI 入口。文档部署只等待快速 CI 完成。
+快速 CI 在 `ubuntu-latest` + Python 3.10.20 上运行 CPU 纯逻辑测试、CPU-safe benchmark 子集，并只对 CPU-safe 子集执行 coverage 门槛。GPU 测试与 GPU benchmark 仅保留本地 CUDA CLI 入口。文档部署只等待快速 CI 完成。
 
 快速 CI：
 
@@ -132,7 +131,7 @@ uv run pytest tests/unit/test_metrics.py tests/unit/test_property_based.py -q
 
 本地 CUDA CLI 入口：
 
-1. 本地 CLI 需要显式选择与你本机 CUDA 对应的 profile：`cuda126` / `cuda128` / `cuda130`
+1. 本地 CLI 需要显式选择 CUDA 12.6 profile：`cuda126`
 2. `TAAC_GPU_ENV_REPORT_PATH=gpu-env-report.json uv run pytest tests/gpu/test_gpu_environment.py -q` — 记录 GPU compute capability、精度路由、TorchRec / fbgemm / Triton 以及可选 Transformer Engine 工具链证据
 3. `uv run --with coverage coverage run --data-file=.coverage.gpu -m pytest -m "integration or gpu" -v` — 执行 integration + gpu 标记测试
 4. `uv run pytest tests/benchmarks/gpu -m benchmark_gpu --benchmark-json=benchmark-result.json -v` — 执行 GPU benchmark

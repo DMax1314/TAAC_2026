@@ -5,19 +5,19 @@ x-gpu-build: &gpu-build
   dockerfile: Dockerfile
   target: app
   args:
-    BASE_IMAGE: ${BASE_IMAGE:-nvidia/cuda:12.8.0-devel-ubuntu24.04}
-    PYTHON_VERSION: "3.13"
-    UV_EXTRA: cuda128
+    BASE_IMAGE: ${BASE_IMAGE:-nvidia/cuda:12.6.0-devel-ubuntu22.04}
+    PYTHON_VERSION: "3.10.20"
+    UV_EXTRA: cuda126
     ENABLE_TE: ${ENABLE_TE:-0}
 
 x-gpu-env: &gpu-env
-  UV_EXTRA: cuda128
+  UV_EXTRA: cuda126
   ENABLE_TE: ${ENABLE_TE:-0}
   HF_HOME: /root/.cache/huggingface
   TAAC_OUTPUT_DIR: /workspace/outputs
-  EXPECTED_BASE_IMAGE: nvidia/cuda:12.8.0-devel-ubuntu24.04
-  EXPECTED_PYTHON_VERSION: "3.13"
-  EXPECTED_UV_EXTRA: cuda128
+  EXPECTED_BASE_IMAGE: nvidia/cuda:12.6.0-devel-ubuntu22.04
+  EXPECTED_PYTHON_VERSION: "3.10.20"
+  EXPECTED_UV_EXTRA: cuda126
 
 x-gpu-service: &gpu-service
   build: *gpu-build

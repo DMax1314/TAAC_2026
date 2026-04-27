@@ -26,7 +26,7 @@ def _has_cuda_driver_runtime() -> bool:
 
 
 @lru_cache(maxsize=1)
-def _missing_cuda128_profile_packages() -> tuple[str, ...]:
+def _missing_cuda126_profile_packages() -> tuple[str, ...]:
     missing: list[str] = []
     for module_name in ("torchrec", "fbgemm_gpu"):
         if importlib.util.find_spec(module_name) is None:
@@ -41,11 +41,11 @@ def benchmark_device() -> torch.device:
 
 @pytest.fixture
 def require_torchrec_runtime() -> None:
-    missing_packages = _missing_cuda128_profile_packages()
+    missing_packages = _missing_cuda126_profile_packages()
     if missing_packages:
         missing_rendered = ", ".join(missing_packages)
         pytest.skip(
-            "TorchRec-backed CPU benchmarks require a CUDA profile (cuda126/cuda128/cuda130); missing packages: "
+            "TorchRec-backed CPU benchmarks require the CUDA profile cuda126; missing packages: "
             f"{missing_rendered}"
         )
     if not _has_cuda_driver_runtime():

@@ -43,10 +43,10 @@ if [[ "$ENABLE_TE" == "1" ]]; then
 fi
 
 case "$CUDA_PROFILE" in
-    cpu|cuda126|cuda128|cuda130)
+    cpu|cuda126)
         ;;
     *)
-        echo "Unsupported CUDA profile '$CUDA_PROFILE'. Expected one of: cpu, cuda126, cuda128, cuda130." >&2
+        echo "Unsupported CUDA profile '$CUDA_PROFILE'. Expected one of: cpu, cuda126." >&2
         exit 2
         ;;
 esac

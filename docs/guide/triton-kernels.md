@@ -37,7 +37,7 @@ icon: lucide/cpu
 
 ```bash
 # 仅同步运行 kernel 测试需要的环境
-uv sync --locked --extra cuda128
+uv sync --locked --extra cuda126
 
 # 运行 Triton kernel 正确性测试
 uv run pytest tests/gpu/test_triton_kernels.py -q
@@ -49,7 +49,7 @@ uv run pytest tests/unit/test_transformer_blocks.py -q
 如果你要验证 TE 后端而不是 Triton 路径，先补齐可选依赖：
 
 ```bash
-uv sync --locked --extra cuda128 --extra te --no-build-isolation-package transformer-engine-torch
+uv sync --locked --extra cuda126 --extra te --no-build-isolation-package transformer-engine-torch
 uv run pytest tests/gpu/test_gpu_environment.py -q
 ```
 

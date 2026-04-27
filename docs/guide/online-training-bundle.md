@@ -104,7 +104,7 @@ bash run.sh --compile --amp --amp-dtype bfloat16
 `run.sh` 内部执行的是：
 
 ```bash
-uv sync --locked --extra "${TAAC_CUDA_PROFILE:-cuda128}"
+uv sync --locked --extra "${TAAC_CUDA_PROFILE:-cuda126}"
 uv run taac-train --experiment ./config/baseline --dataset-path "$TAAC_DATASET_PATH" --run-dir "$TAAC_OUTPUT_DIR"
 ```
 
@@ -117,7 +117,7 @@ uv run taac-train --experiment ./config/baseline --dataset-path "$TAAC_DATASET_P
 | `TAAC_DATASET_PATH` | 是 | 线上数据路径，支持 parquet 文件或数据缓存目录 |
 | `TAAC_OUTPUT_DIR` | 否 | 覆盖训练产物输出目录，默认写到 zip 同级 `outputs/` |
 | `TAAC_BUNDLE_WORKDIR` | 否 | 控制 payload 的解压目录 |
-| `TAAC_CUDA_PROFILE` | 否 | 选择 `cpu` / `cuda126` / `cuda128` / `cuda130`，默认 `cuda128` |
+| `TAAC_CUDA_PROFILE` | 否 | 选择 `cpu` / `cuda126`，默认 `cuda126` |
 | `TAAC_ENABLE_TE` | 否 | 设为 `1` 时安装 `transformer-engine` 额外依赖 |
 | `TAAC_FORCE_EXTRACT` | 否 | 设为 `1` 时强制重新解压 `runtime_payload.tar.gz` |
 

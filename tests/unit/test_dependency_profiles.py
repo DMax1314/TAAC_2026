@@ -3,15 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python 3.10 fallback
-    import tomli as tomllib
+import tomli
 
 
 def test_python_floor_and_cuda_profiles_are_declared() -> None:
     pyproject_path = Path(__file__).resolve().parents[2] / "pyproject.toml"
-    config = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+    config = tomli.loads(pyproject_path.read_text(encoding="utf-8"))
 
     assert config["project"]["requires-python"] == ">=3.10,<3.14"
     assert config["tool"]["ruff"]["target-version"] == "py310"
@@ -32,17 +29,19 @@ def test_python_floor_and_cuda_profiles_are_declared() -> None:
     assert all("torchrec" not in dependency for dependency in cpu_dependencies)
     assert all("fbgemm-gpu" not in dependency for dependency in cpu_dependencies)
 
-    for profile_name in ("cuda126", "cuda128", "cuda130"):
+    for profile_name in ("cuda126",):
         profile_dependencies = optional_dependencies[profile_name]
         assert any(dependency.startswith("torch>=") for dependency in profile_dependencies)
         assert any(dependency.startswith("torchao>=") for dependency in profile_dependencies)
         assert any(dependency.startswith("torchrec>=") for dependency in profile_dependencies)
         assert any(dependency.startswith("fbgemm-gpu>=") for dependency in profile_dependencies)
+    assert "cuda128" not in optional_dependencies
+    assert "cuda130" not in optional_dependencies
 
 
 def test_cuda_sources_are_scoped_to_matching_extras() -> None:
     pyproject_path = Path(__file__).resolve().parents[2] / "pyproject.toml"
-    config = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+    config = tomli.loads(pyproject_path.read_text(encoding="utf-8"))
 
     uv_config = config["tool"]["uv"]
     sources = uv_config["sources"]
@@ -58,25 +57,10 @@ def test_cuda_sources_are_scoped_to_matching_extras() -> None:
             "marker": "platform_system == 'Linux'",
             "extra": "cuda126",
         },
-        {
-            "index": "pytorch-cu128",
-            "marker": "platform_system == 'Linux'",
-            "extra": "cuda128",
-        },
-        {
-            "index": "pytorch-cu130",
-            "marker": "platform_system == 'Linux'",
-            "extra": "cuda130",
-        },
     ]
     expected_cuda_entries = expected_entries[1:]
     expected_conflicts = [
         [{"extra": "cpu"}, {"extra": "cuda126"}],
-        [{"extra": "cpu"}, {"extra": "cuda128"}],
-        [{"extra": "cpu"}, {"extra": "cuda130"}],
-        [{"extra": "cuda126"}, {"extra": "cuda128"}],
-        [{"extra": "cuda126"}, {"extra": "cuda130"}],
-        [{"extra": "cuda128"}, {"extra": "cuda130"}],
     ]
 
     for package_name in ("torch", "torchao"):
