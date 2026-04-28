@@ -130,6 +130,22 @@ outputs/inference_bundles/<experiment>_inference_bundle/
 | `TAAC_CODE_PACKAGE`   | 可选，指向非默认位置的 `code_package.zip` |
 | `TAAC_FORCE_EXTRACT`  | 设为 `1` 时强制重新解压代码包             |
 
+## 与官方参考 Baseline 的关系
+
+官方参考 baseline 采用多文件上传思路：训练端包含 `run.sh`、训练入口、训练器、工具函数、数据处理、模型定义与 `ns_groups.json`；评分端包含 `infer.py`、数据处理与模型定义。这些参考脚本不作为当前仓库的长期打包源。
+
+当前 bundle 把同样的比赛契约收敛成双文件上传：
+
+| 官方参考契约                                                                                                       | 当前仓库实现                                                                    |
+| ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------- |
+| 训练入口必须是 `run.sh`                                                                                            | 训练 bundle 顶层仍是 `run.sh`                                                   |
+| 训练读取 `TRAIN_DATA_PATH`、`TRAIN_CKPT_PATH`、`TRAIN_LOG_PATH`、`TRAIN_TF_EVENTS_PATH`                            | 顶层 `run.sh` 同时支持官方变量和 `TAAC_*` 变量                                  |
+| checkpoint 目录以 `global_step` 开头，并携带 `model.pt`、`schema.json`、`train_config.json`、可选 `ns_groups.json` | 共享 PCVR trainer 写出同一组侧车文件，推理复用这些文件重建模型                  |
+| 评分入口必须是 `infer.py`，读取 `MODEL_OUTPUT_PATH`、`EVAL_DATA_PATH`、`EVAL_RESULT_PATH`                          | 推理 bundle 顶层仍是 `infer.py`，内部解压 `code_package.zip` 后转调共享推理入口 |
+| `predictions.json` 格式为 `{"predictions": {"user_id": probability}}`                                              | 共享推理入口保持同一输出格式                                                    |
+
+如果需要复查官方 baseline 逻辑，请看 [Baseline](../experiments/baseline.md) 的官方参考契约总结；实际上传始终从 `config/<experiment>/` 生成 bundle。
+
 ## pyproject 依赖安装
 
 训练 `run.sh` 和生成的推理 `infer.py` 在 bundle 的 Python 运行模式下，会在转调仓库入口前从解压后的 `project/pyproject.toml` 安装项目依赖。这样后续接入平台环境未预装的新库时，只需要把依赖写进项目 `pyproject.toml`，打包后入口脚本会直接复用同一份依赖声明。
@@ -147,13 +163,13 @@ python infer.py
 
 相关变量：
 
-| 变量                        | 作用                                                            |
-| --------------------------- | --------------------------------------------------------------- |
-| `TAAC_INSTALL_PROJECT_DEPS` | 覆盖默认安装策略；设为 `0` 禁用，设为 `1` 强制启用              |
+| 变量                        | 作用                                                             |
+| --------------------------- | ---------------------------------------------------------------- |
+| `TAAC_INSTALL_PROJECT_DEPS` | 覆盖默认安装策略；设为 `0` 禁用，设为 `1` 强制启用               |
 | `TAAC_PIP_INDEX_URL`        | pip index；默认 `https://mirrors.cloud.tencent.com/pypi/simple/` |
-| `TAAC_PIP_EXTRA_ARGS`       | 传给 `python -m pip install .` 的额外参数                       |
-| `TAAC_PIP_EXTRAS`           | 可选，空格分隔的 project extras，例如 `cuda126`                 |
-| `TAAC_SKIP_PIP_INSTALL`     | 设为 `1` 时跳过入口脚本的项目依赖安装                           |
+| `TAAC_PIP_EXTRA_ARGS`       | 传给 `python -m pip install .` 的额外参数                        |
+| `TAAC_PIP_EXTRAS`           | 可选，空格分隔的 project extras，例如 `cuda126`                  |
+| `TAAC_SKIP_PIP_INSTALL`     | 设为 `1` 时跳过入口脚本的项目依赖安装                            |
 
 线上环境已验证腾讯 PyPI 在继承平台代理时可达，因此入口脚本会保留平台注入的小写代理变量。核心 GPU 依赖仍不建议在任务启动阶段覆盖安装；如果 `pyproject.toml` 新增额外库，请优先把 Torch、CUDA、FBGEMM、TorchRec 继续交给平台环境或基础镜像。若需要完全离线运行，请设置 `TAAC_SKIP_PIP_INSTALL=1`，或提前把依赖打进平台镜像。
 

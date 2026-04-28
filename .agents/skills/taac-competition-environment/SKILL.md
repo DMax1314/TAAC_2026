@@ -102,6 +102,19 @@ The package command calls `taac-package-train`, which writes:
 
 The zip contains `project/.taac_training_manifest.json`, `pyproject.toml`, `uv.lock`, `README.md` when present, `src/taac2026`, and only the selected experiment package under `config/<experiment>`. It must not include tests, docs, or unrelated experiment packages.
 
+## Official Baseline Snapshots
+
+The competition reference snapshots may appear as top-level source drops:
+
+- self-contained training baseline with `run.sh`, a training entrypoint, a trainer, utilities, dataset code, model code, and `ns_groups.json`.
+- self-contained final scoring baseline with `infer.py`, dataset code, and model code.
+
+Treat these sources as disposable references. Extract the contracts, update repository docs/skills without naming source-drop paths, and delete the source drops when finished. Do not include source drops in generated bundles; build from `config/<experiment>/` with the packaging CLIs instead.
+
+The official training snapshot reads `TRAIN_DATA_PATH`, `TRAIN_CKPT_PATH`, `TRAIN_LOG_PATH`, and `TRAIN_TF_EVENTS_PATH`. The official scoring snapshot reads `MODEL_OUTPUT_PATH`, `EVAL_DATA_PATH`, and `EVAL_RESULT_PATH`, then writes `predictions.json` under `EVAL_RESULT_PATH` with the shape `{"predictions": {user_id: probability}}`.
+
+The important portable contract between training and scoring is the checkpoint directory. It must contain `model.pt`, `schema.json`, `train_config.json`, and `ns_groups.json` when grouping was enabled. Evaluation rebuilds the model from these sidecars and loads the state dict strictly, so missing or stale sidecars usually cause shape mismatches rather than a recoverable warning.
+
 ## Online Conda + pip / Python Runtime
 
 Online bundle mode must not depend on `uv`.
