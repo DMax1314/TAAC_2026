@@ -1,0 +1,108 @@
+name: taac2026
+
+x-gpu-build: &gpu-build
+  context: .
+  dockerfile: docker/Dockerfile
+  target: app
+  args:
+    BASE_IMAGE: ${BASE_IMAGE:-nvidia/cuda:12.6.0-devel-ubuntu22.04}
+    PYTHON_VERSION: "3.10.20"
+    UV_EXTRA: cuda126
+
+x-gpu-env: &gpu-env
+  UV_EXTRA: cuda126
+  HF_HOME: /root/.cache/huggingface
+  TAAC_OUTPUT_DIR: /workspace/outputs
+  TAAC_SKIP_UV_SYNC: "1"
+  EXPECTED_BASE_IMAGE: nvidia/cuda:12.6.0-devel-ubuntu22.04
+  EXPECTED_PYTHON_VERSION: "3.10.20"
+  EXPECTED_UV_EXTRA: cuda126
+
+x-gpu-service: &gpu-service
+  build: *gpu-build
+  ipc: host
+  init: true
+  gpus: all
+  working_dir: /workspace
+  environment: *gpu-env
+  volumes:
+    - hf-cache:/root/.cache/huggingface
+    - uv-cache:/root/.cache/uv
+    - train-outputs:/workspace/outputs
+  tmpfs:
+    - /tmp
+  restart: "no"
+
+services:
+  dev:
+    <<: *gpu-service
+    profiles: [dev]
+    stdin_open: true
+    tty: true
+    environment:
+      <<: *gpu-env
+      AUTO_SYNC: ${AUTO_SYNC:-1}
+    volumes:
+      - .:/workspace
+      - hf-cache:/root/.cache/huggingface
+      - uv-cache:/root/.cache/uv
+      - train-outputs:/workspace/outputs
+    command: ["/bin/bash"]
+
+  train:
+    <<: *gpu-service
+    profiles: [train]
+    environment:
+      <<: *gpu-env
+      TAAC_DATASET_PATH: ${TAAC_DATASET_PATH:-}
+      TAAC_SCHEMA_PATH: ${TAAC_SCHEMA_PATH:-}
+      TAAC_EXPERIMENT: config/${EXPERIMENT:-baseline}
+      EXPERIMENT: ${EXPERIMENT:-baseline}
+      TRAIN_ARGS: ${TRAIN_ARGS:-}
+    command:
+      - /bin/bash
+      - -lc
+      - >-
+        bash run.sh train
+        $${TRAIN_ARGS}
+
+  evaluate:
+    <<: *gpu-service
+    profiles: [evaluate]
+    environment:
+      <<: *gpu-env
+      TAAC_DATASET_PATH: ${TAAC_DATASET_PATH:-}
+      TAAC_SCHEMA_PATH: ${TAAC_SCHEMA_PATH:-}
+      TAAC_EXPERIMENT: config/${EXPERIMENT:-baseline}
+      EXPERIMENT: ${EXPERIMENT:-baseline}
+      EVAL_ARGS: ${EVAL_ARGS:-}
+    command:
+      - /bin/bash
+      - -lc
+      - >-
+        bash run.sh val
+        $${EVAL_ARGS}
+
+  search:
+    <<: *gpu-service
+    profiles: [search]
+    environment:
+      <<: *gpu-env
+      EXPERIMENT: ${EXPERIMENT:-baseline}
+      TRIALS: ${TRIALS:-20}
+      SEARCH_ARGS: ${SEARCH_ARGS:-}
+    command:
+      - /bin/bash
+      - -lc
+      - >-
+        uv run taac-search --experiment config/$$EXPERIMENT
+        --trials $${TRIALS}
+        $${SEARCH_ARGS}
+
+volumes:
+  train-outputs:
+    name: taac2026-train-outputs
+  hf-cache:
+    name: taac2026-hf-cache
+  uv-cache:
+    name: taac2026-uv-cache
