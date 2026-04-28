@@ -96,6 +96,7 @@ icon: lucide/book-open
 | 2025 | RecGPT-V2  | 层级多 Agent + 约束 RL，淘宝部署 CTR +2.98% (阿里)                                |
 | 2025 | xGR        | 面向生成式推荐的高效服务系统，3.49x 吞吐提升                                      |
 | 2025 | OxygenREC  | 快慢思考 + 指令跟随生成推荐，统一多场景训练一次全场景部署                          |
+| 2026 | TencentGR / TAAC 2025 | 腾讯广告算法大赛官方论文，发布全模态广告生成式推荐数据集、基线与 Top 方案总结；[论文](taac2025.md) |
 | 2026 | HiGR       | 层级规划 + 多目标偏好对齐的生成式 Slate 推荐                                      |
 
 ### 开放挑战
@@ -129,3 +130,4 @@ icon: lucide/book-open
 - Sun et al. *xGR: Efficient Generative Recommendation Serving at Scale.* arXiv 2512.11529
 - Hao et al. *OxygenREC: An Instruction-Following Generative Framework for E-commerce Recommendation.* arXiv 2512.22386
 - Pang et al. *HiGR: Efficient Generative Slate Recommendation via Hierarchical Planning and Multi-Objective Preference Alignment.* arXiv 2512.24787
+- Pan et al. *The Tencent Advertising Algorithm Challenge 2025: All-Modality Generative Recommendation.* arXiv 2604.04976

@@ -29,19 +29,16 @@ if [[ -n "${actual_base_image}" && "${actual_base_image}" != "${expected_base_im
     exit 66
 fi
 
-if command -v nvidia-smi >/dev/null 2>&1; then
-    cuda_version="$(nvidia-smi --query-gpu=cuda_version --format=csv,noheader | head -n 1 | tr -d '[:space:]')"
+if command -v nvcc >/dev/null 2>&1; then
+    cuda_version="$(nvcc --version | sed -n 's/.*release \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -n 1 | tr -d '[:space:]')"
     if [[ -n "${cuda_version}" && "${cuda_version}" != 12.6* ]]; then
-        echo "Unsupported CUDA runtime: expected 12.6.x, got ${cuda_version}" >&2
+        echo "Unsupported CUDA toolkit: expected 12.6.x, got ${cuda_version}" >&2
         exit 67
     fi
 fi
 
 if [[ "${AUTO_SYNC:-1}" == "1" ]]; then
     sync_args=(--locked --extra "${actual_uv_extra}")
-    if [[ "${ENABLE_TE:-0}" == "1" ]]; then
-        sync_args+=(--extra te)
-    fi
     uv sync "${sync_args[@]}"
 fi
 

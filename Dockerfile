@@ -6,7 +6,6 @@ FROM ${BASE_IMAGE} AS base
 ARG BASE_IMAGE
 ARG PYTHON_VERSION=3.10.20
 ARG UV_EXTRA=cuda126
-ARG ENABLE_TE=0
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PATH=/root/.local/bin:${PATH} \
@@ -39,8 +38,6 @@ FROM base AS deps
 COPY pyproject.toml uv.lock README.md ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-install-project --extra ${UV_EXTRA}
-RUN --mount=type=cache,target=/root/.cache/uv \
-    if [ "${ENABLE_TE}" = "1" ]; then uv sync --locked --no-install-project --extra ${UV_EXTRA} --extra te; fi
 
 FROM base AS app
 
@@ -51,8 +48,6 @@ COPY docker/entrypoint.sh /usr/local/bin/taac-entrypoint
 RUN chmod +x /usr/local/bin/taac-entrypoint
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --extra ${UV_EXTRA}
-RUN --mount=type=cache,target=/root/.cache/uv \
-    if [ "${ENABLE_TE}" = "1" ]; then uv sync --locked --extra ${UV_EXTRA} --extra te; fi
 
 ENTRYPOINT ["taac-entrypoint"]
 CMD ["/bin/bash"]

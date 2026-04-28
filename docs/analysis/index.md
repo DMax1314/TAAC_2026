@@ -6,13 +6,27 @@ icon: lucide/chart-column
 
 本分区提供 TAAC 2026 数据集的自动化探索性分析，以及从上届竞赛论文中提炼的数据层面经验。
 
-所有统计数据和图表均由 `taac-dataset-eda` CLI 工具自动生成；如需刷新文档站展示，请在本地重跑后把 `docs/assets/figures/eda/` 下的 JSON 一并提交：
+当前 EDA CLI 已区分两类输入：
+
+- `test`：带 `label_type` / `label_action_type` 的 sample 或离线测试数据，默认写出 `docs/assets/figures/eda/` 图表资产。
+- `online`：线上正式 parquet 数据，默认写出 `outputs/reports/online_dataset_eda.json` 和 `outputs/reports/online_dataset_eda_charts/`，不会覆盖文档图表。单文件工具改为“编辑脚本顶部常量后直接运行”，默认按小 batch 做全量流式扫描；如果只想做局部抽样，请直接修改脚本内的 `ONLINE_EDA_MAX_ROWS` 或 `ONLINE_EDA_SAMPLE_PERCENT`。
+
+若你在本地重跑 sample/test 流程，建议显式传入 `demo_1000.parquet` 与同目录 `schema.json`，并把 `docs/assets/figures/eda/` 下刷新后的 JSON 一并提交：
 
 ```bash
-uv run taac-dataset-eda                            # 默认 sample 数据集
-uv run taac-dataset-eda --dataset path/to/data     # 自定义数据路径
-uv run taac-dataset-eda --json-path figures/eda/stats.json  # 同时输出 JSON
-uv run taac-bench-report                           # 生成性能基准图表 JSON
+uv run taac-dataset-eda \
+    --dataset-path data/sample_1000_raw/demo_1000.parquet \
+    --schema-path data/sample_1000_raw/schema.json
+
+uv run taac-dataset-eda \
+    --dataset-path path/to/demo_1000.parquet \
+    --schema-path path/to/schema.json \
+    --output outputs/reports/dataset_eda.json
+
+# 先编辑 tools/run_online_dataset_eda.sh 顶部的 ONLINE_EDA_* 配置，再直接运行
+bash tools/run_online_dataset_eda.sh
+
+uv run taac-bench-report --output outputs/reports/benchmark_report.json  # 写出占位 benchmark 报告
 ```
 
 ## 文档索引
@@ -20,33 +34,13 @@ uv run taac-bench-report                           # 生成性能基准图表 JS
 | 文档                                 | 说明                                           |
 | ------------------------------------ | ---------------------------------------------- |
 | [数据集 EDA 报告](dataset-eda.md)    | 本届数据集的自动化分析报告（含图表）           |
-| [性能基准](benchmarks.md)            | benchmark JSON 到 ECharts 图表的自动化汇总页   |
+| [性能基准](benchmarks.md)            | 当前 benchmark 占位报告入口说明                 |
 | [评估指标分析](evaluation.md)        | 评估协议解读与指标优化方向                     |
 | [TAAC 2025 论文洞察](taac2025-insights.md) | TAAC 2025 论文关键经验提炼 |
 
-## 编程接口
+## 当前状态
 
-分析功能也可作为 Python API 直接调用：
-
-```python
-from taac2026.infrastructure.io.datasets import iter_dataset_rows
-from taac2026.reporting.dataset_eda import (
-    classify_columns,
-    compute_column_stats,
-    compute_label_distribution,
-    compute_sequence_lengths,
-    echarts_label_distribution,
-)
-
-rows = list(iter_dataset_rows("TAAC2026/data_sample_1000"))
-groups = classify_columns(list(rows[0].keys()))
-label_dist = compute_label_distribution(iter(rows))
-
-# 生成 ECharts JSON 配置（可直接写入 .echarts.json 文件）
-import json
-chart_opt = echarts_label_distribution(label_dist)
-print(json.dumps(chart_opt, ensure_ascii=False, indent=2))
-```
+当前仓库维护的稳定入口是 CLI 和 `tools/run_online_dataset_eda.sh`。Python 级 EDA 逻辑以 CLI 为准，不再单独承诺额外的公共 API。
 
 ## 快速背景
 

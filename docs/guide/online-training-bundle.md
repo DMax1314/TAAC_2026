@@ -2,184 +2,215 @@
 icon: lucide/package
 ---
 
-# 线上训练打包
+# 线上 Bundle 上传指南
 
-当线上平台要求你手动上传代码和启动脚本时，推荐先用 `taac-package-train` 生成单个 zip。
-这个命令会把指定实验包和训练所需的最小运行时裁剪出来，避免把 tests、文档、搜索 CLI、其他实验包一并上传。
+本页只说明线上训练和评测推理需要上传什么、怎么生成、运行时要配置哪些环境变量。打包在本地完成；线上运行时默认复用平台已经激活的 Python/Conda 环境，不在线执行 `uv sync`。
 
-## 适用场景
+仓库提供两类双文件 bundle：
 
-- 线上训练环境只接受单个压缩包上传
-- 你希望每次只发布一个实验包，而不是整个仓库
-- 平台提供统一的数据挂载路径和 bash 入口
+| 场景 | 本地生成命令                | 上传入口   | 同目录代码包       |
+| ---- | --------------------------- | ---------- | ------------------ |
+| 训练 | `uv run taac-package-train` | `run.sh`   | `code_package.zip` |
+| 推理 | `uv run taac-package-infer` | `infer.py` | `code_package.zip` |
 
-## 生成 zip
+上传时保持入口脚本和 `code_package.zip` 位于同一目录。不要把整个输出目录再次压成单个 zip。
+
+## 训练 Bundle
+
+训练上传目录的顶层结构固定为：
+
+```text
+<training_bundle>/
+├── run.sh
+└── code_package.zip
+```
+
+生成 baseline bundle：
 
 ```bash
-# 使用默认命名
-uv run taac-package-train --experiment config/baseline
-
-# 自定义 zip 文件名
-uv run taac-package-train --experiment config/interformer --bundle-name interformer-round1
-
-# 覆盖已有产物
-uv run taac-package-train --experiment config/interformer --output /tmp/interformer-online.zip --force
+uv run taac-package-train --experiment config/baseline --force
 ```
 
-默认输出目录：
+指定输出目录：
+
+```bash
+uv run taac-package-train --experiment config/interformer \
+    --output-dir outputs/training_bundles/interformer_training_bundle \
+    --force
+```
+
+默认输出目录为：
 
 ```text
-outputs/training_bundles/
+outputs/training_bundles/<experiment>_training_bundle/
 ```
 
-例如 baseline 会生成：
+`run.sh` 只作为运行入口使用。`bash run.sh package` 和 `bash run.sh package-infer` 不是有效命令；打包请使用上面的维护 CLI。
+
+## 训练运行
+
+线上平台进入上传目录后执行 `run.sh`。运行前至少提供训练数据路径；schema 和输出目录建议显式指定。
+
+```bash
+export TAAC_DATASET_PATH=/path/to/train.parquet_or_dataset_dir
+export TAAC_SCHEMA_PATH=/path/to/schema.json
+export TAAC_OUTPUT_DIR=/path/to/output
+export TAAC_RUNNER=python
+
+bash run.sh --device cuda
+```
+
+短 smoke 可以使用 CPU 和更小 batch：
+
+```bash
+bash run.sh --num_epochs 1 --batch_size 8 --device cpu
+```
+
+Bundle 模式由同目录的 `code_package.zip` 自动触发。脚本会解压代码包，设置 `PYTHONPATH=<workdir>/project/src:<workdir>/project`，读取 `project/.taac_training_manifest.json` 中的实验包路径，然后调用训练 CLI。
+
+常用训练环境变量：
+
+| 变量                                     | 作用                                                 |
+| ---------------------------------------- | ---------------------------------------------------- |
+| `TAAC_DATASET_PATH` / `TRAIN_DATA_PATH`  | parquet 文件或包含 parquet 的目录                    |
+| `TAAC_SCHEMA_PATH` / `TRAIN_SCHEMA_PATH` | `schema.json` 路径；不在数据同目录时需要设置         |
+| `TAAC_OUTPUT_DIR` / `TRAIN_CKPT_PATH`    | checkpoint、日志和训练输出目录                       |
+| `TAAC_RUNNER`                            | 线上保持 `python`；本地仓库模式默认是 `uv`           |
+| `TAAC_PYTHON`                            | 指定 Python 解释器，例如平台 Conda 环境中的 `python` |
+| `TAAC_EXPERIMENT`                        | 覆盖 bundle manifest 中的实验包；通常不需要设置      |
+| `TAAC_BUNDLE_WORKDIR`                    | 控制代码包解压目录                                   |
+| `TAAC_CODE_PACKAGE`                      | 指向非默认位置的 `code_package.zip`                  |
+| `TAAC_FORCE_EXTRACT`                     | 设为 `1` 时强制重新解压代码包                        |
+
+## 推理 Bundle
+
+评测阶段入口脚本必须命名为 `infer.py`。推理上传目录的顶层结构固定为：
 
 ```text
-outputs/training_bundles/baseline-train-bundle.zip
+<inference_bundle>/
+├── infer.py
+└── code_package.zip
 ```
 
-## 压缩包结构
+生成 baseline 推理 bundle：
 
-生成的 zip 顶层包含：
+```bash
+uv run taac-package-infer --experiment config/baseline --force
+```
+
+指定输出目录：
+
+```bash
+uv run taac-package-infer --experiment config/baseline \
+    --output-dir outputs/inference_bundles/baseline_inference_bundle \
+    --force
+```
+
+默认输出目录为：
 
 ```text
-baseline-train-bundle.zip
-├── README.md
-├── bundle_manifest.json
-├── run.sh
-└── runtime_payload.tar.gz
+outputs/inference_bundles/<experiment>_inference_bundle/
 ```
 
-其中：
+生成后的 `infer.py` 会读取同目录的 `code_package.zip`，默认把代码解压到 `USER_CACHE_PATH` 下的稳定缓存子目录。随后它会读取 `project/.taac_inference_manifest.json`，设置默认 `TAAC_EXPERIMENT`，再转调仓库内的推理入口。
 
-- `run.sh` 负责解压 payload、安装依赖并执行训练
-- `runtime_payload.tar.gz` 里包含最小训练源码和目标实验包
-- `bundle_manifest.json` 记录实验路径、环境变量名和 payload 统计信息
+这样做是为了兼容线上评测目录只读的情况，并且只依赖官方文档明确给出的可写目录。如果运行环境没有提供 `USER_CACHE_PATH`，请显式设置 `TAAC_BUNDLE_WORKDIR`，不要依赖系统临时目录。
 
-其中 `runtime_payload.tar.gz` 解压后还会包含 `pyproject.toml` 与 `uv.lock`，用于保持与仓库一致的锁定依赖解析。
+常用推理环境变量：
 
-payload 内部大致结构如下：
+| 变量                  | 作用                                      |
+| --------------------- | ----------------------------------------- |
+| `MODEL_OUTPUT_PATH`   | 已发布 checkpoint 目录                    |
+| `EVAL_DATA_PATH`      | 评测测试集目录                            |
+| `EVAL_RESULT_PATH`    | 输出 `predictions.json` 的目录            |
+| `TAAC_SCHEMA_PATH`    | 可选，显式覆盖 schema 路径                |
+| `TAAC_EXPERIMENT`     | 可选，覆盖 bundle manifest 中的实验包     |
+| `TAAC_BUNDLE_WORKDIR` | 可选，控制代码包解压目录                  |
+| `TAAC_CODE_PACKAGE`   | 可选，指向非默认位置的 `code_package.zip` |
+| `TAAC_FORCE_EXTRACT`  | 设为 `1` 时强制重新解压代码包             |
+
+## 代码包内容
+
+`code_package.zip` 解压后是一个 `project/` 目录。训练 bundle 通常包含：
 
 ```text
 project/
-├── config/
-│   └── baseline/
+├── .taac_training_manifest.json
 ├── pyproject.toml
 ├── uv.lock
-└── src/
-    └── taac2026/
+├── README.md
+├── tools/
+│   └── log_host_device_info.sh
+├── src/
+│   └── taac2026/
+└── config/
+    ├── __init__.py
+    └── <selected_experiment>/
         ├── __init__.py
-        ├── application/
-        │   ├── __init__.py
-        │   └── training/
-        ├── domain/
-        └── infrastructure/
+        ├── model.py
+        └── ns_groups.json
 ```
 
-这里不会包含：
+推理 bundle 使用同样的最小代码包结构，但 manifest 文件名是 `.taac_inference_manifest.json`，并且顶层入口是上传目录中的 `infer.py`。
 
-- `tests/`
-- `docs/`
-- `site/`
-- 其他 `config/<name>/`
-- 搜索和评估 CLI
+代码包只带共享 runtime 和选中的实验包，不包含 `docs/`、`site/`、`tests/` 或其他实验包。`uv.lock` 会随包保存用于追溯和本地复现，线上默认不会用它安装依赖。
 
-## 线上运行方式
+## 检查 Bundle
 
-解压 zip 后，至少设置数据路径再执行 `run.sh`：
+生成后可以先看顶层文件：
 
 ```bash
-export TAAC_DATASET_PATH=/path/to/train.parquet
-bash run.sh
+ls -l outputs/training_bundles/baseline_training_bundle
+ls -l outputs/inference_bundles/baseline_inference_bundle
 ```
 
-如果你要显式打开运行时优化开关：
+再检查代码包清单：
 
 ```bash
-export TAAC_DATASET_PATH=/path/to/train.parquet
-export TAAC_OUTPUT_DIR=/path/to/output
-bash run.sh --compile --amp --amp-dtype bfloat16
+python -m zipfile -l outputs/training_bundles/baseline_training_bundle/code_package.zip | head -80
+python -m zipfile -l outputs/inference_bundles/baseline_inference_bundle/code_package.zip | head -80
 ```
 
-`run.sh` 内部执行的是：
+重点确认：
+
+- 顶层只有入口脚本和 `code_package.zip`。
+- 代码包里有 manifest、`project/src/taac2026/` 和目标实验包。
+- 目标实验包包含 `model.py` 与 `ns_groups.json`。
+- 代码包里没有 `project/tests/`、`project/docs/`、`project/site/` 或未选择的实验包。
+
+## 依赖原则
+
+线上 bundle 默认依赖平台预装 Python/Conda 环境。核心 CUDA、PyTorch、FBGEMM、TorchRec 等 GPU 栈优先由平台镜像提供，不建议在任务启动时重新下载或覆盖安装。
+
+如果线上确实缺少纯 Python 包，可以在平台允许的预运行步骤中使用当前 Conda Python 补装：
 
 ```bash
-uv sync --locked --extra "${TAAC_CUDA_PROFILE:-cuda126}"
-uv run taac-train --experiment ./config/baseline --dataset-path "$TAAC_DATASET_PATH" --run-dir "$TAAC_OUTPUT_DIR"
+python -m pip install numpy pyarrow scikit-learn rich tensorboard tqdm optuna tomli
 ```
 
-也就是说，bundle 本质上仍然复用了仓库里的训练 CLI，只是把输入裁成了最小可上传运行时。
-
-## 环境变量
-
-| 变量 | 是否必填 | 作用 |
-| ---- | -------- | ---- |
-| `TAAC_DATASET_PATH` | 是 | 线上数据路径，支持 parquet 文件或数据缓存目录 |
-| `TAAC_OUTPUT_DIR` | 否 | 覆盖训练产物输出目录，默认写到 zip 同级 `outputs/` |
-| `TAAC_BUNDLE_WORKDIR` | 否 | 控制 payload 的解压目录 |
-| `TAAC_CUDA_PROFILE` | 否 | 选择 `cpu` / `cuda126`，默认 `cuda126` |
-| `TAAC_ENABLE_TE` | 否 | 设为 `1` 时安装 `transformer-engine` 额外依赖 |
-| `TAAC_FORCE_EXTRACT` | 否 | 设为 `1` 时强制重新解压 `runtime_payload.tar.gz` |
-
-## 与直接训练的区别
-
-直接在仓库里训练时，实验包通常使用仓库内默认的数据缓存路径：
-
-```bash
-uv run taac-train --experiment config/baseline
-```
-
-而 bundle 需要显式告诉运行时数据在哪，所以训练 CLI 新增了 `--dataset-path` 覆盖项：
-
-```bash
-uv run taac-train --experiment config/baseline --dataset-path /path/to/train.parquet
-```
-
-这使得：
-
-- 本地仓库训练仍可继续用默认数据路径
-- 线上训练 bundle 可以在外部挂载数据目录上直接运行
+不要把 bundle runner 切回 `uv`，除非平台明确提供 `uv` 且依赖源可用。
 
 ## 常见问题
 
-### `TAAC_DATASET_PATH` 未设置
+### 找不到模块
 
-`run.sh` 会直接退出并返回非零状态。先设置环境变量再运行：
+确认入口脚本和 `code_package.zip` 在同一目录。训练 bundle 入口是 `run.sh`，推理 bundle 入口是 `infer.py`。
 
-```bash
-export TAAC_DATASET_PATH=/path/to/train.parquet
-bash run.sh
-```
+### 使用了旧代码
 
-### 已有旧 payload，但想重新展开
+强制重新解压代码包：
 
 ```bash
-export TAAC_DATASET_PATH=/path/to/train.parquet
 export TAAC_FORCE_EXTRACT=1
-bash run.sh
+bash run.sh --num_epochs 1 --batch_size 8 --device cpu
 ```
 
-### 线上环境需要额外的 Transformer Engine
+推理阶段同样可以设置 `TAAC_FORCE_EXTRACT=1` 后重新执行 `infer.py`。
 
-```bash
-export TAAC_DATASET_PATH=/path/to/train.parquet
-export TAAC_ENABLE_TE=1
-bash run.sh
-```
+### 跑错实验包
 
-### 想检查 bundle 实际包含了什么
+检查代码包中的 manifest：训练看 `project/.taac_training_manifest.json`，推理看 `project/.taac_inference_manifest.json`。同时确认环境中没有设置错误的 `TAAC_EXPERIMENT`。
 
-可以直接查看 `bundle_manifest.json`，或者本地解压 `runtime_payload.tar.gz` 验证结构。
+### 线上缺少依赖
 
-## 相关命令
-
-```bash
-# 本地训练
-uv run taac-train --experiment config/baseline
-
-# 线上训练打包
-uv run taac-package-train --experiment config/baseline
-
-# 直接覆盖数据路径
-uv run taac-train --experiment config/baseline --dataset-path /path/to/train.parquet
-```
+优先确认平台 Python 环境是否已经包含所需包。确实缺少时，只补装缺失的纯 Python 包；核心 GPU 依赖应通过平台镜像或基础环境解决。

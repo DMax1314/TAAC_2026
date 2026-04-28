@@ -8,13 +8,12 @@ x-gpu-build: &gpu-build
     BASE_IMAGE: ${BASE_IMAGE:-nvidia/cuda:12.6.0-devel-ubuntu22.04}
     PYTHON_VERSION: "3.10.20"
     UV_EXTRA: cuda126
-    ENABLE_TE: ${ENABLE_TE:-0}
 
 x-gpu-env: &gpu-env
   UV_EXTRA: cuda126
-  ENABLE_TE: ${ENABLE_TE:-0}
   HF_HOME: /root/.cache/huggingface
   TAAC_OUTPUT_DIR: /workspace/outputs
+  TAAC_SKIP_UV_SYNC: "1"
   EXPECTED_BASE_IMAGE: nvidia/cuda:12.6.0-devel-ubuntu22.04
   EXPECTED_PYTHON_VERSION: "3.10.20"
   EXPECTED_UV_EXTRA: cuda126
@@ -56,15 +55,15 @@ services:
     environment:
       <<: *gpu-env
       TAAC_DATASET_PATH: ${TAAC_DATASET_PATH:-}
+      TAAC_SCHEMA_PATH: ${TAAC_SCHEMA_PATH:-}
+      TAAC_EXPERIMENT: config/${EXPERIMENT:-baseline}
       EXPERIMENT: ${EXPERIMENT:-baseline}
       TRAIN_ARGS: ${TRAIN_ARGS:-}
     command:
       - /bin/bash
       - -lc
       - >-
-        uv run taac-train --experiment config/$$EXPERIMENT
-        $${TAAC_DATASET_PATH:+--dataset-path "$${TAAC_DATASET_PATH}"}
-        --run-dir "$${TAAC_OUTPUT_DIR}"
+        bash run.sh train
         $${TRAIN_ARGS}
 
   evaluate:
@@ -73,14 +72,15 @@ services:
     environment:
       <<: *gpu-env
       TAAC_DATASET_PATH: ${TAAC_DATASET_PATH:-}
+      TAAC_SCHEMA_PATH: ${TAAC_SCHEMA_PATH:-}
+      TAAC_EXPERIMENT: config/${EXPERIMENT:-baseline}
       EXPERIMENT: ${EXPERIMENT:-baseline}
       EVAL_ARGS: ${EVAL_ARGS:-}
     command:
       - /bin/bash
       - -lc
       - >-
-        uv run taac-evaluate single --experiment config/$$EXPERIMENT
-        $${TAAC_DATASET_PATH:+--dataset-path "$${TAAC_DATASET_PATH}"}
+        bash run.sh val
         $${EVAL_ARGS}
 
   search:
@@ -88,7 +88,6 @@ services:
     profiles: [search]
     environment:
       <<: *gpu-env
-      TAAC_DATASET_PATH: ${TAAC_DATASET_PATH:-}
       EXPERIMENT: ${EXPERIMENT:-baseline}
       TRIALS: ${TRIALS:-20}
       SEARCH_ARGS: ${SEARCH_ARGS:-}
@@ -97,7 +96,6 @@ services:
       - -lc
       - >-
         uv run taac-search --experiment config/$$EXPERIMENT
-        $${TAAC_DATASET_PATH:+--dataset-path "$${TAAC_DATASET_PATH}"}
         --trials $${TRIALS}
         $${SEARCH_ARGS}
 
