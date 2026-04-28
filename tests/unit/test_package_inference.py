@@ -58,6 +58,24 @@ def _write_minimal_runtime_package(code_package_path: Path) -> None:
         )
 
 
+def _write_fake_pip_package(root: Path, log_path: Path) -> Path:
+    fake_pip = root / "fake_pip"
+    pip_package = fake_pip / "pip"
+    pip_package.mkdir(parents=True)
+    (pip_package / "__init__.py").write_text("", encoding="utf-8")
+    (pip_package / "__main__.py").write_text(
+        "from __future__ import annotations\n"
+        "\n"
+        "import json\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        "\n"
+        f"Path({str(log_path)!r}).write_text(json.dumps(sys.argv[1:]), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    return fake_pip
+
+
 def test_build_inference_bundle_contains_runtime_sources(tmp_path: Path) -> None:
     output_dir = tmp_path / "baseline_bundle"
 
@@ -72,6 +90,8 @@ def test_build_inference_bundle_contains_runtime_sources(tmp_path: Path) -> None
     infer_script = result.run_script_path.read_text(encoding="utf-8")
     assert "code_package.zip" in infer_script
     assert ".taac_inference_manifest.json" in infer_script
+    assert "TAAC_INSTALL_PROJECT_DEPS" in infer_script
+    assert "mirrors.cloud.tencent.com/pypi/simple" in infer_script
     assert "taac2026.application.evaluation.infer" in infer_script
 
     manifest = _code_package_manifest(result.code_package_path)
@@ -132,7 +152,18 @@ def test_generated_infer_script_requires_user_cache_path_without_workdir_overrid
     _write_minimal_runtime_package(result.code_package_path)
 
     env = os.environ.copy()
-    for variable in ("TAAC_BUNDLE_WORKDIR", "TAAC_CODE_PACKAGE", "TAAC_FORCE_EXTRACT", "TAAC_EXPERIMENT", "USER_CACHE_PATH"):
+    for variable in (
+        "TAAC_BUNDLE_WORKDIR",
+        "TAAC_CODE_PACKAGE",
+        "TAAC_EXPERIMENT",
+        "TAAC_FORCE_EXTRACT",
+        "TAAC_INSTALL_PROJECT_DEPS",
+        "TAAC_PIP_EXTRA_ARGS",
+        "TAAC_PIP_EXTRAS",
+        "TAAC_PIP_INDEX_URL",
+        "TAAC_SKIP_PIP_INSTALL",
+        "USER_CACHE_PATH",
+    ):
         env.pop(variable, None)
     completed = subprocess.run(
         [sys.executable, str(result.run_script_path)],
@@ -154,9 +185,20 @@ def test_generated_infer_script_prefers_user_cache_path_when_available(tmp_path:
     _write_minimal_runtime_package(result.code_package_path)
 
     env = os.environ.copy()
-    for variable in ("TAAC_BUNDLE_WORKDIR", "TAAC_CODE_PACKAGE", "TAAC_FORCE_EXTRACT", "TAAC_EXPERIMENT"):
+    for variable in (
+        "TAAC_BUNDLE_WORKDIR",
+        "TAAC_CODE_PACKAGE",
+        "TAAC_EXPERIMENT",
+        "TAAC_FORCE_EXTRACT",
+        "TAAC_INSTALL_PROJECT_DEPS",
+        "TAAC_PIP_EXTRA_ARGS",
+        "TAAC_PIP_EXTRAS",
+        "TAAC_PIP_INDEX_URL",
+        "TAAC_SKIP_PIP_INSTALL",
+    ):
         env.pop(variable, None)
     env["USER_CACHE_PATH"] = str(user_cache_path)
+    env["TAAC_SKIP_PIP_INSTALL"] = "1"
     completed = subprocess.run(
         [sys.executable, str(result.run_script_path)],
         check=True,
@@ -172,6 +214,52 @@ def test_generated_infer_script_prefers_user_cache_path_when_available(tmp_path:
     assert extracted_project_dir.name == "project"
     assert extracted_project_dir.is_relative_to(user_cache_path.resolve())
     assert not extracted_project_dir.is_relative_to(output_dir.resolve())
+
+
+def test_generated_infer_script_installs_project_dependencies_before_entrypoint(tmp_path: Path) -> None:
+    output_dir = tmp_path / "baseline_bundle"
+    user_cache_path = tmp_path / "user_cache"
+    result = build_inference_bundle("config/baseline", output_dir=output_dir)
+    _write_minimal_runtime_package(result.code_package_path)
+    pip_args_path = tmp_path / "pip_args.json"
+    fake_pip = _write_fake_pip_package(tmp_path, pip_args_path)
+
+    env = os.environ.copy()
+    for variable in (
+        "TAAC_BUNDLE_WORKDIR",
+        "TAAC_CODE_PACKAGE",
+        "TAAC_EXPERIMENT",
+        "TAAC_FORCE_EXTRACT",
+        "TAAC_INSTALL_PROJECT_DEPS",
+        "TAAC_PIP_EXTRA_ARGS",
+        "TAAC_PIP_EXTRAS",
+        "TAAC_PIP_INDEX_URL",
+        "TAAC_SKIP_PIP_INSTALL",
+    ):
+        env.pop(variable, None)
+    env.update(
+        {
+            "TAAC_PIP_EXTRA_ARGS": "-q",
+            "TAAC_PIP_INDEX_URL": "",
+            "PYTHONPATH": str(fake_pip),
+            "USER_CACHE_PATH": str(user_cache_path),
+        }
+    )
+    completed = subprocess.run(
+        [sys.executable, str(result.run_script_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    payload = json.loads(completed.stdout)
+    pip_args = json.loads(pip_args_path.read_text(encoding="utf-8"))
+
+    assert payload["experiment"] == "config/minimal"
+    assert Path(payload["cwd"]).resolve().is_relative_to(user_cache_path.resolve())
+    assert pip_args == ["install", "--disable-pip-version-check", "-q", "."]
+    assert "Installing TAAC project dependencies from pyproject.toml" in completed.stderr
 
 
 def test_package_inference_main_prints_human_readable_summary_by_default(

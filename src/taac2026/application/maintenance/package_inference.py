@@ -24,10 +24,15 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 import shutil
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
+
+
+_TENCENT_PYPI_INDEX_URL = "https://mirrors.cloud.tencent.com/pypi/simple/"
 
 
 def _default_bundle_workdir(script_dir: Path, code_package: Path) -> Path:
@@ -65,6 +70,41 @@ def _read_manifest(manifest_path: Path) -> dict[str, object]:
         return json.load(handle)
 
 
+def _split_env_words(name: str) -> list[str]:
+    value = os.environ.get(name, "")
+    if not value:
+        return []
+    return shlex.split(value)
+
+
+def _should_install_project_pip_dependencies() -> bool:
+    if os.environ.get("TAAC_SKIP_PIP_INSTALL") == "1":
+        return False
+    install_project_deps = os.environ.get("TAAC_INSTALL_PROJECT_DEPS")
+    if install_project_deps is not None:
+        return install_project_deps != "0"
+    return True
+
+
+def _install_project_pip_dependencies(project_dir: Path) -> None:
+    if not _should_install_project_pip_dependencies():
+        return
+    extras = _split_env_words("TAAC_PIP_EXTRAS")
+    target = "."
+    if extras:
+        target = f".[{','.join(extras)}]"
+
+    command = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check"]
+    index_url = os.environ.get("TAAC_PIP_INDEX_URL", _TENCENT_PYPI_INDEX_URL)
+    if index_url:
+        command.extend(["-i", index_url])
+    command.extend(_split_env_words("TAAC_PIP_EXTRA_ARGS"))
+    command.append(target)
+
+    print("Installing TAAC project dependencies from pyproject.toml", file=sys.stderr)
+    subprocess.check_call(command, cwd=project_dir)
+
+
 def main() -> None:
     script_dir = Path(__file__).resolve().parent
     code_package = Path(os.environ.get("TAAC_CODE_PACKAGE", str(script_dir / "code_package.zip"))).expanduser()
@@ -79,6 +119,7 @@ def main() -> None:
 
     project_dir = _extract_code_package(code_package, workdir)
     manifest = _read_manifest(project_dir / ".taac_inference_manifest.json")
+    _install_project_pip_dependencies(project_dir)
     default_experiment = manifest.get("bundled_experiment_path")
     if isinstance(default_experiment, str) and default_experiment and "TAAC_EXPERIMENT" not in os.environ:
         os.environ["TAAC_EXPERIMENT"] = default_experiment

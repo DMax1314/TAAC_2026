@@ -7,6 +7,8 @@ PROJECT_DIR="${SCRIPT_DIR}"
 CODE_PACKAGE="${TAAC_CODE_PACKAGE:-${SCRIPT_DIR}/code_package.zip}"
 BUNDLE_MODE=0
 SUPPORTED_CUDA_PROFILE="cuda126"
+TENCENT_PYPI_INDEX_URL="https://mirrors.cloud.tencent.com/pypi/simple/"
+PROJECT_PIP_DEPENDENCIES_READY=0
 
 find_python() {
 	if [[ -n "${TAAC_PYTHON:-}" ]]; then
@@ -125,6 +127,58 @@ ensure_python() {
 	exit 127
 }
 
+should_install_project_pip_dependencies() {
+	if [[ "${TAAC_SKIP_PIP_INSTALL:-0}" == "1" ]]; then
+		return 1
+	fi
+	if [[ -n "${TAAC_INSTALL_PROJECT_DEPS:-}" ]]; then
+		[[ "${TAAC_INSTALL_PROJECT_DEPS}" != "0" ]]
+		return
+	fi
+	[[ "${BUNDLE_MODE}" == "1" ]]
+}
+
+ensure_project_pip_dependencies() {
+	if [[ "${RUNNER_MODE}" != "python" ]]; then
+		return
+	fi
+	if [[ "${PROJECT_PIP_DEPENDENCIES_READY}" == "1" ]]; then
+		return
+	fi
+	if ! should_install_project_pip_dependencies; then
+		PROJECT_PIP_DEPENDENCIES_READY=1
+		return
+	fi
+
+	ensure_python
+	TAAC_DEFAULT_PIP_INDEX_URL="${TENCENT_PYPI_INDEX_URL}" "${PYTHON_BIN}" - <<'PY'
+import os
+import shlex
+import subprocess
+import sys
+
+extra_args = shlex.split(os.environ.get("TAAC_PIP_EXTRA_ARGS", ""))
+extras = shlex.split(os.environ.get("TAAC_PIP_EXTRAS", ""))
+target = "."
+if extras:
+    target = f".[{','.join(extras)}]"
+
+command = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check"]
+index_url = os.environ.get(
+    "TAAC_PIP_INDEX_URL",
+    os.environ.get("TAAC_DEFAULT_PIP_INDEX_URL", "https://mirrors.cloud.tencent.com/pypi/simple/"),
+)
+if index_url:
+    command.extend(["-i", index_url])
+command.extend(extra_args)
+command.append(target)
+
+print("Installing TAAC project dependencies from pyproject.toml", file=sys.stderr)
+subprocess.check_call(command)
+PY
+	PROJECT_PIP_DEPENDENCIES_READY=1
+}
+
 extract_cuda_profile() {
 	local default_profile="$1"
 	shift
@@ -182,6 +236,7 @@ run_console_script() {
 			uv run "${script_name}" "$@"
 			;;
 		python)
+			ensure_project_pip_dependencies
 			run_python_module "${module_name}" "$@"
 			;;
 		*)
