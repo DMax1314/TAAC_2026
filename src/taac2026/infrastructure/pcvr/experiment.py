@@ -29,6 +29,7 @@ from taac2026.infrastructure.pcvr.protocol import (
     parse_seq_max_lens,
     resolve_schema_path,
 )
+from taac2026.infrastructure.pcvr.tensors import sigmoid_probabilities_numpy
 from taac2026.infrastructure.pcvr.training import train_pcvr_model
 from taac2026.infrastructure.training.runtime import RuntimeExecutionConfig, maybe_compile_callable, normalize_amp_dtype
 
@@ -503,7 +504,7 @@ class PCVRExperiment:
                 model_input = batch_to_model_input(batch, model_module.ModelInput, runtime_device)
                 with resolved_runtime_execution.autocast_context(runtime_device):
                     logits, _embeddings = predict_fn(model_input)
-                batch_probabilities = torch.sigmoid(logits.squeeze(-1)).detach().cpu().numpy()
+                batch_probabilities = sigmoid_probabilities_numpy(logits.squeeze(-1))
                 batch_labels = batch["label"].detach().cpu().numpy() if "label" in batch else np.zeros_like(batch_probabilities)
                 batch_user_ids = batch.get("user_id", list(range(len(batch_probabilities))))
                 batch_timestamps = batch.get("timestamp")

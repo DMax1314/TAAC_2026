@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import logging
+import math
 
 import torch
 
@@ -98,3 +99,29 @@ def test_trainer_runtime_execution_wraps_train_and_predict(monkeypatch, tmp_path
         (True, "PCVR trainer predict"),
     ]
     assert autocast_devices == ["cpu", "cpu"]
+
+
+def test_evaluate_accepts_bfloat16_logits(tmp_path) -> None:
+    trainer = PCVRPointwiseTrainer(
+        model=_DummyModel(),
+        model_input_type=object,
+        train_loader=[],
+        valid_loader=[{"label": torch.tensor([0.0])}, {"label": torch.tensor([1.0])}],
+        lr=1e-3,
+        num_epochs=1,
+        device="cpu",
+        save_dir=tmp_path / "checkpoints",
+        early_stopping=EarlyStopping(tmp_path / "best" / "model.pt", patience=2),
+    )
+    logits = iter(
+        (
+            torch.tensor([0.0], dtype=torch.bfloat16),
+            torch.tensor([1.0], dtype=torch.bfloat16),
+        )
+    )
+    trainer._evaluate_step = lambda batch: (next(logits), batch["label"])
+
+    auc, logloss = trainer.evaluate(epoch=1)
+
+    assert auc == 1.0
+    assert math.isfinite(logloss)

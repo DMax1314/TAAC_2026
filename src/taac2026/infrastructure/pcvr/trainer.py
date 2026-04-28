@@ -20,6 +20,7 @@ from tqdm import tqdm
 
 from taac2026.infrastructure.checkpoints import build_checkpoint_dir_name, write_checkpoint_sidecars
 from taac2026.infrastructure.pcvr.protocol import batch_to_model_input
+from taac2026.infrastructure.pcvr.tensors import sigmoid_probabilities_numpy
 from taac2026.infrastructure.training.runtime import (
     EarlyStopping,
     RuntimeExecutionConfig,
@@ -432,10 +433,10 @@ class PCVRPointwiseTrainer:
         if use_tqdm:
             pbar.close()
 
-        all_logits = torch.cat(all_logits_list, dim=0)
+        all_logits = torch.cat(all_logits_list, dim=0).float()
         all_labels = torch.cat(all_labels_list, dim=0).long()
 
-        probabilities = torch.sigmoid(all_logits).numpy()
+        probabilities = sigmoid_probabilities_numpy(all_logits)
         labels_np = all_labels.numpy()
         nan_mask = np.isnan(probabilities)
         if nan_mask.any():
