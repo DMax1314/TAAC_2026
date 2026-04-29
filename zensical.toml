@@ -30,6 +30,8 @@ nav = [
         { "OneTrans" = "experiments/onetrans.md" },
         { "UniRec" = "experiments/unirec.md" },
         { "UniScaleFormer" = "experiments/uniscaleformer.md" },
+        { "Host Device Info" = "experiments/host-device-info.md" },
+        { "Online Dataset EDA" = "experiments/online-dataset-eda.md" },
     ] },
     { "数据集分析" = [
         { "总览" = "analysis/index.md" },
