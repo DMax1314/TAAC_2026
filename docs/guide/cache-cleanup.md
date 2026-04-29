@@ -8,7 +8,7 @@ icon: lucide/wrench
 
 ## 目标
 
-删除 `__pycache__`、`.pyc`、`.pyo`、`*.egg-info`、`dist/`、`build/` 等缓存目录，保持仓库干净。
+删除 `__pycache__`、`*.egg-info`、`dist/`、`build/` 等缓存目录，保持仓库干净。
 
 ## 脚本入口
 
