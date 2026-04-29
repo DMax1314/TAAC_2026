@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 from collections.abc import Sequence
 
 from taac2026.domain.config import TrainRequest, default_run_dir
 from taac2026.infrastructure.experiments.loader import load_experiment_package
+from taac2026.infrastructure.io.json_utils import dumps
 
 
 def parse_train_args(argv: Sequence[str] | None = None) -> tuple[argparse.Namespace, tuple[str, ...]]:
@@ -44,7 +44,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     summary = experiment.train(request) or {"run_dir": str(run_dir)}
     if args.json:
-        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        print(dumps(summary, indent=2))
     return 0
 
 

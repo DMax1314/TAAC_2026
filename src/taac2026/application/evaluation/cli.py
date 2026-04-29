@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 from collections.abc import Sequence
 
@@ -11,6 +10,7 @@ import torch
 
 from taac2026.domain.config import EvalRequest, InferRequest, default_run_dir
 from taac2026.infrastructure.experiments.loader import load_experiment_package
+from taac2026.infrastructure.io.json_utils import dumps
 from taac2026.infrastructure.training.runtime import AMP_DTYPE_CHOICES
 
 
@@ -93,10 +93,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         payload = experiment.infer(request)
 
-    if args.json:
-        print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
-    else:
-        print(json.dumps(payload, ensure_ascii=False))
+    print(dumps(payload))
     return 0
 
 
