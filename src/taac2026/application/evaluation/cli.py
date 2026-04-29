@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 from collections.abc import Sequence
+from pathlib import Path
 
 import torch
 
@@ -40,7 +40,6 @@ def parse_eval_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     single.add_argument("--num-workers", type=int, default=0)
     single.add_argument("--device", default=_default_device())
     _add_runtime_execution_args(single)
-    single.add_argument("--json", action="store_true")
 
     infer = subparsers.add_parser("infer", help="write platform predictions.json")
     infer.add_argument("--experiment", default="config/baseline")
@@ -52,7 +51,6 @@ def parse_eval_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     infer.add_argument("--num-workers", type=int, default=0)
     infer.add_argument("--device", default=_default_device())
     _add_runtime_execution_args(infer)
-    infer.add_argument("--json", action="store_true")
     return parser.parse_args(argv)
 
 

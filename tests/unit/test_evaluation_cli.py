@@ -26,7 +26,7 @@ def test_parse_eval_args_accepts_runtime_flags() -> None:
     assert args.compile is True
 
 
-def test_main_json_output_is_compact_single_line(monkeypatch, capsys) -> None:
+def test_main_output_is_compact_single_line(monkeypatch, capsys) -> None:
     payload = {
         "checkpoint_path": "/tmp/model.pt",
         "schema_path": "/tmp/schema.json",
@@ -47,7 +47,6 @@ def test_main_json_output_is_compact_single_line(monkeypatch, capsys) -> None:
             "/tmp/eval.parquet",
             "--result-dir",
             "/tmp/results",
-            "--json",
         ]
     )
 
