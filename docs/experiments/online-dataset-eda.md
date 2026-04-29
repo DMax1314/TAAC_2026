@@ -60,6 +60,16 @@ uv run taac-train --experiment config/online_dataset_eda \
 
 支持目录（含多个 `.parquet` 文件）或单文件路径。schema.json 自动从数据集同级目录推导，也可通过 `--schema-path` 或 `TAAC_SCHEMA_PATH` 显式指定。
 
+## 线上打包
+
+```bash
+uv run taac-package-train --experiment config/online_dataset_eda --output-dir outputs/bundle
+```
+
+该维护类实验支持训练 bundle 打包，生成 `run.sh` 与 `code_package.zip`，可在线上环境直接执行 EDA 任务。
+
+由于 `online_dataset_eda` 不实现模型推理接口，因此不适用 `taac-package-infer`。
+
 ## 输出
 
 运行后将报告打印到 stdout，包含以下节：

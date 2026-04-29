@@ -48,6 +48,16 @@ uv run taac-train --experiment config/host_device_info
 
 不需要 `--dataset-path` 或 `--schema-path`。
 
+## 线上打包
+
+```bash
+uv run taac-package-train --experiment config/host_device_info --output-dir outputs/bundle
+```
+
+该维护类实验支持训练 bundle 打包，生成 `run.sh` 与 `code_package.zip`，可在线上环境直接执行诊断任务。
+
+由于 `host_device_info` 不实现模型推理接口，因此不适用 `taac-package-infer`。
+
 ## 输出
 
 运行后直接将诊断日志打印到 stdout，同时返回结构化摘要：
