@@ -241,7 +241,6 @@ class EarlyStopping:
         if self.verbose:
             logging.info("Validation score increased. Saving model ...")
         checkpoint_path = Path(self.checkpoint_path)
-        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         save_checkpoint_state_dict(model.state_dict(), checkpoint_path)
         self.best_saved_score = score
 

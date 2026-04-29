@@ -226,7 +226,6 @@ class PCVRPointwiseTrainer:
         skip_model_file: bool = False,
     ) -> Path:
         checkpoint_dir = self.save_dir / self._build_step_dir_name(global_step, is_best=is_best)
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
         if not skip_model_file:
             save_checkpoint_state_dict(self.model.state_dict(), checkpoint_dir)
         self._write_sidecar_files(checkpoint_dir)

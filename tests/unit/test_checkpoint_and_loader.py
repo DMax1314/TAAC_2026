@@ -82,6 +82,13 @@ def test_save_and_load_checkpoint_state_dict_round_trip(tmp_path: Path) -> None:
     assert torch.equal(loaded_state_dict["bias"], state_dict["bias"])
 
 
+def test_save_checkpoint_rejects_legacy_pt_path(tmp_path: Path) -> None:
+    state_dict = {"weight": torch.arange(2, dtype=torch.float32)}
+
+    with pytest.raises(ValueError, match=r"unsupported checkpoint format"):
+        save_checkpoint_state_dict(state_dict, tmp_path / "legacy.pt")
+
+
 def test_load_baseline_experiment_from_path() -> None:
     experiment = load_experiment_package("config/baseline")
 
