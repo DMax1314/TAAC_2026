@@ -37,6 +37,7 @@ nav = [
         { "总览" = "analysis/index.md" },
         { "性能基准" = "analysis/benchmarks.md" },
         { "评估指标分析" = "analysis/evaluation.md" },
+        { "特征 Schema 参考" = "analysis/feature-schema.md" },
     ] },
     { "指南" = [
         { "官方平台用户指南" = "guide/official-competition-docs.md" },
