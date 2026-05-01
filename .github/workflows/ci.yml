@@ -76,10 +76,10 @@ jobs:
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
 
       - name: 同步项目环境
-        run: uv sync --locked --extra cuda126 --no-install-package torchrec --no-install-package fbgemm-gpu
+        run: uv sync --locked --extra dev
 
       - name: 运行带有覆盖率的单元测试
-        run: uv run --with coverage coverage run --data-file=.coverage.cpu -m pytest -m unit -v
+        run: uv run --with torch==2.7.1 --with coverage coverage run --data-file=.coverage.cpu -m pytest -m unit -v
 
       - name: 上传 CPU 覆盖率数据
         if: always() && matrix.python-version == env.CI_CANONICAL_PYTHON_VERSION
