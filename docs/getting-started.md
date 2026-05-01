@@ -18,7 +18,7 @@ icon: lucide/rocket
     ```bash
     git clone https://github.com/Puiching-Memory/TAAC_2026.git
     cd TAAC_2026
-    uv sync --extra dev --extra pcvr
+    uv sync --extra dev --extra cuda126
     ```
 
 === "pip"
@@ -26,13 +26,13 @@ icon: lucide/rocket
     ```bash
     git clone https://github.com/Puiching-Memory/TAAC_2026.git
     cd TAAC_2026
-    pip install -e ".[dev,pcvr]"
+    pip install -e ".[dev,cuda126]"
     ```
 
 依赖说明：
 
-- `--extra dev`：Ruff、Pytest、覆盖率工具
-- `--extra pcvr`：PyTorch、TorchRec、FBGEMM
+- `--extra dev`：Ruff、Pytest、Hypothesis、Benchmark、覆盖率插件、Zensical
+- `--extra cuda126`：PyTorch、TorchRec、FBGEMM
 
 ## 准备数据
 
@@ -91,12 +91,14 @@ uv run taac-package-train \
 ## 测试
 
 ```bash
+# 已执行 uv sync --extra dev --extra cuda126
 uv run pytest tests/unit -v
 ```
 
 ## 本地文档站
 
 ```bash
+# 已执行 uv sync --extra dev
 uv run zensical serve
 ```
 

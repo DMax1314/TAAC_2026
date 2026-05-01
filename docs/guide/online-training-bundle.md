@@ -123,10 +123,16 @@ Bundle 格式与官方 Baseline 兼容：
 平台使用 `uv` 安装依赖：
 
 ```bash
-uv sync --extra pcvr
+uv sync --extra cuda126
 ```
 
 确保 `pyproject.toml` 中的依赖在平台上可安装。如果使用自定义依赖，需要在 Bundle 中包含。
+
+打包后的 `train` 和 `infer` 默认只安装 runtime 依赖，相当于执行 `pip install .`，不会自动安装 `dev` extra。只有在确实需要额外 extra 时，才显式设置：
+
+```bash
+export TAAC_BUNDLE_PIP_EXTRAS="dev"
+```
 
 ## 检查 Bundle
 
@@ -151,7 +157,7 @@ python outputs/bundle/infer.py
 ## 依赖原则
 
 - 框架依赖通过 `pyproject.toml` 声明，不要手动 pip install
-- 使用 `--extra pcvr` 安装 PyTorch 相关依赖
+- 使用 `--extra cuda126` 安装 PyTorch 相关依赖
 - 避免依赖本地编译的 C++ 扩展
 
 ## 常见问题

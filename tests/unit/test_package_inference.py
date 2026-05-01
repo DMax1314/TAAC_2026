@@ -91,6 +91,7 @@ def test_build_inference_bundle_contains_runtime_sources(tmp_path: Path) -> None
     assert "code_package.zip" in infer_script
     assert ".taac_inference_manifest.json" in infer_script
     assert "TAAC_INSTALL_PROJECT_DEPS" in infer_script
+    assert "TAAC_BUNDLE_PIP_EXTRAS" in infer_script
     assert "mirrors.cloud.tencent.com/pypi/simple" in infer_script
     assert "taac2026.application.evaluation.infer" in infer_script
 
@@ -99,6 +100,7 @@ def test_build_inference_bundle_contains_runtime_sources(tmp_path: Path) -> None
     assert manifest["bundled_experiment_path"] == "config/baseline"
     assert manifest["entrypoint"] == "infer.py"
     assert manifest["code_package"] == "code_package.zip"
+    assert manifest["runtime_env"]["pip_extras"].startswith("TAAC_BUNDLE_PIP_EXTRAS")
 
     names = _code_package_names(result.code_package_path)
     assert "project/.taac_inference_manifest.json" in names
@@ -159,6 +161,7 @@ def test_generated_infer_script_requires_user_cache_path_without_workdir_overrid
         "TAAC_EXPERIMENT",
         "TAAC_FORCE_EXTRACT",
         "TAAC_INSTALL_PROJECT_DEPS",
+        "TAAC_BUNDLE_PIP_EXTRAS",
         "TAAC_PIP_EXTRA_ARGS",
         "TAAC_PIP_EXTRAS",
         "TAAC_PIP_INDEX_URL",
@@ -192,6 +195,7 @@ def test_generated_infer_script_prefers_user_cache_path_when_available(tmp_path:
         "TAAC_EXPERIMENT",
         "TAAC_FORCE_EXTRACT",
         "TAAC_INSTALL_PROJECT_DEPS",
+        "TAAC_BUNDLE_PIP_EXTRAS",
         "TAAC_PIP_EXTRA_ARGS",
         "TAAC_PIP_EXTRAS",
         "TAAC_PIP_INDEX_URL",
@@ -232,6 +236,7 @@ def test_generated_infer_script_installs_project_dependencies_before_entrypoint(
         "TAAC_EXPERIMENT",
         "TAAC_FORCE_EXTRACT",
         "TAAC_INSTALL_PROJECT_DEPS",
+        "TAAC_BUNDLE_PIP_EXTRAS",
         "TAAC_PIP_EXTRA_ARGS",
         "TAAC_PIP_EXTRAS",
         "TAAC_PIP_INDEX_URL",
@@ -240,6 +245,7 @@ def test_generated_infer_script_installs_project_dependencies_before_entrypoint(
         env.pop(variable, None)
     env.update(
         {
+            "TAAC_PIP_EXTRAS": "dev",
             "TAAC_PIP_EXTRA_ARGS": "-q",
             "TAAC_PIP_INDEX_URL": "",
             "PYTHONPATH": str(fake_pip),
@@ -263,6 +269,50 @@ def test_generated_infer_script_installs_project_dependencies_before_entrypoint(
     assert "Installing TAAC project dependencies from pyproject.toml" in completed.stderr
 
 
+def test_generated_infer_script_accepts_explicit_bundle_pip_extras(tmp_path: Path) -> None:
+    output_dir = tmp_path / "baseline_bundle"
+    user_cache_path = tmp_path / "user_cache"
+    result = build_inference_bundle("config/baseline", output_dir=output_dir)
+    _write_minimal_runtime_package(result.code_package_path)
+    pip_args_path = tmp_path / "pip_args.json"
+    fake_pip = _write_fake_pip_package(tmp_path, pip_args_path)
+
+    env = os.environ.copy()
+    for variable in (
+        "TAAC_BUNDLE_WORKDIR",
+        "TAAC_CODE_PACKAGE",
+        "TAAC_EXPERIMENT",
+        "TAAC_FORCE_EXTRACT",
+        "TAAC_INSTALL_PROJECT_DEPS",
+        "TAAC_BUNDLE_PIP_EXTRAS",
+        "TAAC_PIP_EXTRA_ARGS",
+        "TAAC_PIP_EXTRAS",
+        "TAAC_PIP_INDEX_URL",
+        "TAAC_SKIP_PIP_INSTALL",
+    ):
+        env.pop(variable, None)
+    env.update(
+        {
+            "TAAC_BUNDLE_PIP_EXTRAS": "dev",
+            "TAAC_PIP_EXTRA_ARGS": "-q",
+            "TAAC_PIP_INDEX_URL": "",
+            "PYTHONPATH": str(fake_pip),
+            "USER_CACHE_PATH": str(user_cache_path),
+        }
+    )
+    subprocess.run(
+        [sys.executable, str(result.run_script_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    pip_args = loads(pip_args_path.read_bytes())
+
+    assert pip_args == ["install", "--disable-pip-version-check", "-q", ".[dev]"]
+
+
 def test_package_inference_main_prints_human_readable_summary_by_default(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -281,6 +331,7 @@ def test_package_inference_main_prints_human_readable_summary_by_default(
                 "dataset_path": "EVAL_DATA_PATH",
                 "result_path": "EVAL_RESULT_PATH",
                 "schema_path": "TAAC_SCHEMA_PATH",
+                "pip_extras": "TAAC_BUNDLE_PIP_EXTRAS (optional; defaults to runtime-only install with no dev extra)",
             },
         },
     )

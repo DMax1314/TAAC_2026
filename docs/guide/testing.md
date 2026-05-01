@@ -4,6 +4,12 @@ icon: lucide/clipboard-list
 
 # 测试
 
+## 前置条件
+
+```bash
+uv sync --extra dev --extra cuda126
+```
+
 ## 常用命令
 
 ```bash

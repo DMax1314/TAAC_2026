@@ -151,14 +151,18 @@ ensure_project_pip_dependencies() {
 	fi
 
 	ensure_python
-	TAAC_DEFAULT_PIP_INDEX_URL="${TENCENT_PYPI_INDEX_URL}" "${PYTHON_BIN}" - <<'PY'
+	TAAC_DEFAULT_PIP_INDEX_URL="${TENCENT_PYPI_INDEX_URL}" \
+	TAAC_PIP_EXTRAS_ENV_NAME="$([[ "${BUNDLE_MODE}" == "1" ]] && printf '%s' "TAAC_BUNDLE_PIP_EXTRAS" || printf '%s' "TAAC_PIP_EXTRAS")" \
+	"${PYTHON_BIN}" - <<'PY'
 import os
 import shlex
 import subprocess
 import sys
 
 extra_args = shlex.split(os.environ.get("TAAC_PIP_EXTRA_ARGS", ""))
-extras = shlex.split(os.environ.get("TAAC_PIP_EXTRAS", ""))
+extras = shlex.split(
+    os.environ.get(os.environ.get("TAAC_PIP_EXTRAS_ENV_NAME", "TAAC_PIP_EXTRAS"), "")
+)
 target = "."
 if extras:
     target = f".[{','.join(extras)}]"

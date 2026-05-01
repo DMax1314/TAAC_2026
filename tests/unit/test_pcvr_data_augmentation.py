@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pyarrow as pa
@@ -233,3 +234,57 @@ def test_strict_time_filter_removes_future_sequence_events(tmp_path: Path) -> No
     assert batch["seq_a"].tolist() == [[[1, 3, 0]]]
     assert batch["seq_a_time_bucket"][0, :2].gt(0).all()
     assert batch["seq_a_time_bucket"][0, 2].item() == 0
+
+
+def test_dataset_logs_schema_payload_with_dataset_role(tmp_path: Path, caplog) -> None:
+    schema_path = tmp_path / "schema.json"
+    parquet_path = tmp_path / "demo.parquet"
+    schema = {
+        "user_int": [[1, 10, 1]],
+        "item_int": [[2, 10, 1]],
+        "user_dense": [[3, 2]],
+        "seq": {
+            "seq_a": {
+                "prefix": "domain_a_seq",
+                "ts_fid": 10,
+                "features": [[10, 1000], [11, 100]],
+            }
+        },
+    }
+    schema_path.write_text(dumps(schema), encoding="utf-8")
+    table = pa.table(
+        {
+            "timestamp": [100],
+            "label_type": [2],
+            "user_id": ["u0"],
+            "user_int_feats_1": [1],
+            "item_int_feats_2": [2],
+            "user_dense_feats_3": [[0.1, 0.2]],
+            "domain_a_seq_10": [[10]],
+            "domain_a_seq_11": [[1]],
+        }
+    )
+    pq.write_table(table, parquet_path, row_group_size=1)
+
+    with caplog.at_level(logging.INFO):
+        PCVRParquetDataset(
+            parquet_path=str(parquet_path),
+            schema_path=str(schema_path),
+            batch_size=1,
+            seq_max_lens={"seq_a": 1},
+            shuffle=False,
+            buffer_batches=0,
+            dataset_role="train",
+        )
+
+    assert "Loaded PCVR schema for train dataset" in caplog.text
+    assert str(schema_path.resolve()) in caplog.text
+    assert "PCVR train schema payload" in caplog.text
+    payload_message = next(
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("PCVR train schema payload: ")
+    )
+    assert "\n" not in payload_message
+    assert '"user_int":[[1,10,1]]' in payload_message
+    assert '"prefix":"domain_a_seq"' in payload_message

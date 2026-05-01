@@ -50,6 +50,7 @@ def _format_bundle_summary(result: BundleResult) -> str:
                 f"  schema: {runtime_env.get('schema_path', '<unknown>')}",
                 f"  output: {runtime_env.get('checkpoint_path', '<unknown>')}",
                 f"  cuda profile: {runtime_env.get('cuda_profile', '<unknown>')}",
+                f"  pip extras: {runtime_env.get('pip_extras', '<unknown>')}",
             ]
         )
     lines.append("Upload the two files above: run.sh and code_package.zip")
@@ -154,6 +155,7 @@ def build_training_bundle(
             "schema_path": "TAAC_SCHEMA_PATH",
             "checkpoint_path": "TAAC_OUTPUT_DIR or TRAIN_CKPT_PATH",
             "cuda_profile": "TAAC_CUDA_PROFILE",
+            "pip_extras": "TAAC_BUNDLE_PIP_EXTRAS (optional; defaults to runtime-only install with no dev extra)",
         },
     }
     if force:
