@@ -30,7 +30,7 @@ from taac2026.infrastructure.pcvr.protocol import (
     resolve_schema_path,
 )
 from taac2026.infrastructure.pcvr.tensors import sigmoid_probabilities_numpy
-from taac2026.infrastructure.pcvr.training import train_pcvr_model
+from taac2026.infrastructure.pcvr.training import parse_pcvr_train_args, train_pcvr_model
 from taac2026.infrastructure.training.runtime import RuntimeExecutionConfig, maybe_compile_callable, normalize_amp_dtype
 
 
@@ -133,10 +133,21 @@ class PCVRExperiment:
             forwarded_args.extend(["--schema_path", str(request.schema_path.expanduser().resolve())])
         forwarded_args.extend(request.extra_args)
 
+        parsed_args = parse_pcvr_train_args(
+            forwarded_args,
+            package_dir=self.package_dir,
+            defaults=self.train_defaults,
+        )
+        resolved_schema_path = resolve_schema_path(
+            request.dataset_path,
+            Path(parsed_args.schema_path) if parsed_args.schema_path else None,
+            run_dir,
+        )
+
         with self._module_context():
             import model as model_module
 
-            train_pcvr_model(
+            summary = train_pcvr_model(
                 model_module=model_module,
                 model_class_name=self.model_class_name,
                 package_dir=self.package_dir,
@@ -144,11 +155,21 @@ class PCVRExperiment:
                 argv=forwarded_args,
             )
 
-        return {
-            "experiment_name": self.name,
-            "run_dir": str(run_dir),
-            "checkpoint_root": str(run_dir),
-        }
+        observed_schema_payload = self._write_train_split_observed_schema_reports(
+            dataset_path=request.dataset_path,
+            schema_path=resolved_schema_path,
+            run_dir=run_dir,
+            valid_ratio=float(parsed_args.valid_ratio),
+            train_ratio=float(parsed_args.train_ratio),
+        )
+
+        payload = dict(summary or {})
+        payload["experiment_name"] = self.name
+        payload["run_dir"] = str(run_dir)
+        payload["checkpoint_root"] = str(run_dir)
+        payload["schema_path"] = str(resolved_schema_path)
+        payload.update(observed_schema_payload)
+        return payload
 
     def evaluate(self, request: EvalRequest) -> Mapping[str, Any]:
         checkpoint = resolve_checkpoint_path(request.run_dir, request.checkpoint_path)
@@ -194,6 +215,7 @@ class PCVRExperiment:
                 num_workers=effective_num_workers,
                 device=request.device,
                 is_training_data=request.is_training_data,
+                dataset_role="evaluation",
                 config=config,
                 runtime_execution=runtime_execution,
             )
@@ -219,6 +241,14 @@ class PCVRExperiment:
             "data_diagnostics": self._build_evaluation_data_diagnostics(request.dataset_path),
             "validation_predictions_path": str(predictions_path),
         }
+        observed_schema_path = output_path.with_name("evaluation_observed_schema.json")
+        self._write_observed_schema_report(
+            dataset_path=request.dataset_path,
+            schema_path=resolved_schema_path,
+            output_path=observed_schema_path,
+            dataset_role="eval",
+        )
+        payload["observed_schema_paths"] = {"eval": str(observed_schema_path)}
         write_json(output_path, payload)
         return payload
 
@@ -306,6 +336,7 @@ class PCVRExperiment:
                 num_workers=effective_num_workers,
                 device=request.device,
                 is_training_data=False,
+                dataset_role="inference",
                 config=config,
                 runtime_execution=runtime_execution,
             )
@@ -437,6 +468,7 @@ class PCVRExperiment:
         num_workers: int,
         device: str,
         is_training_data: bool,
+        dataset_role: str,
         config: dict[str, Any] | None = None,
         runtime_execution: RuntimeExecutionConfig | None = None,
     ) -> dict[str, Any]:
@@ -454,6 +486,7 @@ class PCVRExperiment:
             buffer_batches=0,
             clip_vocab=True,
             is_training=is_training_data,
+            dataset_role=dataset_role,
         )
         use_cuda_pinning = device.startswith("cuda") and torch.cuda.is_available()
         loader = DataLoader(dataset, batch_size=None, num_workers=num_workers, pin_memory=use_cuda_pinning)
@@ -571,6 +604,75 @@ class PCVRExperiment:
         resolved_schema_path = self._resolve_schema_path(dataset_path, schema_path, checkpoint_dir)
         logging.info("Resolved PCVR %s schema.json: %s", mode, resolved_schema_path)
         return resolved_schema_path, read_json(resolved_schema_path)
+
+    def _write_observed_schema_report(
+        self,
+        *,
+        dataset_path: Path,
+        schema_path: Path,
+        output_path: Path,
+        dataset_role: str,
+        row_group_range: tuple[int, int] | None = None,
+    ) -> Path:
+        report = pcvr_data.build_pcvr_observed_schema_report(
+            dataset_path,
+            schema_path,
+            row_group_range=row_group_range,
+            dataset_role=dataset_role,
+        )
+        write_json(output_path, report)
+        logging.info("Wrote PCVR observed schema report for %s: %s", dataset_role, output_path)
+        return output_path
+
+    def _write_train_split_observed_schema_reports(
+        self,
+        *,
+        dataset_path: Path,
+        schema_path: Path,
+        run_dir: Path,
+        valid_ratio: float,
+        train_ratio: float,
+    ) -> dict[str, Any]:
+        rg_info = pcvr_data.collect_pcvr_row_groups(dataset_path)
+        split_plan = pcvr_data.plan_pcvr_row_group_split(
+            rg_info,
+            valid_ratio=valid_ratio,
+            train_ratio=train_ratio,
+        )
+        observed_schema_paths = {
+            "train_split": str(
+                self._write_observed_schema_report(
+                    dataset_path=dataset_path,
+                    schema_path=schema_path,
+                    output_path=run_dir / "train_split_observed_schema.json",
+                    dataset_role="train_split",
+                    row_group_range=split_plan.train_row_group_range,
+                )
+            ),
+            "valid_split": str(
+                self._write_observed_schema_report(
+                    dataset_path=dataset_path,
+                    schema_path=schema_path,
+                    output_path=run_dir / "valid_split_observed_schema.json",
+                    dataset_role="valid_split",
+                    row_group_range=split_plan.valid_row_group_range,
+                )
+            ),
+        }
+        return {
+            "observed_schema_paths": observed_schema_paths,
+            "row_group_split": {
+                "train_row_groups": split_plan.train_row_groups,
+                "valid_row_groups": split_plan.valid_row_groups,
+                "train_row_group_range": list(split_plan.train_row_group_range),
+                "valid_row_group_range": list(split_plan.valid_row_group_range),
+                "train_rows": split_plan.train_rows,
+                "valid_rows": split_plan.valid_rows,
+                "reuse_train_for_valid": split_plan.reuse_train_for_valid,
+                "is_disjoint": split_plan.is_disjoint,
+                "is_l1_ready": split_plan.is_l1_ready,
+            },
+        }
 
     def _resolve_schema_path(self, dataset_path: Path, schema_path: Path | None, checkpoint_dir: Path) -> Path:
         return resolve_schema_path(dataset_path, schema_path, checkpoint_dir)

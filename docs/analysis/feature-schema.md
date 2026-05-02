@@ -4,24 +4,47 @@ icon: lucide/table-properties
 
 # 特征 Schema 参考
 
-本项目涉及多份特征 schema，结构相同但基数不同。Schema 随数据集规模变化——样本量越大，观测到的唯一值越多，基数越接近真实分布。
+本项目现在需要区分两类 schema：
+
+- 声明式 schema：原始 `schema.json`，描述列布局、特征 FID、词表大小上界和 multi-hot 维度。训练、评估、推理加载数据时首先读取这一份。
+- 观测 schema：按真实 parquet 内容统计得到的 sidecar，和 `schema.json` 形状一致，但基数与实际 multi-hot 维度来自当前数据切片。
+
+Schema 会随数据集规模变化而变化。样本量越大，观测到的唯一值越多，基数越接近真实分布；因此 Train / Eval 不能再直接抄运行日志里的 `Loaded PCVR schema`，必须使用 split-specific observed schema sidecar。
+
+> [!IMPORTANT]
+> 当前运行日志里的 `PCVR train schema payload` / `PCVR valid schema payload` 是压缩成单行 JSON 的声明式 `schema.json`，便于日志检索，但它们不是 Train / Eval 独立统计结果。
+>
+> 当前实现中，真正用于回填 Train / Eval 列的文件是：
+> - 训练：`train_split_observed_schema.json`、`valid_split_observed_schema.json`
+> - 评估：`evaluation_observed_schema.json`
 
 ## 数据集与 Schema 对应关系
 
-| Schema    | 来源                               | 样本量               | 用途                                      | 状态   |
-| --------- | ---------------------------------- | -------------------- | ----------------------------------------- | ------ |
-| **Infer** |                                    | 31 万+（完整训练集） | `taac-evaluate infer` 线上打分，无 label  | 已有   |
-| **Eval**  |                                    |                      | `taac-evaluate single` 本地验证，有 label | 待补充 |
-| **Demo**  | `data/sample_1000_raw/schema.json` | 1000                 | 本地开发、单元测试                        | 已有   |
-| **Train** |                                    |                      | 训练时内部验证（Row Group split）         | 待补充 |
+| Schema    | 来源                                                                            | 样本量                                         | 用途                                      | 状态               |
+| --------- | ------------------------------------------------------------------------------- | ---------------------------------------------- | ----------------------------------------- | ------------------ |
+| **Infer** | 数据集或 checkpoint 侧车 `schema.json`（声明式）                                | 全量数据集；当前 AMS 日志示例总计 1,010,000 行 | `taac-evaluate infer` 线上打分，无 label  | 已有               |
+| **Eval**  | `evaluation_observed_schema.json`（观测）                                       | 当前 AMS 日志示例 102,619 行 / 100 Row Groups  | `taac-evaluate single` 本地验证，有 label | 已实现，待回填表格 |
+| **Demo**  | `data/sample_1000_raw/schema.json`                                              | 1000                                           | 本地开发、单元测试                        | 已有               |
+| **Train** | `train_split_observed_schema.json` / `valid_split_observed_schema.json`（观测） | 当前 AMS 日志示例 907,381 / 102,619 行         | 训练时内部验证（Row Group split）         | 已实现，待回填表格 |
+
+### 当前实现约定
+
+- `taac-train` 训练结束后会返回 `observed_schema_paths.train_split` 和 `observed_schema_paths.valid_split`。
+- `taac-evaluate single` 会在 `evaluation.json` 中返回 `observed_schema_paths.eval`，对应 `evaluation_observed_schema.json`。
+- `taac-evaluate infer` 当前仍以声明式 `schema.json` 为准，不额外生成 infer observed schema sidecar。
+- 当前 AMS 训练日志示例的 Row Group 切分为 `900 train / 100 valid`，对应 `907,381 train rows / 102,619 valid rows`。
 
 ### 流程说明
 
 ```
-训练时:  train_loader (前90% Row Groups) ──► trainer.train()
-         valid_loader (后10% Row Groups) ──► trainer.evaluate()  → AUC / early stopping
+训练时:  schema.json (声明式) ──► train_loader (前90% Row Groups) ──► trainer.train()
+                               └► valid_loader (后10% Row Groups) ──► trainer.evaluate()  → AUC / early stopping
+                               └► train_split_observed_schema.json / valid_split_observed_schema.json
 
-评估时:  taac-evaluate single  ──► experiment.evaluate()  → evaluation.json (AUC + CI)
+评估时:  taac-evaluate single  ──► experiment.evaluate()
+                               └► evaluation.json (AUC + CI)
+                               └► evaluation_observed_schema.json
+
 打分时:  taac-evaluate infer   ──► experiment.infer()     → predictions.json (user_id: score)
 ```
 
@@ -37,11 +60,13 @@ icon: lucide/table-properties
 
 稠密特征以 `[fid, dim]` 二元组定义，序列特征以 `[fid, cardinality]` 二元组定义。
 
+声明式 schema 和观测 schema 共享同一形状，因此 Train / Eval sidecar 可以直接按本文表格结构回填。
+
 ## 用户整数特征 (`user_int`)
 
 共 46 个特征。
 
-<div class="echarts" data-src="../assets/figures/schema/user_int_cardinality.echarts.json"></div>
+下表直接给出 `user_int` 在 Infer / Eval / Demo / Train 之间的基数对比，重点关注高基数用户 ID、用户分群以及多值交叉特征的覆盖差异。
 
 | FID | Infer 基数 | Eval 基数 | Demo 基数 | Train 基数 | Infer Multi-Hot | Eval Multi-Hot | Demo Multi-Hot | Train Multi-Hot | 说明           |
 | --- | ---------- | --------- | --------- | ---------- | --------------- | -------------- | -------------- | --------------- | -------------- |
@@ -91,14 +116,13 @@ icon: lucide/table-properties
 | 107 | 4          |           | 3         |            | 1               |                | 1              |                 |                |
 | 108 | 8          |           | 8         |            | 1               |                | 1              |                 |                |
 | 109 | 8          |           | 8         |            | 1               |                | 1              |                 |                |
-
-<div class="echarts" data-src="../assets/figures/schema/user_int_multihot.echarts.json"></div>
+上表同时覆盖 `user_int` 的 multi-hot 维度变化，可直接对比完整数据、开发样本和后续待补齐的 split 观测结果。
 
 ## 物品整数特征 (`item_int`)
 
 共 14 个特征。
 
-<div class="echarts" data-src="../assets/figures/schema/item_int_cardinality.echarts.json"></div>
+下表直接展示 `item_int` 的基数与 multi-hot 差异，尤其适合观察物品 ID、内容特征和交叉特征在不同数据规模下的离散程度。
 
 | FID | Infer 基数 | Eval 基数 | Demo 基数 | Train 基数 | Infer Multi-Hot | Eval Multi-Hot | Demo Multi-Hot | Train Multi-Hot | 说明              |
 | --- | ---------- | --------- | --------- | ---------- | --------------- | -------------- | -------------- | --------------- | ----------------- |
@@ -121,7 +145,7 @@ icon: lucide/table-properties
 
 共 10 个特征。
 
-<div class="echarts" data-src="../assets/figures/schema/user_dense_dim.echarts.json"></div>
+下表直接比较 `user_dense` 的维度变化，用于判断 embedding 向量、统计特征和序列聚合特征在不同 schema 下是否保持一致。
 
 | FID | Infer 维度 | Eval 维度 | Demo 维度 | Train 维度 | 说明                  |
 | --- | ---------- | --------- | --------- | ---------- | --------------------- |
@@ -140,7 +164,7 @@ icon: lucide/table-properties
 
 共 4 条行为序列，支持跨域兴趣建模。
 
-<div class="echarts" data-src="../assets/figures/schema/seq_cardinality.echarts.json"></div>
+下文按域分别列出序列特征基数，便于直接比较各行为域在完整数据、开发样本和后续观测 sidecar 之间的覆盖范围与时间戳统计差异。
 
 ### seq_a — 域 A 序列
 
@@ -225,6 +249,8 @@ icon: lucide/table-properties
 
 ## Infer vs Demo 差异总结
 
+- 当前日志里的 `PCVR train schema payload` / `PCVR valid schema payload` 已改为单行打印，便于平台日志检索；它们表示声明式 schema，不表示 Train / Eval 的 observed schema。
+- Train / Eval 列后续应从 `train_split_observed_schema.json`、`valid_split_observed_schema.json`、`evaluation_observed_schema.json` 回填，而不是从日志里的单行 payload 复制。
 - **multi-hot 维度**差异显著：Infer 来自完整数据集，multi-hot 更大（如 FID 65: 111 vs 49）
 - **物品 ID 基数**：Demo 32506 > Infer 21528，Demo 样本的物品分布更分散
 - **时间戳 FID**（39/67/27/26）：Demo 有实际值（如 1772725488），Infer 为 0（线上 schema 未统计时间戳范围）

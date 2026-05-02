@@ -13,13 +13,10 @@ classifiers = [
 ]
 dependencies = [
 	"datasets==2.14.7",
-	"hypothesis==6.151.12",
 	"matplotlib==3.10.8",
 	"numpy==2.2.5",
 	"orjson==3.11.8",
 	"pyarrow==23.0.1",
-	"pytest==9.0.3",
-	"pytest-benchmark==5.2.3",
 	"rich==14.3.3",
 	"safetensors==0.7.0",
 	"scikit-learn==1.7.2",
@@ -30,6 +27,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+dev = [
+	"hypothesis==6.151.12",
+	"pytest==9.0.3",
+	"pytest-benchmark==5.2.3",
+	"pytest-cov==7.1.0",
+	"ruff==0.15.12",
+	"zensical==0.0.38",
+]
 cuda126 = [
 	"torch==2.7.1+cu126",
 	"fbgemm-gpu==1.2.0+cu126",

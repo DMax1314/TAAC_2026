@@ -90,7 +90,7 @@ def _should_install_project_pip_dependencies() -> bool:
 def _install_project_pip_dependencies(project_dir: Path) -> None:
     if not _should_install_project_pip_dependencies():
         return
-    extras = _split_env_words("TAAC_PIP_EXTRAS")
+    extras = _split_env_words("TAAC_BUNDLE_PIP_EXTRAS")
     target = "."
     if extras:
         target = f".[{','.join(extras)}]"
@@ -158,6 +158,7 @@ def _format_bundle_summary(result: BundleResult) -> str:
                 f"  dataset: {runtime_env.get('dataset_path', '<unknown>')}",
                 f"  result: {runtime_env.get('result_path', '<unknown>')}",
                 f"  schema: {runtime_env.get('schema_path', '<unknown>')}",
+                f"  pip extras: {runtime_env.get('pip_extras', '<unknown>')}",
             ]
         )
     lines.append("Upload the two files above: infer.py and code_package.zip")
@@ -229,6 +230,7 @@ def build_inference_bundle(
             "dataset_path": "EVAL_DATA_PATH",
             "result_path": "EVAL_RESULT_PATH",
             "schema_path": "TAAC_SCHEMA_PATH",
+            "pip_extras": "TAAC_BUNDLE_PIP_EXTRAS (optional; defaults to runtime-only install with no dev extra)",
         },
     }
     if force:

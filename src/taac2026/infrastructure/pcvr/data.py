@@ -28,7 +28,7 @@ import torch.multiprocessing
 from numpy.typing import NDArray
 from torch.utils.data import IterableDataset, DataLoader
 
-from taac2026.infrastructure.io.json_utils import read_path
+from taac2026.infrastructure.io.json_utils import dumps, read_path
 from taac2026.infrastructure.pcvr.config import PCVRDataPipelineConfig
 from taac2026.infrastructure.pcvr.data_pipeline import (
     PCVRBatchTransform,
@@ -109,6 +109,8 @@ class FeatureSchema:
 # Use filesystem-based tensor sharing (instead of /dev/shm) to avoid running
 # out of shared memory when many DataLoader workers are active.
 torch.multiprocessing.set_sharing_strategy("file_system")
+
+DEFAULT_PCVR_OBSERVED_SCHEMA_BATCH_SIZE = 1024
 
 # Time-delta bucket boundaries (64 edges -> 65 buckets: 0=padding, 1..64).
 BUCKET_BOUNDARIES = np.array(
@@ -221,6 +223,241 @@ class PCVRRowGroupSplitPlan:
         )
 
 
+class _ExactPositiveCardinalityCounter:
+    def __init__(self, max_value_hint: int) -> None:
+        self.max_value_hint = max(0, int(max_value_hint))
+        self._bitset = bytearray((self.max_value_hint // 8) + 1) if self.max_value_hint > 0 else bytearray()
+        self._overflow_values: set[int] = set()
+        self.count = 0
+
+    def add_values(self, values: NDArray[np.int64]) -> None:
+        if values.size == 0:
+            return
+        positive_values = values[values > 0]
+        if positive_values.size == 0:
+            return
+        for raw_value in np.unique(positive_values).tolist():
+            value = int(raw_value)
+            if 0 < value <= self.max_value_hint:
+                byte_index = value >> 3
+                bit_mask = 1 << (value & 7)
+                if self._bitset[byte_index] & bit_mask:
+                    continue
+                self._bitset[byte_index] |= bit_mask
+                self.count += 1
+                continue
+            if value not in self._overflow_values:
+                self._overflow_values.add(value)
+                self.count += 1
+
+
+def _is_list_like_arrow_type(data_type: pa.DataType) -> bool:
+    return pa.types.is_list(data_type) or pa.types.is_large_list(data_type)
+
+
+def _list_lengths(array: pa.Array) -> NDArray[np.int64]:
+    offsets = array.offsets.to_numpy().astype(np.int64, copy=False)
+    return np.diff(offsets)
+
+
+def _scalar_positive_values(array: pa.Array) -> NDArray[np.int64]:
+    return array.fill_null(0).to_numpy(zero_copy_only=False).astype(np.int64, copy=False)
+
+
+def _list_positive_values(array: pa.Array) -> NDArray[np.int64]:
+    return array.values.to_numpy(zero_copy_only=False).astype(np.int64, copy=False)
+
+
+def build_pcvr_observed_schema_report(
+    data_dir: str | Path,
+    schema_path: str | Path,
+    *,
+    row_group_range: tuple[int, int] | None = None,
+    batch_size: int = DEFAULT_PCVR_OBSERVED_SCHEMA_BATCH_SIZE,
+    dataset_role: str = "dataset",
+) -> dict[str, Any]:
+    resolved_dataset_path = Path(data_dir).expanduser().resolve()
+    resolved_schema_path = Path(schema_path).expanduser().resolve()
+    raw_schema = read_path(resolved_schema_path)
+    rg_info = collect_pcvr_row_groups(resolved_dataset_path)
+    total_row_groups = len(rg_info)
+
+    if row_group_range is None:
+        start_index, end_index = 0, total_row_groups
+    else:
+        start_index, end_index = row_group_range
+        if start_index < 0 or end_index > total_row_groups or start_index >= end_index:
+            raise ValueError(
+                f"invalid row_group_range={row_group_range}; available row groups: 0..{total_row_groups}"
+            )
+
+    selected_row_groups = rg_info[start_index:end_index]
+    if not selected_row_groups:
+        raise ValueError("at least one Row Group is required to build observed schema report")
+
+    user_int_specs = [
+        {
+            "fid": int(fid),
+            "column": f"user_int_feats_{fid}",
+            "declared_dim": int(dim),
+            "observed_dim": 1 if int(dim) == 1 else 0,
+            "counter": _ExactPositiveCardinalityCounter(int(cardinality)),
+        }
+        for fid, cardinality, dim in raw_schema["user_int"]
+    ]
+    item_int_specs = [
+        {
+            "fid": int(fid),
+            "column": f"item_int_feats_{fid}",
+            "declared_dim": int(dim),
+            "observed_dim": 1 if int(dim) == 1 else 0,
+            "counter": _ExactPositiveCardinalityCounter(int(cardinality)),
+        }
+        for fid, cardinality, dim in raw_schema["item_int"]
+    ]
+    user_dense_specs = [
+        {
+            "fid": int(fid),
+            "column": f"user_dense_feats_{fid}",
+            "observed_dim": 0,
+        }
+        for fid, _dim in raw_schema["user_dense"]
+    ]
+    seq_specs: dict[str, dict[str, Any]] = {}
+    for domain, config in sorted(raw_schema["seq"].items()):
+        prefix = str(config["prefix"])
+        ts_fid = config.get("ts_fid")
+        feature_specs: list[dict[str, Any]] = []
+        for fid, cardinality in config["features"]:
+            feature_id = int(fid)
+            if ts_fid is not None and feature_id == int(ts_fid):
+                feature_specs.append(
+                    {
+                        "fid": feature_id,
+                        "column": f"{prefix}_{feature_id}",
+                        "is_timestamp": True,
+                        "max_value": 0,
+                    }
+                )
+            else:
+                feature_specs.append(
+                    {
+                        "fid": feature_id,
+                        "column": f"{prefix}_{feature_id}",
+                        "is_timestamp": False,
+                        "counter": _ExactPositiveCardinalityCounter(int(cardinality)),
+                    }
+                )
+        seq_specs[domain] = {
+            "prefix": prefix,
+            "ts_fid": int(ts_fid) if ts_fid is not None else None,
+            "features": feature_specs,
+        }
+
+    requested_columns = [spec["column"] for spec in user_int_specs]
+    requested_columns.extend(spec["column"] for spec in item_int_specs)
+    requested_columns.extend(spec["column"] for spec in user_dense_specs)
+    for config in seq_specs.values():
+        requested_columns.extend(feature["column"] for feature in config["features"])
+
+    current_file_path: str | None = None
+    current_parquet_file: pq.ParquetFile | None = None
+    for file_path, row_group_index, _num_rows in selected_row_groups:
+        if file_path != current_file_path:
+            current_file_path = file_path
+            current_parquet_file = pq.ParquetFile(file_path)
+        if current_parquet_file is None:
+            continue
+        for batch in current_parquet_file.iter_batches(
+            batch_size=batch_size,
+            row_groups=[row_group_index],
+            columns=requested_columns,
+        ):
+            column_index = {name: index for index, name in enumerate(batch.schema.names)}
+
+            for spec in user_int_specs:
+                column = batch.column(column_index[spec["column"]])
+                if _is_list_like_arrow_type(column.type):
+                    lengths = _list_lengths(column)
+                    if lengths.size > 0:
+                        spec["observed_dim"] = max(spec["observed_dim"], int(lengths.max()))
+                    spec["counter"].add_values(_list_positive_values(column))
+                else:
+                    spec["counter"].add_values(_scalar_positive_values(column))
+
+            for spec in item_int_specs:
+                column = batch.column(column_index[spec["column"]])
+                if _is_list_like_arrow_type(column.type):
+                    lengths = _list_lengths(column)
+                    if lengths.size > 0:
+                        spec["observed_dim"] = max(spec["observed_dim"], int(lengths.max()))
+                    spec["counter"].add_values(_list_positive_values(column))
+                else:
+                    spec["counter"].add_values(_scalar_positive_values(column))
+
+            for spec in user_dense_specs:
+                column = batch.column(column_index[spec["column"]])
+                if _is_list_like_arrow_type(column.type):
+                    lengths = _list_lengths(column)
+                    if lengths.size > 0:
+                        spec["observed_dim"] = max(spec["observed_dim"], int(lengths.max()))
+                elif batch.num_rows > 0:
+                    spec["observed_dim"] = max(spec["observed_dim"], 1)
+
+            for config in seq_specs.values():
+                for feature in config["features"]:
+                    column = batch.column(column_index[feature["column"]])
+                    values = _list_positive_values(column) if _is_list_like_arrow_type(column.type) else _scalar_positive_values(column)
+                    if feature["is_timestamp"]:
+                        positive_values = values[values > 0]
+                        if positive_values.size > 0:
+                            feature["max_value"] = max(feature["max_value"], int(positive_values.max()))
+                    else:
+                        feature["counter"].add_values(values)
+
+    observed_schema = {
+        "user_int": [
+            [spec["fid"], int(spec["counter"].count), int(spec["observed_dim"])]
+            for spec in user_int_specs
+        ],
+        "item_int": [
+            [spec["fid"], int(spec["counter"].count), int(spec["observed_dim"])]
+            for spec in item_int_specs
+        ],
+        "user_dense": [
+            [spec["fid"], int(spec["observed_dim"])]
+            for spec in user_dense_specs
+        ],
+        "seq": {
+            domain: {
+                "prefix": config["prefix"],
+                "ts_fid": config["ts_fid"],
+                "features": [
+                    [feature["fid"], int(feature["max_value"]) if feature["is_timestamp"] else int(feature["counter"].count)]
+                    for feature in config["features"]
+                ],
+            }
+            for domain, config in seq_specs.items()
+        },
+    }
+    report = {
+        "dataset_role": str(dataset_role).strip() or "dataset",
+        "dataset_path": str(resolved_dataset_path),
+        "schema_path": str(resolved_schema_path),
+        "row_group_range": [start_index, end_index],
+        "row_group_count": len(selected_row_groups),
+        "row_count": int(sum(num_rows for _file_path, _rg_index, num_rows in selected_row_groups)),
+        "schema": observed_schema,
+    }
+    logging.info(
+        "Built PCVR observed schema report for %s: row_groups=%s, rows=%d",
+        report["dataset_role"],
+        report["row_group_range"],
+        report["row_count"],
+    )
+    return report
+
+
 def collect_pcvr_row_groups(data_dir: str | Path) -> list[tuple[str, int, int]]:
     data_path = Path(data_dir).expanduser()
     if data_path.is_dir():
@@ -308,6 +545,7 @@ class PCVRParquetDataset(IterableDataset):
         is_training: bool = True,
         data_pipeline_config: PCVRDataPipelineConfig | None = None,
         transforms: Sequence[PCVRBatchTransform] | None = None,
+        dataset_role: str = "dataset",
     ) -> None:
         """
         Args:
@@ -346,6 +584,9 @@ class PCVRParquetDataset(IterableDataset):
         self.buffer_batches = buffer_batches
         self.clip_vocab = clip_vocab
         self.is_training = is_training
+        self.dataset_role = str(dataset_role).strip() or "dataset"
+        self.row_group_range = row_group_range
+        self.schema_path = Path(schema_path).expanduser().resolve()
         self.data_pipeline_config = data_pipeline_config or PCVRDataPipelineConfig()
         self._strict_time_filter = bool(
             self.is_training
@@ -454,7 +695,8 @@ class PCVRParquetDataset(IterableDataset):
 
     def _load_schema(self, schema_path: str, seq_max_lens: dict[str, int]) -> None:
         """Populate per-group schema information from ``schema_path``."""
-        raw = read_path(Path(schema_path))
+        resolved_schema_path = Path(schema_path).expanduser().resolve()
+        raw = read_path(resolved_schema_path)
 
         # ---- user_int: [[fid, vocab_size, dim], ...] ----
         self._user_int_cols: list[list[int]] = raw["user_int"]
@@ -510,6 +752,25 @@ class PCVRParquetDataset(IterableDataset):
 
             # max_len: from seq_max_lens arg; unspecified domains fall back to 256.
             self._seq_maxlen[domain] = seq_max_lens.get(domain, 256)
+
+        logging.info(
+            "Loaded PCVR schema for %s dataset: path=%s, row_groups=%s, user_int=%d (%d dims), item_int=%d (%d dims), user_dense=%d (%d dims), seq_domains=%s",
+            self.dataset_role,
+            resolved_schema_path,
+            self.row_group_range if self.row_group_range is not None else "all",
+            len(self._user_int_cols),
+            self.user_int_schema.total_dim,
+            len(self._item_int_cols),
+            self.item_int_schema.total_dim,
+            len(self._user_dense_cols),
+            self.user_dense_schema.total_dim,
+            ", ".join(self.seq_domains) if self.seq_domains else "<none>",
+        )
+        logging.info(
+            "PCVR %s schema payload: %s",
+            self.dataset_role,
+            dumps(raw),
+        )
 
     def __len__(self) -> int:
         # Ceiling per Row Group; this is an upper bound on the true batch count.
@@ -1006,6 +1267,7 @@ def get_pcvr_data(
         clip_vocab=clip_vocab,
         data_pipeline_config=train_pipeline_config,
         is_training=True,
+        dataset_role="train",
     )
 
     use_cuda = torch.cuda.is_available()
@@ -1033,6 +1295,7 @@ def get_pcvr_data(
         clip_vocab=clip_vocab,
         data_pipeline_config=valid_pipeline_config,
         is_training=True,
+        dataset_role="valid",
     )
     valid_loader = DataLoader(
         valid_dataset,

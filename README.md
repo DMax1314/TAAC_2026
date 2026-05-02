@@ -68,7 +68,12 @@
 
 ```bash
 uv python install 3.10.20
+
+# 仅训练/评估
 uv sync --locked --extra cuda126
+
+# 需要测试、lint 或本地文档站时
+uv sync --locked --extra dev --extra cuda126
 
 # 训练baseline
 bash run.sh train --experiment config/baseline \
@@ -88,7 +93,7 @@ uv run taac-package-train --experiment config/baseline
 # 生成线上推理上传文件
 uv run taac-package-infer --experiment config/baseline
 
-# 跑完整训练栈回归
+# 跑完整训练栈回归（需 `--extra dev`）
 uv run pytest tests -q
 ```
 

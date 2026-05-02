@@ -4,9 +4,11 @@ import logging
 from pathlib import Path
 from types import ModuleType
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
-from taac2026.domain.config import EvalRequest, InferRequest
+from taac2026.domain.config import EvalRequest, InferRequest, TrainRequest
 from taac2026.infrastructure.io.json_utils import dumps, loads
 from taac2026.infrastructure.pcvr.config import PCVRDataConfig, PCVRTrainConfig
 import taac2026.infrastructure.pcvr.experiment as experiment_module
@@ -17,11 +19,42 @@ from taac2026.infrastructure.training.runtime import RuntimeExecutionConfig
 def _make_experiment(tmp_path: Path, *, train_defaults: PCVRTrainConfig | None = None) -> PCVRExperiment:
     package_dir = tmp_path / "package"
     package_dir.mkdir()
+    (package_dir / "model.py").write_text("class DummyModel:\n    pass\n", encoding="utf-8")
     return PCVRExperiment(
         name="pcvr_symbiosis",
         package_dir=package_dir,
         model_class_name="DummyModel",
         train_defaults=train_defaults or PCVRTrainConfig(),
+    )
+
+
+def _write_observed_schema_fixture(schema_path: Path, parquet_path: Path) -> None:
+    payload = {
+        "user_int": [[1, 10, 1], [2, 20, 4]],
+        "item_int": [[3, 20, 1]],
+        "user_dense": [[4, 4]],
+        "seq": {
+            "seq_a": {
+                "prefix": "domain_a_seq",
+                "ts_fid": 10,
+                "features": [[10, 0], [11, 20]],
+            }
+        },
+    }
+    schema_path.write_text(dumps(payload), encoding="utf-8")
+    pq.write_table(
+        pa.table(
+            {
+                "user_int_feats_1": [1, 2],
+                "user_int_feats_2": [[1, 2], [2, 3, 4]],
+                "item_int_feats_3": [10, 11],
+                "user_dense_feats_4": [[0.1, 0.2], [0.3]],
+                "domain_a_seq_10": [[100, 101], [103]],
+                "domain_a_seq_11": [[5, 6], [6, 7, 7]],
+            }
+        ),
+        parquet_path,
+        row_group_size=1,
     )
 
 
@@ -112,6 +145,43 @@ def test_infer_uses_train_config_runtime_settings(tmp_path: Path, monkeypatch: p
     assert loads((tmp_path / "results" / "predictions.json").read_bytes()) == {
         "predictions": {"u1": 0.5},
     }
+
+
+def test_train_writes_split_observed_schema_reports(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    experiment = _make_experiment(tmp_path)
+    dataset_path = tmp_path / "train.parquet"
+    schema_path = tmp_path / "schema.json"
+    run_dir = tmp_path / "outputs"
+    _write_observed_schema_fixture(schema_path, dataset_path)
+
+    monkeypatch.setattr(
+        experiment_module,
+        "train_pcvr_model",
+        lambda **kwargs: {"run_dir": str(run_dir.resolve()), "checkpoint_root": str(run_dir.resolve())},
+    )
+
+    payload = experiment.train(
+        TrainRequest(
+            experiment="config/symbiosis",
+            dataset_path=dataset_path,
+            schema_path=schema_path,
+            run_dir=run_dir,
+        )
+    )
+
+    observed_paths = payload["observed_schema_paths"]
+    assert set(observed_paths) == {"train_split", "valid_split"}
+    train_report = loads(Path(observed_paths["train_split"]).read_bytes())
+    valid_report = loads(Path(observed_paths["valid_split"]).read_bytes())
+    assert train_report["dataset_role"] == "train_split"
+    assert valid_report["dataset_role"] == "valid_split"
+    assert payload["row_group_split"]["train_row_group_range"] == [0, 1]
+    assert payload["row_group_split"]["valid_row_group_range"] == [1, 2]
+    assert train_report["schema"]["user_int"] == [[1, 1, 1], [2, 2, 2]]
+    assert valid_report["schema"]["user_int"] == [[1, 1, 1], [2, 3, 3]]
 
 
 def test_resolve_prediction_runtime_execution_requires_train_config_values(tmp_path: Path) -> None:
@@ -239,6 +309,7 @@ def test_run_prediction_loop_loads_safetensors_via_checkpoint_helper(
         num_workers=0,
         device="cpu",
         is_training_data=False,
+        dataset_role="inference",
         config={"seq_max_lens": "{}"},
     )
 
@@ -252,9 +323,22 @@ def test_evaluate_writes_score_diagnostics(tmp_path: Path, monkeypatch: pytest.M
     checkpoint_dir.mkdir()
     checkpoint_path = checkpoint_dir / "model.safetensors"
     checkpoint_path.write_bytes(b"checkpoint")
-    schema_payload = {"features": [{"name": "label"}]}
+    schema_payload = {
+        "user_int": [[1, 10, 1], [2, 20, 4]],
+        "item_int": [[3, 20, 1]],
+        "user_dense": [[4, 4]],
+        "seq": {
+            "seq_a": {
+                "prefix": "domain_a_seq",
+                "ts_fid": 10,
+                "features": [[10, 0], [11, 20]],
+            }
+        },
+    }
     (checkpoint_dir / "schema.json").write_text(dumps(schema_payload), encoding="utf-8")
     _write_train_config(checkpoint_dir)
+    dataset_path = tmp_path / "eval.parquet"
+    _write_observed_schema_fixture(checkpoint_dir / "schema.json", dataset_path)
 
     def fake_bound_run_prediction_loop(self, **kwargs):
         del self, kwargs
@@ -268,14 +352,10 @@ def test_evaluate_writes_score_diagnostics(tmp_path: Path, monkeypatch: pytest.M
         }
 
     monkeypatch.setattr(PCVRExperiment, "_run_prediction_loop", fake_bound_run_prediction_loop)
-    monkeypatch.setattr(
-        "taac2026.infrastructure.pcvr.experiment.pcvr_data.collect_pcvr_row_groups",
-        lambda _path: [(str(tmp_path / "eval.parquet"), 0, 2), (str(tmp_path / "eval.parquet"), 1, 2)],
-    )
     output_path = tmp_path / "evaluation.json"
     request = EvalRequest(
         experiment="config/symbiosis",
-        dataset_path=tmp_path / "eval.parquet",
+        dataset_path=dataset_path,
         schema_path=None,
         run_dir=checkpoint_dir,
         checkpoint_path=checkpoint_path,
@@ -293,10 +373,16 @@ def test_evaluate_writes_score_diagnostics(tmp_path: Path, monkeypatch: pytest.M
     assert payload["data_diagnostics"]["row_group_split"]["is_l1_ready"] is True
     assert payload["schema_path"] == str((checkpoint_dir / "schema.json").resolve())
     assert payload["schema"] == schema_payload
+    observed_schema_path = Path(payload["observed_schema_paths"]["eval"])
+    assert observed_schema_path.exists()
+    observed_schema_payload = loads(observed_schema_path.read_bytes())
+    assert observed_schema_payload["dataset_role"] == "eval"
+    assert observed_schema_payload["schema"]["user_int"] == [[1, 2, 1], [2, 4, 3]]
     saved_payload = loads(output_path.read_bytes())
     assert saved_payload["metrics"]["score_diagnostics"] == diagnostics
     assert saved_payload["data_diagnostics"] == payload["data_diagnostics"]
     assert saved_payload["schema"] == schema_payload
+    assert saved_payload["observed_schema_paths"] == payload["observed_schema_paths"]
     predictions_payload = (tmp_path / "predictions.jsonl").read_bytes()
     assert predictions_payload.endswith(b"\n")
     assert [loads(line) for line in predictions_payload.splitlines()] == [

@@ -39,7 +39,7 @@ icon: lucide/house
 
 ```bash
 # 安装
-uv sync --extra dev --extra pcvr
+uv sync --extra dev --extra cuda126
 
 # 训练
 uv run taac-train --experiment config/baseline \

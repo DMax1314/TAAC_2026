@@ -39,6 +39,7 @@ git lfs install
 git lfs pull
 uv python install 3.10.20
 uv sync --locked --extra cuda126
+uv sync --locked --extra dev --extra cuda126  # when running tests, lint, or local docs
 ```
 
 For local training or validation, use the only CUDA profile currently supported by the project:
@@ -61,7 +62,7 @@ bash run.sh package --experiment config/interformer --output-dir /tmp/interforme
 Local defaults:
 
 - All local commands use CUDA profile `cuda126`; setting `TAAC_CUDA_PROFILE` or `--cuda-profile` to any other value is treated as an error.
-- Training, evaluation, inference, and packaging commands all reuse the same `cuda126` environment; pytest, hypothesis, and benchmark tooling are part of the default dependencies and should be run with `uv run pytest`.
+- Training, evaluation, inference, and packaging commands all reuse the same `cuda126` environment; pytest, hypothesis, benchmark tooling, coverage helpers, Ruff, and Zensical live in the `dev` extra and should be installed with `uv sync --locked --extra dev --extra cuda126` when needed.
 - `TAAC_SKIP_UV_SYNC=1` skips automatic `uv sync` when the environment is already prepared.
 - `TAAC_INSTALL_UV=0` prevents `run.sh` from trying to install `uv` if it is missing.
 
@@ -71,9 +72,8 @@ The project requires Python `>=3.10,<3.14`.
 
 Important extras:
 
+- `dev`: Ruff, pytest, hypothesis, benchmark tooling, coverage helpers, and Zensical for local testing and docs work.
 - `cuda126`: CUDA 12.6 PyTorch, FBGEMM, and TorchRec runtime for the repository.
-
-Default dependencies already include pytest, hypothesis, and benchmark tooling.
 
 Do not point `uv` at an alternate package index unless you are intentionally updating dependency resolution. The lockfile is expected to resolve against the indexes declared in `pyproject.toml`.
 
@@ -132,6 +132,7 @@ Dependency responsibility online:
 - Prefer the platform or image-provided CUDA, PyTorch, FBGEMM, and TorchRec stack.
 - Use Conda for the base Python/CUDA/PyTorch environment if the platform allows custom images or startup commands.
 - Use pip inside that Conda environment only for missing pure-Python packages that are not already available.
+- Packaged `run.sh` and `infer.py` default to `pip install .` and therefore skip the repository `dev` extra; use `TAAC_BUNDLE_PIP_EXTRAS` only when you intentionally need an extra inside bundle mode.
 - Do not call `uv sync` or require `uv.lock` online; `uv.lock` remains a local repository artifact for provenance and reproducibility and is not packaged into online bundles.
 
 If the platform image allows a pre-run dependency step, use the active Conda Python:
@@ -164,6 +165,7 @@ Important runtime variables:
 - `TAAC_BUNDLE_WORKDIR`: directory where `code_package.zip` is extracted.
 - `TAAC_CODE_PACKAGE`: non-default path to `code_package.zip`.
 - `TAAC_FORCE_EXTRACT=1`: force re-extraction of the zip.
+- `TAAC_BUNDLE_PIP_EXTRAS`: optional extras to install in bundle mode; default is empty so packaged train/infer skip `dev`.
 - `TAAC_PYTHON`: explicit Python interpreter, often the active Conda interpreter.
 - `TAAC_RUNNER=python`: force online no-uv execution.
 
@@ -184,14 +186,15 @@ python -m taac2026.application.training.cli --experiment <manifest experiment> .
 Use this lifecycle for competition work:
 
 1. Develop locally with `uv sync --locked --extra cuda126`.
-2. Add or modify an experiment package under `config/<name>`.
-3. Run focused unit tests locally with `uv run pytest tests/unit -q`.
-4. For training experiments, keep the same `cuda126` environment and train through `bash run.sh train --experiment config/<name>`.
-5. Build the online bundle with `bash run.sh package --experiment config/<name> --force`.
-6. Inspect `code_package.zip` when changing packaging logic; confirm it contains the selected experiment package and required assets such as `ns_groups.json`.
-7. Upload only `run.sh` and `code_package.zip` to the online platform.
-8. Run online in the platform Conda/Python environment with `TAAC_RUNNER=python` and dataset/output environment variables.
-9. Collect checkpoints, logs, tensorboard events, predictions, and sidecars from the platform output directory.
+2. Install local dev tooling with `uv sync --locked --extra dev --extra cuda126` when you need pytest, Ruff, or docs preview.
+3. Add or modify an experiment package under `config/<name>`.
+4. Run focused unit tests locally with `uv run pytest tests/unit -q`.
+5. For training experiments, keep the same `cuda126` environment and train through `bash run.sh train --experiment config/<name>`.
+6. Build the online bundle with `bash run.sh package --experiment config/<name> --force`.
+7. Inspect `code_package.zip` when changing packaging logic; confirm it contains the selected experiment package and required assets such as `ns_groups.json`.
+8. Upload only `run.sh` and `code_package.zip` to the online platform.
+9. Run online in the platform Conda/Python environment with `TAAC_RUNNER=python` and dataset/output environment variables.
+10. Collect checkpoints, logs, tensorboard events, predictions, and sidecars from the platform output directory.
 
 ## Validation Commands
 
