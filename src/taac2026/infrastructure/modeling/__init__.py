@@ -6,7 +6,7 @@ from taac2026.infrastructure.modeling.model_contract import ModelInput as ModelI
 from taac2026.infrastructure.modeling import normalization as _normalization
 from taac2026.infrastructure.modeling import sequence as _sequence
 from taac2026.infrastructure.modeling.embeddings import EmbeddingParameterMixin, FeatureEmbeddingBank
-from taac2026.infrastructure.modeling.normalization import RMSNorm
+from taac2026.infrastructure.modeling.normalization import LayerNorm, RMSNorm
 from taac2026.infrastructure.modeling.sequence import (
     FlashAttentionBackend,
     causal_valid_attention_mask,
@@ -52,6 +52,7 @@ __all__ = [
     "EmbeddingParameterMixin",
     "FeatureEmbeddingBank",
     "FlashAttentionBackend",
+    "LayerNorm",
     "ModelInput",
     "NonSequentialTokenizer",
     "RMSNorm",

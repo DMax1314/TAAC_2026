@@ -10,9 +10,11 @@ import torch.nn.functional as F
 from taac2026.infrastructure.accelerators import (
     embedding_bag_mean,
     flash_attention,
+    layer_norm,
     multi_latent_attention,
     resolved_embedding_bag_mean_backend,
     resolved_flash_attention_backend,
+    resolved_layer_norm_backend,
     resolved_rms_norm_backend,
     rms_norm,
 )
@@ -22,6 +24,7 @@ attention_tilelang_kernels = importlib.import_module("taac2026.infrastructure.ac
 embedding_bag_ops = importlib.import_module("taac2026.infrastructure.accelerators.embedding.embedding_bag")
 embedding_tilelang_kernels = importlib.import_module("taac2026.infrastructure.accelerators.embedding.kernels.tilelang")
 embedding_triton_kernels = importlib.import_module("taac2026.infrastructure.accelerators.embedding.kernels.triton")
+layer_norm_ops = importlib.import_module("taac2026.infrastructure.accelerators.normalization.layer_norm")
 rms_norm_ops = importlib.import_module("taac2026.infrastructure.accelerators.normalization.rms_norm")
 normalization_tilelang_kernels = importlib.import_module("taac2026.infrastructure.accelerators.normalization.kernels.tilelang")
 normalization_triton_kernels = importlib.import_module("taac2026.infrastructure.accelerators.normalization.kernels.triton")
@@ -65,8 +68,10 @@ def test_tilelang_runtime_exports_shared_capability_helpers() -> None:
 
 def test_triton_runtime_does_not_export_domain_kernel_builders() -> None:
     assert "build_embedding_bag_mean_forward_kernel" not in triton_runtime.__all__
+    assert "build_layer_norm_forward_kernel" not in triton_runtime.__all__
     assert "build_rms_norm_forward_kernel" not in triton_runtime.__all__
     assert not hasattr(triton_runtime, "build_embedding_bag_mean_forward_kernel")
+    assert not hasattr(triton_runtime, "build_layer_norm_forward_kernel")
     assert not hasattr(triton_runtime, "build_rms_norm_forward_kernel")
 
 
@@ -104,9 +109,14 @@ def test_tilelang_kernel_builders_are_domain_scoped() -> None:
 def test_triton_kernel_builders_are_domain_scoped() -> None:
     assert hasattr(embedding_triton_kernels, "build_embedding_bag_mean_forward_kernel")
     assert hasattr(embedding_triton_kernels, "build_embedding_bag_mean_backward_kernel")
+    assert hasattr(normalization_triton_kernels, "build_layer_norm_forward_kernel")
+    assert hasattr(normalization_triton_kernels, "build_layer_norm_backward_kernel")
+    assert hasattr(normalization_triton_kernels, "build_layer_norm_inference_kernel")
     assert hasattr(normalization_triton_kernels, "build_rms_norm_forward_kernel")
     assert hasattr(normalization_triton_kernels, "build_rms_norm_backward_kernel")
     assert embedding_triton_kernels.build_embedding_bag_mean_forward_kernel.__module__ == embedding_triton_kernels.__name__
+    assert normalization_triton_kernels.build_layer_norm_forward_kernel.__module__ == normalization_triton_kernels.__name__
+    assert normalization_triton_kernels.build_layer_norm_inference_kernel.__module__ == normalization_triton_kernels.__name__
     assert normalization_triton_kernels.build_rms_norm_forward_kernel.__module__ == normalization_triton_kernels.__name__
 
 
@@ -530,10 +540,135 @@ def test_rms_norm_matches_reference_on_cpu_torch_backend() -> None:
     torch.testing.assert_close(output, reference)
 
 
+def test_layer_norm_matches_reference_on_cpu_torch_backend() -> None:
+    x = torch.randn(8, 4, 16, dtype=torch.float32)
+    weight = torch.randn(16, dtype=torch.float32)
+    bias = torch.randn(16, dtype=torch.float32)
+
+    output = layer_norm(x, weight, bias, backend="torch")
+    reference = F.layer_norm(x, (16,), weight, bias, 1e-5)
+
+    torch.testing.assert_close(output, reference)
+
+
+def test_layer_norm_torch_backend_matches_reference_backward() -> None:
+    x = torch.randn(8, 4, 16, dtype=torch.float32, requires_grad=True)
+    weight = torch.randn(16, dtype=torch.float32, requires_grad=True)
+    bias = torch.randn(16, dtype=torch.float32, requires_grad=True)
+    x_ref = x.detach().clone().requires_grad_(True)
+    weight_ref = weight.detach().clone().requires_grad_(True)
+    bias_ref = bias.detach().clone().requires_grad_(True)
+
+    output = layer_norm(x, weight, bias, backend="torch")
+    reference = F.layer_norm(x_ref, (16,), weight_ref, bias_ref, 1e-5)
+    output.square().mean().backward()
+    reference.square().mean().backward()
+
+    torch.testing.assert_close(output, reference)
+    torch.testing.assert_close(x.grad, x_ref.grad)
+    torch.testing.assert_close(weight.grad, weight_ref.grad)
+    torch.testing.assert_close(bias.grad, bias_ref.grad)
+
+
+def test_layer_norm_default_preserves_registered_torch_kernel(monkeypatch) -> None:
+    x = torch.randn(2, 3, 4, dtype=torch.float32)
+    weight = torch.randn(4, dtype=torch.float32)
+    bias = torch.randn(4, dtype=torch.float32)
+    expected = torch.full_like(x, 7.0)
+
+    monkeypatch.setattr(layer_norm_ops, "_layer_norm_kernel", lambda _x, _weight, _bias, _eps: expected)
+
+    output = layer_norm(x, weight, bias, backend="torch")
+
+    torch.testing.assert_close(output, expected)
+
+
+def test_layer_norm_triton_no_grad_uses_inference_kernel_for_trainable_parameters(monkeypatch) -> None:
+    x = torch.randn(2, 3, 4, dtype=torch.float32, requires_grad=True)
+    weight = torch.randn(4, dtype=torch.float32, requires_grad=True)
+    bias = torch.randn(4, dtype=torch.float32, requires_grad=True)
+    expected = torch.full_like(x, 11.0)
+
+    monkeypatch.setattr(layer_norm_ops, "resolved_layer_norm_backend", lambda *_args, **_kwargs: "triton")
+    monkeypatch.setattr(
+        layer_norm_ops,
+        "compile_triton_layer_norm_kernel",
+        lambda *_args, **_kwargs: (lambda _x, _weight, _bias: expected.reshape(-1, expected.shape[-1])),
+    )
+    monkeypatch.setattr(
+        layer_norm_ops._TritonLayerNormFunction,
+        "apply",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("training path used under no_grad")),
+    )
+
+    with torch.no_grad():
+        output = layer_norm(x, weight, bias, backend="triton")
+
+    torch.testing.assert_close(output, expected)
+
+
+def test_resolved_layer_norm_backend_falls_back_to_torch_on_cpu() -> None:
+    x = torch.randn(16, 64, dtype=torch.float32)
+
+    assert resolved_layer_norm_backend(x, "torch") == "torch"
+
+
+def test_resolved_layer_norm_backend_rejects_unknown_backend() -> None:
+    x = torch.randn(16, 64, dtype=torch.float32)
+
+    with pytest.raises(ValueError, match="unsupported layer_norm backend"):
+        resolved_layer_norm_backend(x, "tilelang")  # type: ignore[arg-type]
+
+
+def test_resolved_layer_norm_backend_rejects_triton_when_unavailable(monkeypatch) -> None:
+    x = torch.randn(16, 64, dtype=torch.float32)
+
+    monkeypatch.setattr(layer_norm_ops, "triton_available", lambda: False)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        resolved_layer_norm_backend(x, "triton")
+
+    _assert_error_mentions(exc_info, "triton", "not installed")
+
+
+def test_resolved_layer_norm_backend_rejects_triton_on_cpu(monkeypatch) -> None:
+    x = torch.randn(16, 64, dtype=torch.float32)
+
+    monkeypatch.setattr(layer_norm_ops, "triton_available", lambda: True)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        resolved_layer_norm_backend(x, "triton")
+
+    _assert_error_mentions(exc_info, "requires CUDA tensors")
+
+
 def test_resolved_rms_norm_backend_falls_back_to_torch_on_cpu() -> None:
     x = torch.randn(16, 64, dtype=torch.float32)
 
     assert resolved_rms_norm_backend(x, "torch") == "torch"
+
+
+def test_rms_norm_triton_no_grad_uses_inference_kernel_for_trainable_parameters(monkeypatch) -> None:
+    x = torch.randn(2, 3, 4, dtype=torch.float32, requires_grad=True)
+    weight = torch.randn(4, dtype=torch.float32, requires_grad=True)
+    expected = torch.full_like(x, 13.0)
+
+    monkeypatch.setattr(rms_norm_ops, "resolved_rms_norm_backend", lambda *_args, **_kwargs: "triton")
+    monkeypatch.setattr(
+        rms_norm_ops,
+        "compile_triton_rms_norm_kernel",
+        lambda *_args, **_kwargs: (lambda _x, _weight: expected.reshape(-1, expected.shape[-1])),
+    )
+    monkeypatch.setattr(
+        rms_norm_ops._TritonRMSNormFunction,
+        "apply",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("training path used under no_grad")),
+    )
+
+    with torch.no_grad():
+        output = rms_norm(x, weight, backend="triton")
+
+    torch.testing.assert_close(output, expected)
 
 
 def test_resolved_rms_norm_backend_rejects_tilelang_when_unavailable(monkeypatch) -> None:

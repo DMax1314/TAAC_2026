@@ -7,6 +7,7 @@ from contextvars import ContextVar
 import torch
 import torch.nn as nn
 
+from taac2026.infrastructure.accelerators.normalization.layer_norm import layer_norm
 from taac2026.infrastructure.accelerators.normalization.rms_norm import rms_norm
 
 
@@ -53,9 +54,34 @@ class RMSNorm(nn.Module):
 		)
 
 
+class LayerNorm(nn.Module):
+    def __init__(self, dim: int, eps: float = 1e-5, *, backend: str = "torch", block_rows: int = 1) -> None:
+        super().__init__()
+        self.backend = backend
+        self.block_rows = int(block_rows)
+        if self.backend not in {"torch", "triton"}:
+            raise ValueError(f"unsupported layer_norm backend: {self.backend}")
+        if self.block_rows < 1:
+            raise ValueError("layer_norm block_rows must be positive")
+        self.weight = nn.Parameter(torch.ones(dim))
+        self.bias = nn.Parameter(torch.zeros(dim))
+        self.eps = eps
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return layer_norm(
+            x,
+            self.weight,
+            self.bias,
+            self.eps,
+            backend=self.backend,
+            block_rows=self.block_rows,
+        )
+
+
 __all__ = [
     "RMS_NORM_BACKEND",
     "RMS_NORM_BLOCK_ROWS",
+    "LayerNorm",
     "RMSNorm",
     "configure_rms_norm_runtime",
     "rms_norm_runtime_state",

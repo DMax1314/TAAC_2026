@@ -7,6 +7,9 @@ from taac2026.infrastructure.accelerators.normalization.kernels.tilelang import 
     build_rms_norm_forward_kernel,
 )
 from taac2026.infrastructure.accelerators.normalization.kernels.triton import (
+    build_layer_norm_backward_kernel as build_triton_layer_norm_backward_kernel,
+    build_layer_norm_forward_kernel as build_triton_layer_norm_forward_kernel,
+    build_layer_norm_inference_kernel as build_triton_layer_norm_inference_kernel,
     build_rms_norm_backward_kernel as build_triton_rms_norm_backward_kernel,
     build_rms_norm_forward_kernel as build_triton_rms_norm_forward_kernel,
 )
@@ -14,6 +17,9 @@ from taac2026.infrastructure.accelerators.normalization.kernels.triton import (
 __all__ = [
     "build_rms_norm_backward_kernel",
     "build_rms_norm_forward_kernel",
+    "build_triton_layer_norm_backward_kernel",
+    "build_triton_layer_norm_forward_kernel",
+    "build_triton_layer_norm_inference_kernel",
     "build_triton_rms_norm_backward_kernel",
     "build_triton_rms_norm_forward_kernel",
 ]

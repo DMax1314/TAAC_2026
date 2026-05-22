@@ -8,6 +8,7 @@ from taac2026.application.benchmarking.pcvr_tilelang_ops_benchmark import (
     OperatorBenchmarkResult,
     _benchmark_embedding_bag_mean_backend,
     _benchmark_flash_attention_backend,
+    _benchmark_layer_norm_backend,
     _benchmark_rms_norm_backend,
     _summarize_runs,
     parse_args,
@@ -113,6 +114,30 @@ def test_parse_pcvr_tilelang_ops_benchmark_accepts_embedding_bag_mean_operator()
     assert args.rtol == 1e-2
 
 
+def test_parse_pcvr_tilelang_ops_benchmark_accepts_layer_norm_operator() -> None:
+    args = parse_args(
+        [
+            "--operator",
+            "layer_norm",
+            "--rows",
+            "128",
+            "--cols",
+            "48",
+            "--backends",
+            "torch,triton",
+            "--dtype",
+            "float32",
+        ]
+    )
+
+    assert args.operator == "layer_norm"
+    assert args.rows == 128
+    assert args.cols == 48
+    assert args.backends == ("torch", "triton")
+    assert args.atol == 1e-5
+    assert args.rtol == 1e-5
+
+
 def test_parse_pcvr_tilelang_ops_benchmark_accepts_cuembed_backend() -> None:
     args = parse_args(
         [
@@ -140,6 +165,7 @@ def test_parse_pcvr_tilelang_ops_benchmark_rejects_explicit_triton_flash_attenti
         )
     except ValueError as error:
         assert "rms_norm" in str(error)
+        assert "layer_norm" in str(error)
         assert "embedding_bag_mean" in str(error)
     else:  # pragma: no cover - defensive branch
         raise AssertionError("parse_args accepted triton for flash_attention")
@@ -255,6 +281,45 @@ def test_run_flash_attention_benchmark_reports_cpu_tilelang_as_unsupported() -> 
     assert rows["tilelang"]["status"] == "unsupported"
     assert rows["tilelang"]["successful_repeats"] == 0
     assert rows["tilelang"]["error"]
+
+
+def test_run_layer_norm_benchmark_reports_cpu_triton_as_unsupported() -> None:
+    args = parse_args(
+        [
+            "--operator",
+            "layer_norm",
+            "--device",
+            "cpu",
+            "--rows",
+            "64",
+            "--cols",
+            "32",
+            "--steps",
+            "2",
+            "--warmup-steps",
+            "0",
+            "--repeats",
+            "2",
+            "--backends",
+            "torch,triton",
+            "--dtype",
+            "float32",
+        ]
+    )
+
+    summary = run_benchmark(args)
+
+    assert summary["operator"] == "layer_norm"
+    assert summary["device"] == "cpu"
+    assert summary["backends"] == ["torch", "triton"]
+    rows = {row["backend"]: row for row in summary["results"]}
+    assert rows["torch"]["status"] == "ok"
+    assert rows["torch"]["resolved_backend"] == "torch"
+    assert rows["torch"]["max_abs_error"] == 0.0
+    assert rows["torch"]["max_rel_error"] == 0.0
+    assert rows["triton"]["status"] == "unsupported"
+    assert rows["triton"]["successful_repeats"] == 0
+    assert rows["triton"]["error"]
 
 
 def test_run_embedding_bag_mean_benchmark_reports_cpu_tilelang_as_unsupported() -> None:
@@ -438,6 +503,58 @@ def test_benchmark_marks_triton_accuracy_failure_as_error(monkeypatch) -> None:
         device=torch.device("cpu"),
         x=x,
         weight=weight,
+    )
+
+    assert result.status == "error"
+    assert result.error is not None
+    assert "close" in result.error.lower()
+
+
+def test_layer_norm_benchmark_marks_triton_accuracy_failure_as_error(monkeypatch) -> None:
+    args = parse_args(
+        [
+            "--operator",
+            "layer_norm",
+            "--device",
+            "cpu",
+            "--rows",
+            "4",
+            "--cols",
+            "8",
+            "--steps",
+            "1",
+            "--warmup-steps",
+            "0",
+            "--repeats",
+            "1",
+            "--backends",
+            "triton",
+            "--dtype",
+            "float32",
+            "--atol",
+            "1e-6",
+            "--rtol",
+            "1e-6",
+        ]
+    )
+    x = torch.ones((args.rows, args.cols), dtype=args.dtype)
+    weight = torch.ones((args.cols,), dtype=args.dtype)
+    bias = torch.zeros((args.cols,), dtype=args.dtype)
+
+    monkeypatch.setattr(tilelang_benchmark, "_benchmark_callable", lambda *args, **kwargs: (0.1, 100.0))
+    monkeypatch.setattr(
+        tilelang_benchmark,
+        "_prepare_layer_norm_callable",
+        lambda **kwargs: (lambda: torch.full_like(x, 2.0), "triton", 0.25),
+    )
+
+    result = _benchmark_layer_norm_backend(
+        backend="triton",
+        args=args,
+        device=torch.device("cpu"),
+        x=x,
+        weight=weight,
+        bias=bias,
     )
 
     assert result.status == "error"

@@ -9,7 +9,9 @@ import taac2026.infrastructure.accelerators as tilelang_ops
 from taac2026.infrastructure.accelerators import (
     embedding_bag_mean,
     flash_attention,
+    layer_norm,
     resolved_embedding_bag_mean_backend,
+    resolved_layer_norm_backend,
     rms_norm,
 )
 
@@ -226,6 +228,34 @@ def test_rms_norm_triton_matches_torch_forward_and_backward_on_cuda() -> None:
     torch.testing.assert_close(output.float(), reference.float(), atol=5e-3, rtol=5e-3)
     torch.testing.assert_close(x.grad.float(), x_ref.grad.float(), atol=1e-2, rtol=1e-2)
     torch.testing.assert_close(weight.grad.float(), weight_ref.grad.float(), atol=1e-2, rtol=1e-2)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for Triton kernel validation")
+def test_layer_norm_triton_matches_torch_forward_and_backward_on_cuda() -> None:
+    if not tilelang_ops.triton_available():
+        pytest.skip("triton is not installed")
+
+    tilelang_ops.clear_layer_norm_kernel_cache()
+    x = torch.randn(8, 3, 48, dtype=torch.float16, device="cuda", requires_grad=True)
+    weight = torch.randn(48, dtype=torch.float16, device="cuda", requires_grad=True)
+    bias = torch.randn(48, dtype=torch.float16, device="cuda", requires_grad=True)
+    x_ref = x.detach().clone().requires_grad_(True)
+    weight_ref = weight.detach().clone().requires_grad_(True)
+    bias_ref = bias.detach().clone().requires_grad_(True)
+
+    output = layer_norm(x, weight, bias, backend="triton", block_rows=2)
+    reference = layer_norm(x_ref, weight_ref, bias_ref, backend="torch")
+
+    loss = output.float().square().mean()
+    reference_loss = reference.float().square().mean()
+    loss.backward()
+    reference_loss.backward()
+
+    assert resolved_layer_norm_backend(x.detach(), "triton") == "triton"
+    torch.testing.assert_close(output.float(), reference.float(), atol=5e-3, rtol=5e-3)
+    torch.testing.assert_close(x.grad.float(), x_ref.grad.float(), atol=1e-2, rtol=1e-2)
+    torch.testing.assert_close(weight.grad.float(), weight_ref.grad.float(), atol=1e-2, rtol=1e-2)
+    torch.testing.assert_close(bias.grad.float(), bias_ref.grad.float(), atol=1e-2, rtol=1e-2)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for TileLang kernel validation")

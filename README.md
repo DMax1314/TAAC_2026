@@ -67,7 +67,7 @@
 
 - **Step 级流式管线** — Parquet 流式读取，5 种缓存策略，确定性种子全链路可复现
 - **可组合数据增强** — 序列裁剪、域级 Dropout、特征 Mask，每步动态生效
-- **一行切换 GPU 内核** — FlashAttention / RMSNorm 提供 torch / Triton / TileLang 三后端，编译自动缓存
+- **一行切换 GPU 内核** — RMSNorm 提供 torch / Triton / TileLang 三后端；LayerNorm 提供 torch / Triton；FlashAttention 支持 torch / TileLang，后续路线图见 [Operator Roadmap](docs/benchmark/operator-roadmap.md)
 
 </td>
 </tr>

@@ -50,6 +50,17 @@ from taac2026.infrastructure.accelerators.normalization.rms_norm import (
     resolved_rms_norm_backend,
     rms_norm,
 )
+from taac2026.infrastructure.accelerators.normalization.layer_norm import (
+    LayerNormBackend,
+    LayerNormKernel,
+    LayerNormKernelKey,
+    _resolve_layer_norm_backend,
+    clear_layer_norm_kernel_cache,
+    compile_triton_layer_norm_kernel,
+    layer_norm,
+    register_layer_norm_kernel,
+    resolved_layer_norm_backend,
+)
 from taac2026.infrastructure.accelerators.triton_runtime import triton_available
 from taac2026.infrastructure.accelerators.tilelang_runtime import (
     _TILELANG_E8M0_COMPAT_GUARD,
@@ -68,6 +79,7 @@ from taac2026.infrastructure.accelerators.tensor_validation import (
 def clear_tilelang_kernel_cache() -> None:
     clear_embedding_bag_mean_kernel_cache()
     clear_flash_attention_kernel_cache()
+    clear_layer_norm_kernel_cache()
     clear_rms_norm_kernel_cache()
 
 
@@ -82,12 +94,16 @@ __all__ = [
     "FlashAttentionKernel",
     "FlashAttentionKernelKey",
     "FlashAttentionMaskPlan",
+    "LayerNormBackend",
+    "LayerNormKernel",
+    "LayerNormKernelKey",
     "RMSNormBackend",
     "RMSNormKernel",
     "RMSNormKernelKey",
     "_ensure_tilelang_cuda_fp8_compatibility",
     "_plan_tilelang_flash_attention_mask",
     "_resolve_flash_attention_backend",
+    "_resolve_layer_norm_backend",
     "_resolve_rms_norm_backend",
     "chunk_gated_delta_rule",
     "chunk_gated_delta_rule_available",
@@ -95,6 +111,7 @@ __all__ = [
     "chunk_gated_delta_rule_fwd",
     "clear_embedding_bag_mean_kernel_cache",
     "clear_flash_attention_kernel_cache",
+    "clear_layer_norm_kernel_cache",
     "clear_rms_norm_kernel_cache",
     "clear_tilelang_kernel_cache",
     "compile_cuembed_embedding_bag_mean_kernel",
@@ -102,20 +119,24 @@ __all__ = [
     "compile_flash_attention_kernel",
     "compile_rms_norm_kernel",
     "compile_triton_embedding_bag_mean_kernel",
+    "compile_triton_layer_norm_kernel",
     "compile_triton_rms_norm_kernel",
     "cuda_multiprocessor_count",
     "cuembed_available",
     "embedding_bag_mean",
     "flash_attention",
+    "layer_norm",
     "multi_latent_attention",
     "register_embedding_bag_mean_kernel",
     "register_flash_attention_kernel",
+    "register_layer_norm_kernel",
     "register_rms_norm_kernel",
     "require_cuda_tensors",
     "require_same_device",
     "require_same_dtype",
     "resolved_embedding_bag_mean_backend",
     "resolved_flash_attention_backend",
+    "resolved_layer_norm_backend",
     "resolved_rms_norm_backend",
     "rms_norm",
     "tilelang_available",

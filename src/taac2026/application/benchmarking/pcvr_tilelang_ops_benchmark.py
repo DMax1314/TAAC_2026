@@ -26,10 +26,12 @@ from taac2026.infrastructure.accelerators import (
     compile_flash_attention_kernel,
     compile_rms_norm_kernel,
     compile_triton_embedding_bag_mean_kernel,
+    compile_triton_layer_norm_kernel,
     compile_triton_rms_norm_kernel,
     cuembed_available,
     resolved_embedding_bag_mean_backend,
     resolved_flash_attention_backend,
+    resolved_layer_norm_backend,
     resolved_rms_norm_backend,
     tilelang_available,
     triton_available,
@@ -38,7 +40,7 @@ from taac2026.infrastructure.accelerators import (
 
 BenchmarkBackend = Literal["torch", "tilelang", "triton", "cuembed"]
 BenchmarkDType = Literal["float16", "bfloat16", "float32"]
-BenchmarkOperator = Literal["rms_norm", "flash_attention", "embedding_bag_mean"]
+BenchmarkOperator = Literal["rms_norm", "layer_norm", "flash_attention", "embedding_bag_mean"]
 DEFAULT_BACKENDS: tuple[BenchmarkBackend, ...] = ("torch", "tilelang", "triton")
 SUPPORTED_BACKENDS: tuple[BenchmarkBackend, ...] = ("torch", "tilelang", "triton", "cuembed")
 
@@ -150,6 +152,10 @@ def _percentile(values: list[float], percentile: float) -> float:
 
 def _reference_rms_norm(x: torch.Tensor, weight: torch.Tensor, eps: float) -> torch.Tensor:
     return x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + eps) * weight
+
+
+def _reference_layer_norm(x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor, eps: float) -> torch.Tensor:
+    return F.layer_norm(x, (x.shape[-1],), weight, bias, eps)
 
 
 def _reference_flash_attention(
@@ -283,6 +289,41 @@ def _prepare_rms_norm_callable(
     return lambda: kernel(x, weight), resolved_backend, compile_sec
 
 
+def _prepare_layer_norm_callable(
+    *,
+    backend: BenchmarkBackend,
+    args: PCVRTileLangOpsBenchmarkArgs,
+    device: torch.device,
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+) -> tuple[Callable[[], torch.Tensor], str, float | None]:
+    if backend == "torch":
+        return lambda: _reference_layer_norm(x, weight, bias, args.eps), "torch", None
+    if backend != "triton":
+        raise RuntimeError("layer_norm currently supports torch and triton benchmark backends")
+
+    resolved_backend = resolved_layer_norm_backend(
+        x,
+        backend,
+        eps=args.eps,
+        block_rows=args.block_rows,
+    )
+
+    clear_tilelang_kernel_cache()
+    started = time.perf_counter()
+    kernel = compile_triton_layer_norm_kernel(
+        x,
+        weight,
+        bias,
+        args.eps,
+        block_rows=args.block_rows,
+    )
+    _synchronize(device)
+    compile_sec = time.perf_counter() - started
+    return lambda: kernel(x, weight, bias), resolved_backend, compile_sec
+
+
 def _prepare_flash_attention_callable(
     *,
     backend: BenchmarkBackend,
@@ -397,6 +438,18 @@ def _build_inputs(args: PCVRTileLangOpsBenchmarkArgs, device: torch.device) -> t
     return x, weight
 
 
+def _build_layer_norm_inputs(
+    args: PCVRTileLangOpsBenchmarkArgs,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(args.seed)
+    x = torch.randn((args.rows, args.cols), generator=generator, dtype=args.dtype).to(device)
+    weight = torch.randn((args.cols,), generator=generator, dtype=args.dtype).to(device)
+    bias = torch.randn((args.cols,), generator=generator, dtype=args.dtype).to(device)
+    return x, weight, bias
+
+
 def _build_flash_attention_inputs(
     args: PCVRTileLangOpsBenchmarkArgs,
     device: torch.device,
@@ -450,6 +503,70 @@ def _benchmark_rms_norm_backend(
             device=device,
             x=x,
             weight=weight,
+        )
+        elapsed, step_time_ms = _benchmark_callable(
+            run,
+            device=device,
+            warmup_steps=args.warmup_steps,
+            steps=args.steps,
+        )
+        output = run()
+        _synchronize(device)
+        max_abs_error, max_rel_error = _validate_output_accuracy(
+            output,
+            reference,
+            atol=args.atol,
+            rtol=args.rtol,
+        )
+        return OperatorBenchmarkResult(
+            backend=backend,
+            status="ok",
+            resolved_backend=resolved_backend,
+            elapsed_sec=elapsed,
+            step_time_ms=step_time_ms,
+            ops_per_sec=args.steps / elapsed if elapsed > 0 else 0.0,
+            measured_steps=args.steps,
+            warmup_steps=args.warmup_steps,
+            compile_sec=compile_sec,
+            max_abs_error=max_abs_error,
+            max_rel_error=max_rel_error,
+        )
+    except Exception as error:
+        return OperatorBenchmarkResult(
+            backend=backend,
+            status=_benchmark_failure_status(backend, error),
+            resolved_backend=None,
+            elapsed_sec=0.0,
+            step_time_ms=0.0,
+            ops_per_sec=0.0,
+            measured_steps=args.steps,
+            warmup_steps=args.warmup_steps,
+            compile_sec=compile_sec,
+            max_abs_error=None,
+            max_rel_error=None,
+            error=f"{type(error).__name__}: {error}",
+        )
+
+
+def _benchmark_layer_norm_backend(
+    *,
+    backend: BenchmarkBackend,
+    args: PCVRTileLangOpsBenchmarkArgs,
+    device: torch.device,
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+) -> OperatorBenchmarkResult:
+    compile_sec: float | None = None
+    try:
+        reference = _reference_layer_norm(x, weight, bias, args.eps)
+        run, resolved_backend, compile_sec = _prepare_layer_norm_callable(
+            backend=backend,
+            args=args,
+            device=device,
+            x=x,
+            weight=weight,
+            bias=bias,
         )
         elapsed, step_time_ms = _benchmark_callable(
             run,
@@ -731,6 +848,26 @@ def run_benchmark(args: PCVRTileLangOpsBenchmarkArgs) -> dict[str, object]:
             "rows": args.rows,
             "cols": args.cols,
         }
+    elif args.operator == "layer_norm":
+        x, weight, bias = _build_layer_norm_inputs(args, device)
+        for backend in args.backends:
+            runs = [
+                _benchmark_layer_norm_backend(
+                    backend=backend,
+                    args=args,
+                    device=device,
+                    x=x,
+                    weight=weight,
+                    bias=bias,
+                )
+                for _ in range(args.repeats)
+            ]
+            results.append(asdict(_summarize_runs(backend=backend, repeats=args.repeats, runs=runs)))
+        summary = {
+            "operator": "layer_norm",
+            "rows": args.rows,
+            "cols": args.cols,
+        }
     elif args.operator == "flash_attention":
         q, k, v = _build_flash_attention_inputs(args, device)
         for backend in args.backends:
@@ -809,7 +946,9 @@ def parse_args(argv: Sequence[str] | None = None) -> PCVRTileLangOpsBenchmarkArg
     if args.operator == "flash_attention" and "triton" in args.backends:
         explicit_backends = any(argument == "--backends" or argument.startswith("--backends=") for argument in raw_argv)
         if explicit_backends:
-            raise ValueError("triton backend is currently supported for rms_norm and embedding_bag_mean benchmarks")
+            raise ValueError(
+                "triton backend is currently supported for rms_norm, layer_norm, and embedding_bag_mean benchmarks"
+            )
         args.backends = tuple(backend for backend in args.backends if backend != "triton")
     default_atol, default_rtol = _default_error_tolerances(args.dtype)
     if args.atol is None:

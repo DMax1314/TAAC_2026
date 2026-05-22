@@ -34,13 +34,13 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-	"hypothesis==6.151.12",
+	"hypothesis==6.152.9",
 	"pytest==9.0.3",
 	"pytest-benchmark==5.2.3",
 	"pytest-cov==7.1.0",
-	"ruff==0.15.12",
+	"ruff==0.15.13",
 	"vulture==2.16",
-	"zensical==0.0.40",
+	"zensical==0.0.43",
 ]
 cuda126 = [
 	"torch==2.7.1+cu126",

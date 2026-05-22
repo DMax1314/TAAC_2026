@@ -6,6 +6,7 @@ import torch
 from taac2026.infrastructure.modeling import (
     DenseTokenProjector,
     FeatureEmbeddingBank,
+    LayerNorm,
     NonSequentialTokenizer,
     RMSNorm,
     SequenceTokenizer,
@@ -16,6 +17,7 @@ from taac2026.infrastructure.modeling import (
     scaled_dot_product_attention,
 )
 from taac2026.infrastructure.modeling.embeddings import FeatureEmbeddingBank as FeatureEmbeddingBankOwner
+from taac2026.infrastructure.modeling.normalization import LayerNorm as LayerNormOwner
 from taac2026.infrastructure.modeling.normalization import RMSNorm as RMSNormOwner
 from taac2026.infrastructure.modeling import sequence as sequence_ops
 from taac2026.infrastructure.modeling.sequence import make_padding_mask
@@ -24,6 +26,7 @@ from taac2026.infrastructure.modeling.tokenizers import SequenceTokenizer as Seq
 
 def test_modeling_submodules_own_shared_primitives() -> None:
     assert FeatureEmbeddingBankOwner is FeatureEmbeddingBank
+    assert LayerNormOwner is LayerNorm
     assert RMSNormOwner is RMSNorm
     assert SequenceTokenizerOwner is SequenceTokenizer
     assert make_padding_mask(torch.tensor([1, 3]), 4).tolist() == [
@@ -49,6 +52,20 @@ def test_rms_norm_captures_runtime_state_at_construction() -> None:
 
     assert norm.backend == "triton"
     assert norm.block_rows == 4
+
+
+def test_layer_norm_validates_backend_and_matches_torch_shape() -> None:
+    with pytest.raises(ValueError, match="unsupported layer_norm backend: nope"):
+        LayerNorm(6, backend="nope")
+    with pytest.raises(ValueError, match="layer_norm block_rows must be positive"):
+        LayerNorm(6, block_rows=0)
+
+    norm = LayerNorm(6, backend="torch", block_rows=2)
+    output = norm(torch.ones(2, 5, 6))
+
+    assert norm.backend == "torch"
+    assert norm.block_rows == 2
+    assert output.shape == (2, 5, 6)
 
 
 def test_configure_flash_attention_runtime_validates_backend() -> None:
@@ -95,12 +112,14 @@ def test_shared_tokenizers_return_stable_shapes() -> None:
     non_seq = NonSequentialTokenizer([(10, 0, 1), (8, 1, 2)], [[0], [1]], emb_dim=4, d_model=6)
     dense = DenseTokenProjector(input_dim=3, d_model=6)
     sequence = SequenceTokenizer([10, 8], emb_dim=4, d_model=6, num_time_buckets=4)
+    layer_norm = LayerNorm(6)
     norm = RMSNorm(6)
 
     assert bank(int_feats).shape == (2, 2, 4)
     assert non_seq(int_feats).shape == (2, 2, 6)
     assert dense(torch.ones(2, 3)).shape == (2, 1, 6)
     assert sequence(torch.ones(2, 2, 5), torch.ones(2, 5)).shape == (2, 5, 6)
+    assert layer_norm(torch.ones(2, 5, 6)).shape == (2, 5, 6)
     assert norm(torch.ones(2, 5, 6)).shape == (2, 5, 6)
 
 

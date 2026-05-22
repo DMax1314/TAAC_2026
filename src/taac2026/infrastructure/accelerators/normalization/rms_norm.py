@@ -306,7 +306,7 @@ def _run_tilelang_rms_norm(
     block_rows: int | None,
 ) -> torch.Tensor:
     resolved_block_rows = max(1, int(block_rows or 1))
-    if x.requires_grad or weight.requires_grad:
+    if torch.is_grad_enabled() and (x.requires_grad or weight.requires_grad):
         return _TilelangRMSNormFunction.apply(x, weight, eps, resolved_block_rows)
     kernel = compile_rms_norm_kernel(x, weight, eps, block_rows=resolved_block_rows)
     return kernel(x, weight)
@@ -320,7 +320,7 @@ def _run_triton_rms_norm(
     block_rows: int | None,
 ) -> torch.Tensor:
     resolved_block_rows = max(1, int(block_rows or 1))
-    if x.requires_grad or weight.requires_grad:
+    if torch.is_grad_enabled() and (x.requires_grad or weight.requires_grad):
         return _TritonRMSNormFunction.apply(x, weight, eps, resolved_block_rows)
     kernel = compile_triton_rms_norm_kernel(x, weight, eps, block_rows=resolved_block_rows)
     return kernel(x, weight)

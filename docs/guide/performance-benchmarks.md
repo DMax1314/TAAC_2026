@@ -133,7 +133,7 @@ uv run taac-benchmark-pcvr-optimizer \
 
 ## Accelerator 算子 Benchmark
 
-算子 benchmark 用来比较 torch backend 和 accelerator backend 的耗时，并同时做误差检查。每个已接入算子的参数、命令模板、支持状态和最近一次验收快照记录在 [Benchmark 总览](../benchmark/index.md)。本页只保留最小入口命令。
+算子 benchmark 用来比较 torch backend 和 accelerator backend 的耗时，并同时做误差检查。每个已接入算子的参数、命令模板、支持状态和最近一次验收快照记录在 [Benchmark 总览](../benchmark/index.md)。尚未接入的 Triton / TileLang 候选项记录在 [算子路线图](../benchmark/operator-roadmap.md)。本页只保留最小入口命令。
 
 RMSNorm：
 
@@ -146,6 +146,19 @@ uv run taac-benchmark-pcvr-tilelang-ops \
   --dtype float16 \
   --backends torch,tilelang,triton \
   > outputs/benchmarks/rms_norm_accelerators.json
+```
+
+LayerNorm：
+
+```bash
+uv run taac-benchmark-pcvr-tilelang-ops \
+  --operator layer_norm \
+  --device cuda \
+  --rows 8192 \
+  --cols 128 \
+  --dtype float16 \
+  --backends torch,triton \
+  > outputs/benchmarks/layer_norm_accelerators.json
 ```
 
 Flash Attention：

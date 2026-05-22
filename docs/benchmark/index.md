@@ -4,7 +4,7 @@ icon: lucide/gauge
 
 # Benchmark 总览
 
-这个目录记录 TAAC 里的 benchmark 口径，包括数据管道 cache 策略和 accelerator 算子的逐项记录。每个独立 benchmark 页面都应该写清楚支持状态、可复现命令、关键参数、误差或吞吐口径和最近一次本地验收观察。
+这个目录记录 TAAC 里的 benchmark 口径，包括数据管道 cache 策略、accelerator 算子的逐项记录和 [Triton / TileLang 算子路线图](operator-roadmap.md)。每个独立 benchmark 页面都应该写清楚支持状态、可复现命令、关键参数、误差或吞吐口径和最近一次本地验收观察。
 
 这里的数字不是长期事实。正式结论必须重新记录 commit、硬件、CUDA / PyTorch / TileLang 版本、完整命令和 JSON 输出。推荐输出到 `outputs/benchmarks/`，不要提交生成结果，除非要做一次明确的报告快照。
 
@@ -20,8 +20,13 @@ icon: lucide/gauge
 | 算子               | CLI `--operator`     | 当前用途                                      | Backend 策略                                            | 页面                                        |
 | ------------------ | -------------------- | --------------------------------------------- | ------------------------------------------------------- | ------------------------------------------- |
 | RMSNorm            | `rms_norm`           | normalization forward/backward microbenchmark | 由模型 runtime 的 RMSNorm backend 配置决定              | [RMSNorm](rms-norm.md)                      |
+| LayerNorm          | `layer_norm`         | affine LayerNorm forward/backward microbenchmark | 默认 `torch`；显式传 `triton` 才启用 accelerator，TileLang 待补 | [LayerNorm](layer-norm.md)                  |
 | Flash Attention    | `flash_attention`    | attention forward/backward 和 mask 约束验证   | 由 sequence runtime 的 flash attention backend 配置决定 | [Flash Attention](flash-attention.md)       |
 | Embedding bag mean | `embedding_bag_mean` | non-sequential sparse feature mean pooling    | 默认 `torch`；显式传 `tilelang`、`triton` 或 `cuembed` 才启用 accelerator | [Embedding Bag Mean](embedding-bag-mean.md) |
+
+## 算子开发路线图
+
+未接入 benchmark CLI 的候选算子、缺失 backend 和已有源码 TODO 统一记录在 [Triton / TileLang 算子路线图](operator-roadmap.md)。新增算子时，先补 runtime surface、torch reference 对照、CUDA 单测和 benchmark 页面，再把该算子加入上方索引。
 
 通用命令入口：
 
