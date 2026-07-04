@@ -36,9 +36,11 @@
 > 我们的目标是提供一个开箱即用、便于扩展和回归验证的实验工作区，  
 > 以促进社区在统一序列建模与特征交互方向上的研究和创新。  
 > 
-> 比赛第一阶段已结束,我们的方案效果不佳,推荐项目:  
-> https://github.com/nhdzTVlxb/TAAC-2026-Tencent-KDD  
-> https://github.com/jbdcia321vw/TAAC-2026-SIGKDD-0.8316  
+> 比赛已正式结束，推荐关注的前排开源方案：  
+> - [PixelCookie-zyf/TAAC-2026-SeRankMixer](https://github.com/PixelCookie-zyf/TAAC-2026-SeRankMixer)（学术赛道 Rank 9）  
+> - [yuemingyue/2026-taac](https://github.com/yuemingyue/2026-taac)（学术赛道初赛 TOP9）  
+> - [Lambert-vsziii/TAAC-2026-Tencent-KDD](https://github.com/Lambert-vsziii/TAAC-2026-Tencent-KDD)（HyFormer 增强，0.823689）  
+> - [jbdcia321vw/TAAC-2026-SIGKDD-0.8316](https://github.com/jbdcia321vw/TAAC-2026-SIGKDD-0.8316)（HyFormer 增强，0.8316）  
 
 ## 比赛简介
 
@@ -327,27 +329,37 @@ data/sample_1000_raw/
 </a>
 
 ## 相关工作
-以下按公开可访问资料整理，优先保留能直接借鉴代码、EDA、方法说明和赛事资料的链接，持续补充。
-调查时间: 2026-05-25
+以下按公开可访问资料整理，优先保留能直接借鉴代码、EDA、方法说明和赛事资料的链接，持续补充。比赛已正式结束，官方结果已于 2026-07-15 公布；赛后已有更多前排方案陆续开源，本段会随新仓库出现继续更新。
+调查时间: 2026-07-04
 
 **2026届：公开仓库 / 方案**  
 
+### 高分单模型与赛后复盘
+比赛结束后公开的代表性高分单模型与复盘仓库，README 通常包含完整提交记录、消融路径和checkpoint选择经验。
+- [PixelCookie-zyf/TAAC-2026-SeRankMixer](https://github.com/PixelCookie-zyf/TAAC-2026-SeRankMixer) — 学术赛道 Rank 9，Test weighted-AUC 0.828814；单模型 RankMixer + DIN + group-wise bilinear fusion，Muon / SWA / SAM 训练。
+- [yuemingyue/2026-taac](https://github.com/yuemingyue/2026-taac) — 学术赛道初赛 TOP9，AUC 0.833830；含最终提交配置与赛后复盘。
+- [bwzhaocodes/TAAC-Tencent-2026](https://github.com/bwzhaocodes/TAAC-Tencent-2026) — 学术赛道初赛 30 名（单人队伍），AUC 0.833050；完整单兵方案与训练流程。
+- [YodesYang/KDDCup2026-TencentAds-UniRec](https://github.com/YodesYang/KDDCup2026-TencentAds-UniRec) — 工业赛道 Rank 35/689（Top 5.1%），Public AUC 0.851365；含时间桶修正、public-tail 验证、点击/转化多任务目标、辅助验证窗口与终盘消融记录。
+- [Rongfeng-Guo/Rank51-TAAC2026-KDDCUP](https://github.com/Rongfeng-Guo/Rank51-TAAC2026-KDDCUP) — 学术赛道 Rank 51，AUC 0.832321；含样本级/序列级周期时间特征、mean-DIN query pooling、UserDenseGroup、recent-window 训练与序列 hash embedding。
+- [plus-w/TAAC-2026-KDD-Cup](https://github.com/plus-w/TAAC-2026-KDD-Cup) — 学术赛道 Rank 53/1873，Best Score 0.832309；前排方案细节与复盘。
+
 ### HyFormer 增强系列
-均基于 PCVRHyFormer 基线渐进增强，覆盖 HashEmbedding、DIN Target Attention、DCN-v2 CrossNet、SE-Net 门控、时间编码、训练 recipe（AMP/EMA/cosine/pairwise loss）等方向，README 普遍含完整演进记录与消融实验。初赛分数范围 0.8237~0.8322。  
-- [nhdzTVlxb/TAAC-2026-Tencent-KDD](https://github.com/nhdzTVlxb/TAAC-2026-Tencent-KDD) — `3673640` / 2026-05-18  
+均基于 PCVRHyFormer 基线渐进增强，覆盖 HashEmbedding、DIN Target Attention、DCN-v2 CrossNet、SE-Net 门控、时间编码、训练 recipe（AMP/EMA/cosine/pairwise loss）等方向，README 普遍含完整演进记录与消融实验。初赛分数范围 0.8237~0.8323。  
+- [Lambert-vsziii/TAAC-2026-Tencent-KDD](https://github.com/Lambert-vsziii/TAAC-2026-Tencent-KDD) — `3673640` / 2026-05-18，初赛 0.823689。  
 - [jbdcia321vw/TAAC-2026-SIGKDD-0.8316](https://github.com/jbdcia321vw/TAAC-2026-SIGKDD-0.8316) — `643fd43` / 2026-05-24  
 - [bug-maker6/TAAC-2026](https://github.com/bug-maker6/TAAC-2026) — `7ce0fd4` / 2026-05-24  
 - [VanillaCreamyy/TAAC2026---0.831174](https://github.com/VanillaCreamyy/TAAC2026---0.831174) — `afad21a` / 2026-05-25  
+- [Giftia-0/TAAC-2026](https://github.com/Giftia-0/TAAC-2026) — 学术赛道 Rank 91/1873，AUC 0.831538，含赛后方案整理。  
 - [LC-THU/TAAC2026-0.8311](https://github.com/LC-THU/TAAC2026-0.8311) — `6d4bdf5` / 2026-05-25  
 - [Liaaaar/TAAC-KDD-Cup-2026-ACM-SIGKDD-0.831025-Solution](https://github.com/Liaaaar/TAAC-KDD-Cup-2026-ACM-SIGKDD-0.831025-Solution) — `ffbcd26` / 2026-05-24  
-- [slandercode/TAAC2026](https://github.com/slandercode/TAAC2026) — `8b8db9d` / 2026-05-24  
-- [Dionysusfhs/TAAC2026_how_you_doing](https://github.com/Dionysusfhs/TAAC2026_how_you_doing) — `54917e3` / 2026-05-25  
+- [nhdzTVlxb/2026TAAC-KDD-CUP](https://github.com/nhdzTVlxb/2026TAAC-KDD-CUP) — 最终 0.83170，含 final-rank 截图（1v1 East Top6）。  
+- [Dionysusfhs/TAAC2026_how_you_doing](https://github.com/Dionysusfhs/TAAC2026_how_you_doing) — `54917e3` / 2026-05-25，学术赛道 Rank 59/1876。  
 
 ### UniRec 统一序列方案
 面向统一序列建模与特征交互的 UniRec 路线：统一 tokenizer + 可堆叠 backbone + hybrid attention mask，部分附带 scaling law 配置与显存优化。  
 - [hojiahao/TAAC2026](https://github.com/hojiahao/TAAC2026) — `7a5bbcc` / 2026-04-27  
 - [twx145/Unirec](https://github.com/twx145/Unirec) — `f14678f` / 2026-03-29  
-- [lizuju/TAAC-2026](https://github.com/lizuju/TAAC-2026) — `c480671` / 2026-05-24  
+- [lizuju/TAAC-2026](https://github.com/lizuju/TAAC-2026) — Public AUC 0.830964，`c480671` / 2026-05-24  
 - [YodesYang/KDDCup2026-TencentAds-UniRec](https://github.com/YodesYang/KDDCup2026-TencentAds-UniRec) — `fe18a23` / 2026-05-24  
 
 ### PyTorch 架构复现系列
@@ -387,11 +399,11 @@ OneTrans / InterFormer / HyFormer 的非官方 PyTorch 复现与可运行训练�
 - [zhangzucheng/taac2026_rec_to_312](https://github.com/zhangzucheng/taac2026_rec_to_312) — `6b7735e` / 2026-05-24  
 
 **2026届：Fork of [Puiching-Memory/TAAC_2026](https://github.com/Puiching-Memory/TAAC_2026)**  
-以下为本仓库的 GitHub Fork 中有独立贡献的代表性项目（截至 2026-05-25 共 54 个 fork，完整列表见 [Forks 页面](https://github.com/Puiching-Memory/TAAC_2026/forks)）。  
+以下为本仓库的 GitHub Fork 中有独立贡献的代表性项目（截至 2026-07-04，完整列表见 [Forks 页面](https://github.com/Puiching-Memory/TAAC_2026/forks))。  
 - [LC1332/TAAC_2026-ref1](https://github.com/LC1332/TAAC_2026-ref1) 参考分支，星标 2，末次推送 2026-04-06。  
 - [DMax1314/TAAC_2026](https://github.com/DMax1314/TAAC_2026) 星标 1，末次推送 2026-05-22，含 LayerNorm Triton 加速算子与归一化基础设施。  
 - [flycalm/TAAC_2026](https://github.com/flycalm/TAAC_2026) 星标 1，末次推送 2026-04-11。  
-- 其余 51 个 fork 汇总见 [GitHub Forks 页面](https://github.com/Puiching-Memory/TAAC_2026/forks)。  
+- 其余 fork 汇总见 [GitHub Forks 页面](https://github.com/Puiching-Memory/TAAC_2026/forks)。  
 
 **2026届：Kaggle / Notebook**  
 - [galegale05/TAAC2026 Baseline v3 - Final](https://www.kaggle.com/code/galegale05/taac2026-baseline-v3-final/notebook) Kaggle 上公开的 HSTU 风格时间特征 baseline notebook，可作为时间 bucket、session 切分和轻量级序列建模的补充参考。  
