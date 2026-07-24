@@ -37,6 +37,7 @@
 > 以促进社区在统一序列建模与特征交互方向上的研究和创新。  
 > 
 > 比赛已正式结束，推荐关注的前排开源方案：  
+> - [zzhlkw-ai/TAAC2026](https://github.com/zzhlkw-ai/TAAC2026)（统一模块创新奖，学术赛道初赛 Top 1 / 复赛 Top 17，Test AUC 0.8358）  
 > - [PixelCookie-zyf/TAAC-2026-SeRankMixer](https://github.com/PixelCookie-zyf/TAAC-2026-SeRankMixer)（学术赛道 Rank 9）  
 > - [yuemingyue/2026-taac](https://github.com/yuemingyue/2026-taac)（学术赛道初赛 TOP9）  
 > - [Lambert-vsziii/TAAC-2026-Tencent-KDD](https://github.com/Lambert-vsziii/TAAC-2026-Tencent-KDD)（HyFormer 增强，0.823689）  
