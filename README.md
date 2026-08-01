@@ -31,6 +31,11 @@
   <img src="figures/taac2026_promo_hero.png" alt="TAAC 2026 宣传首图">
 </p>
 
+> [!WARNING]
+> 比赛已正式结束（结果已于 2026-07-15 公布）。最后可线上使用的比赛版本为
+> [v2.0.1](https://github.com/Puiching-Memory/TAAC_2026/tree/2.0.1)，此后 `main`
+> 分支的更新将不再考虑真实比赛场景。
+
 > [!NOTE]
 > 这是 TAAC 2026 其中一个参赛队伍的代码仓库，不代表官方文档。  
 > 我们的目标是提供一个开箱即用、便于扩展和回归验证的实验工作区，  
