@@ -63,9 +63,6 @@ from taac2026.infrastructure.accelerators.normalization.layer_norm import (
 )
 from taac2026.infrastructure.accelerators.triton_runtime import triton_available
 from taac2026.infrastructure.accelerators.tilelang_runtime import (
-    _TILELANG_E8M0_COMPAT_GUARD,
-    _TILELANG_E8M0_ORIGINAL_GUARD,
-    _ensure_tilelang_cuda_fp8_compatibility,
     cuda_multiprocessor_count,
     tilelang_available,
 )
@@ -84,8 +81,6 @@ def clear_tilelang_kernel_cache() -> None:
 
 
 __all__ = [
-    "_TILELANG_E8M0_COMPAT_GUARD",
-    "_TILELANG_E8M0_ORIGINAL_GUARD",
     "CuEmbedEmbeddingBagMeanKernel",
     "EmbeddingBagMeanBackend",
     "EmbeddingBagMeanKernel",
@@ -100,7 +95,6 @@ __all__ = [
     "RMSNormBackend",
     "RMSNormKernel",
     "RMSNormKernelKey",
-    "_ensure_tilelang_cuda_fp8_compatibility",
     "_plan_tilelang_flash_attention_mask",
     "_resolve_flash_attention_backend",
     "_resolve_layer_norm_backend",

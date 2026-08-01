@@ -11,7 +11,6 @@ import torch.nn.functional as F
 
 from taac2026.infrastructure.accelerators.tilelang_runtime import (
     T,
-    _ensure_tilelang_cuda_fp8_compatibility,
     tilelang_available,
     tilelang_dtype,
 )
@@ -376,7 +375,6 @@ def _compile_tilelang_flash_attention_training_forward_kernel(
     if key in _flash_attention_training_forward_kernel_cache:
         return _flash_attention_training_forward_kernel_cache[key]
 
-    _ensure_tilelang_cuda_fp8_compatibility()
     tl_dtype = tilelang_dtype(key.dtype)
     accum_dtype = T.float32
     compiled = build_flash_attention_training_forward_kernel(
@@ -429,7 +427,6 @@ def _compile_tilelang_flash_attention_backward_preprocess_kernel(
     if key in _flash_attention_backward_preprocess_kernel_cache:
         return _flash_attention_backward_preprocess_kernel_cache[key]
 
-    _ensure_tilelang_cuda_fp8_compatibility()
     tl_dtype = tilelang_dtype(key.dtype)
     accum_dtype = T.float32
     compiled = build_flash_attention_backward_preprocess_kernel(
@@ -459,7 +456,6 @@ def _compile_tilelang_flash_attention_backward_kernel(
     if key in _flash_attention_backward_kernel_cache:
         return _flash_attention_backward_kernel_cache[key]
 
-    _ensure_tilelang_cuda_fp8_compatibility()
     tl_dtype = tilelang_dtype(key.dtype)
     accum_dtype = T.float32
     compiled = build_flash_attention_backward_kernel(
@@ -656,7 +652,6 @@ def _compile_tilelang_flash_attention_forward_kernel(key: FlashAttentionKernelKe
     if key in _flash_attention_forward_kernel_cache:
         return _flash_attention_forward_kernel_cache[key]
 
-    _ensure_tilelang_cuda_fp8_compatibility()
     tl_dtype = tilelang_dtype(key.dtype)
     accum_dtype = T.float32
     compiled = build_flash_attention_forward_kernel(

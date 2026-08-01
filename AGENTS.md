@@ -6,6 +6,16 @@ experiment packages, tests, and documentation.
 
 Use this file as the operating guide for AI coding agents working in this repo.
 
+## When To Add Rules
+
+Keep this file lean. A new rule belongs here only if it passes all three checks:
+
+- Every agent working in this repo needs it.
+- It is not already covered in `docs/`.
+- It cannot be expressed as a command or a reference to existing docs.
+
+Prefer folding into an existing rule over adding a new one.
+
 ## Project Shape
 
 - `src/taac2026/` contains shared framework code.
@@ -52,42 +62,19 @@ commands to update lock state.
 
 ## Common Commands
 
-Run unit tests:
+"Tests To Choose By Change" below is the authoritative test mapping; use it to
+decide which tests a change needs. The commands here are not covered there:
 
-```bash
-uv run pytest tests/unit -q
-```
-
-Run CPU-safe PR-style checks:
+Run the full CPU-safe PR gate:
 
 ```bash
 uv run pytest -m "(unit or contract or integration or benchmark_cpu) and not gpu and not benchmark_gpu" -q
-```
-
-Run experiment package contract tests:
-
-```bash
-uv run pytest tests/contract/experiments/test_packages.py -q
-uv run pytest tests/contract/experiments/test_runtime_contract_matrix.py -q
-```
-
-Run packaging/bootstrap tests:
-
-```bash
-uv run pytest tests/integration/application/packaging -q
-uv run pytest tests/unit/application/bootstrap tests/integration/application/bootstrap -q
 ```
 
 Run lint:
 
 ```bash
 uv run ruff check .
-```
-
-Build docs strictly:
-
-```bash
-uv run zensical build --strict
 ```
 
 Run a small CPU smoke train:
@@ -224,7 +211,8 @@ unless intentionally required.
 - Packaging/bootstrap: run packaging and bootstrap tests.
 - Data pipeline: run `tests/unit/infrastructure/data`.
 - Checkpoint/sidecar: run checkpoint tests and runtime contract matrix.
-- Accelerators: run accelerator unit tests; GPU behavior needs CUDA validation.
+- Accelerators: run accelerator unit tests, then GPU tests; see "Performance
+  And GPU Notes" below.
 - Docs: run `uv run zensical build --strict`.
 
 ## Documentation Rules
@@ -273,8 +261,12 @@ Only use destructive git operations when explicitly requested.
 
 ## Performance And GPU Notes
 
-CPU tests do not prove CUDA, TileLang, or accelerator behavior. If touching
-accelerator code, validate on a CUDA machine when possible and record:
+CPU tests do not prove CUDA, TileLang, or accelerator behavior. Verify the
+environment before asserting GPU facts: `tests/gpu` auto-skips without CUDA, so
+running it once doubles as a probe; `nvidia-smi` or `experiments/host_device_info`
+is a faster explicit check. Do not assume a devcontainer lacks GPU passthrough.
+
+When touching accelerator code, validate on a CUDA machine and record:
 
 - command
 - commit

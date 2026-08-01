@@ -118,6 +118,8 @@ uv run pytest tests/unit/infrastructure/accelerators -q
 uv run pytest -m gpu tests/gpu -q
 ```
 
+`gpu` 测试在无 CUDA 的机器上会整体 skip，因此先跑一次上面的命令即可同时完成 CUDA 探测——结果全 skip 说明当前环境没有可用的 CUDA GPU，此时再声明"未做 GPU 验证"才准确。需要更快的一次性探测可以用 `nvidia-smi` 或 `experiments/host_device_info`。
+
 benchmark 入口的 CPU 通路测试在 `tests/benchmarks/cpu`，会进入 CPU 门禁；真实性能结论仍然不要塞进常规 CI。需要性能结论时，用 CLI 生成 JSON，记录硬件、CUDA / PyTorch 版本、commit 和完整命令。
 
 ## Smoke Test 的位置

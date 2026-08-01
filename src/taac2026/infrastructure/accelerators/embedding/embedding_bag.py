@@ -24,7 +24,6 @@ from taac2026.infrastructure.accelerators.embedding.cuembed_runtime import (
 )
 from taac2026.infrastructure.accelerators.tilelang_runtime import (
 	T,
-	_ensure_tilelang_cuda_fp8_compatibility,
 	tilelang_available,
 	tilelang_dtype,
 )
@@ -192,7 +191,6 @@ def _compile_tilelang_embedding_bag_mean_forward_kernel(
 	if key in _embedding_bag_mean_forward_kernel_cache:
 		return _embedding_bag_mean_forward_kernel_cache[key]
 
-	_ensure_tilelang_cuda_fp8_compatibility()
 	tl_dtype = tilelang_dtype(key.dtype)
 	accum_dtype = T.float32
 	compiled = build_embedding_bag_mean_forward_kernel(
@@ -225,7 +223,6 @@ def _compile_tilelang_embedding_bag_mean_backward_kernel(
 	if key in _embedding_bag_mean_backward_kernel_cache:
 		return _embedding_bag_mean_backward_kernel_cache[key]
 
-	_ensure_tilelang_cuda_fp8_compatibility()
 	tl_dtype = tilelang_dtype(key.dtype)
 	accum_dtype = T.float32
 	compiled = build_embedding_bag_mean_backward_kernel(

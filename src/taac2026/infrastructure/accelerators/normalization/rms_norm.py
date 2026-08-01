@@ -10,7 +10,6 @@ import torch
 
 from taac2026.infrastructure.accelerators.tilelang_runtime import (
     T,
-    _ensure_tilelang_cuda_fp8_compatibility,
     tilelang_available,
     tilelang_dtype,
 )
@@ -150,7 +149,6 @@ def _compile_tilelang_rms_norm_forward_kernel(
     if key in _rms_norm_forward_kernel_cache:
         return _rms_norm_forward_kernel_cache[key]
 
-    _ensure_tilelang_cuda_fp8_compatibility()
     tl_dtype = tilelang_dtype(key.dtype)
     accum_dtype = T.float32
     compiled = build_rms_norm_forward_kernel(key.rows, key.cols, key.block_rows, key.eps, tl_dtype, accum_dtype)
@@ -170,7 +168,6 @@ def _compile_tilelang_rms_norm_backward_kernel(
     if key in _rms_norm_backward_kernel_cache:
         return _rms_norm_backward_kernel_cache[key]
 
-    _ensure_tilelang_cuda_fp8_compatibility()
     tl_dtype = tilelang_dtype(key.dtype)
     accum_dtype = T.float32
     compiled = build_rms_norm_backward_kernel(key.rows, key.cols, key.block_rows, tl_dtype, accum_dtype)
