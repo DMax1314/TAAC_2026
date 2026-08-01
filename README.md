@@ -8,7 +8,7 @@
   <a href="https://github.com/Puiching-Memory/TAAC_2026/actions/workflows/ci.yml"><img src="https://github.com/Puiching-Memory/TAAC_2026/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI Status (main)"></a>
   <a href="https://puiching-memory.github.io/TAAC_2026/"><img src="https://img.shields.io/website?label=Docs&up_message=Online&down_message=Offline&up_color=0A7B83&url=https%3A%2F%2Fpuiching-memory.github.io%2FTAAC_2026%2F" alt="Online Docs Status"></a>
   <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License">
-  <img src="https://img.shields.io/badge/Python-3.10--3.13-blue.svg" alt="Python">
+  <img src="https://img.shields.io/badge/Python-3.12--3.13-blue.svg" alt="Python">
   <img src="https://img.shields.io/badge/PyTorch-2.7.1-EE4C2C.svg" alt="PyTorch">
   <img src="https://img.shields.io/badge/Task-Recommendation-brightgreen.svg" alt="Task">
 </p>
@@ -119,13 +119,13 @@
 ### 安装环境
 
 ```bash
-uv python install 3.10.20
+uv python install 3.12.13
 
 # 本地训练 / 评估
-uv sync --locked --extra cuda126
+uv sync --locked --extra cuda132
 
 # 需要测试、lint 或本地文档站时
-uv sync --locked --extra dev --extra cuda126
+uv sync --locked --extra dev --extra cuda132
 ```
 
 ### 训练、评估和推理

@@ -19,7 +19,7 @@ from taac2026.infrastructure.platform.deps import (
 )
 
 
-SUPPORTED_CUDA_PROFILE = "cuda126"
+SUPPORTED_CUDA_PROFILE = "cuda132"
 SUPPORTED_COMMANDS = {"train", "val", "eval", "infer"}
 
 

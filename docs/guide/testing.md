@@ -9,7 +9,7 @@ icon: lucide/clipboard-list
 ## 准备环境
 
 ```bash
-uv sync --locked --extra dev --extra cuda126
+uv sync --locked --extra dev --extra cuda132
 ```
 
 只做 CPU 单测时，通常 `--extra dev` 已经足够；涉及本地 CUDA 训练或 accelerator 时再同步 CUDA profile。

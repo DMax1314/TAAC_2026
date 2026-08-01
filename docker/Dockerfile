@@ -1,11 +1,11 @@
 # syntax=docker/dockerfile:1.7
 
-ARG BASE_IMAGE=nvidia/cuda:12.6.0-devel-ubuntu22.04
+ARG BASE_IMAGE=docker.1ms.run/nvidia/cuda:13.2.0-devel-ubuntu22.04
 FROM ${BASE_IMAGE} AS base
 
 ARG BASE_IMAGE
-ARG PYTHON_VERSION=3.10.20
-ARG UV_EXTRA=cuda126
+ARG PYTHON_VERSION=3.12.13
+ARG UV_EXTRA=cuda132
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PATH=/root/.local/bin:${PATH} \

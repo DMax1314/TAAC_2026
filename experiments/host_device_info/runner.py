@@ -26,7 +26,7 @@ DEFAULT_UV_INSTALL_URL = "https://astral.sh/uv/install.sh"
 DEFAULT_PYPI_INDEX_URL = "https://pypi.org/simple"
 DEFAULT_TENCENT_PYPI_INDEX_URL = "https://mirrors.cloud.tencent.com/pypi/simple/"
 DEFAULT_PYTORCH_CPU_INDEX_URL = "https://download.pytorch.org/whl/cpu"
-DEFAULT_PYTORCH_CUDA126_INDEX_URL = "https://download.pytorch.org/whl/cu126"
+DEFAULT_PYTORCH_CUDA132_INDEX_URL = "https://download.pytorch.org/whl/cu132"
 DEFAULT_CONDA_SUBDIR = "linux-64"
 DEFAULT_CONDA_MAIN_CHANNEL_BASE_URL = "https://repo.anaconda.com/pkgs/main"
 DEFAULT_CONDA_FORGE_CHANNEL_BASE_URL = "https://conda.anaconda.org/conda-forge"
@@ -62,7 +62,7 @@ class HostDeviceInfoConfig:
     pypi_index_url: str = DEFAULT_PYPI_INDEX_URL
     tencent_pypi_index_url: str = DEFAULT_TENCENT_PYPI_INDEX_URL
     pytorch_cpu_index_url: str = DEFAULT_PYTORCH_CPU_INDEX_URL
-    pytorch_cuda126_index_url: str = DEFAULT_PYTORCH_CUDA126_INDEX_URL
+    pytorch_cuda132_index_url: str = DEFAULT_PYTORCH_CUDA132_INDEX_URL
     conda_subdir: str = DEFAULT_CONDA_SUBDIR
     conda_main_channel_base_url: str = DEFAULT_CONDA_MAIN_CHANNEL_BASE_URL
     conda_forge_channel_base_url: str = DEFAULT_CONDA_FORGE_CHANNEL_BASE_URL
@@ -391,8 +391,8 @@ def _log_uv_bootstrap_status(sink: LogSink, config: HostDeviceInfoConfig) -> Non
 def _pytorch_index_url_for_profile(config: HostDeviceInfoConfig, profile: str) -> str | None:
     if profile == "cpu":
         return config.pytorch_cpu_index_url
-    if profile == "cuda126":
-        return config.pytorch_cuda126_index_url
+    if profile == "cuda132":
+        return config.pytorch_cuda132_index_url
     return None
 
 
@@ -415,7 +415,7 @@ def _log_dependency_index_status(sink: LogSink, config: HostDeviceInfoConfig) ->
         return
 
     sink.log("pytorch_probe_profile=all")
-    for profile_name in ("cpu", "cuda126"):
+    for profile_name in ("cpu", "cuda132"):
         url = _pytorch_index_url_for_profile(config, profile_name)
         if url is not None:
             _log_url_probe(sink, f"pytorch_index_{profile_name}", url, config=config)

@@ -24,9 +24,9 @@ def test_parse_run_command_defaults_to_train_for_flags() -> None:
 def test_extract_cuda_profile_removes_supported_profile(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("TAAC_CUDA_PROFILE", raising=False)
 
-    parsed = extract_cuda_profile(["--cuda-profile", "cuda126", "--device", "cpu"])
+    parsed = extract_cuda_profile(["--cuda-profile", "cuda132", "--device", "cpu"])
 
-    assert parsed.profile == "cuda126"
+    assert parsed.profile == "cuda132"
     assert parsed.remaining_args == ["--device", "cpu"]
 
 

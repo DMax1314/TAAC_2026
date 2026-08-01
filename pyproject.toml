@@ -8,55 +8,47 @@ dynamic = ["version"]
 description = "TAAC 2026 experiment workspace"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.10,<3.14"
+requires-python = ">=3.12,<3.14"
 classifiers = [
 	"Operating System :: POSIX :: Linux",
 ]
 dependencies = [
-	"datasets==2.14.7",
+	"datasets==5.0.1",
 	"loguru==0.7.3",
-	"matplotlib==3.10.8",
+	"matplotlib==3.11.1",
 	"ninja==1.13.0",
-	"numpy==2.2.5",
-	"orjson==3.11.8",
-	"pyarrow==23.0.1",
-	"pydantic==2.12.5",
-	"rich==14.3.3",
-	"safetensors==0.7.0",
-	"scikit-learn==1.7.2",
-	"tilelang==0.1.9",
-	"tensorboard==2.19.0",
-	"tomli==2.4.0",
-	"tqdm==4.67.3",
-	"triton==3.3.1",
-	"tyro==1.0.13",
+	"numpy==2.5.1",
+	"orjson==3.11.9",
+	"pyarrow==25.0.0",
+	"pydantic==2.13.4",
+	"rich==15.0.0",
+	"safetensors==0.8.0",
+	"scikit-learn==1.9.0",
+	"tilelang==0.1.12",
+	"tensorboard==2.21.0",
+	"tomli==2.4.1",
+	"tqdm==4.70.0",
+	"triton==3.7.1",
+	"tyro==1.0.15",
 ]
 
 [project.optional-dependencies]
 dev = [
-	"hypothesis==6.152.9",
-	"pytest==9.0.3",
+	"hypothesis==6.164.0",
+	"pytest==9.1.1",
 	"pytest-benchmark==5.2.3",
 	"pytest-cov==7.1.0",
-	"ruff==0.15.13",
+	"ruff==0.16.1",
 	"vulture==2.16",
-	"zensical==0.0.43",
+	"zensical==0.0.52",
 ]
-cuda126 = [
-	"torch==2.7.1+cu126",
-	"fbgemm-gpu==1.2.0+cu126",
-	"torchrec==1.2.0+cu126",
+cuda132 = [
+	"torch==2.13.0+cu132",
 ]
 
 [tool.uv.sources]
 torch = [
-	{ index = "pytorch-cu126", extra = "cuda126" },
-]
-"fbgemm-gpu" = [
-	{ index = "pytorch-cu126", extra = "cuda126" },
-]
-torchrec = [
-	{ index = "pytorch-cu126", extra = "cuda126" },
+	{ index = "pytorch-cu132", extra = "cuda132" },
 ]
 
 [[tool.uv.index]]
@@ -65,8 +57,8 @@ url = "https://pypi.org/simple"
 default = true
 
 [[tool.uv.index]]
-name = "pytorch-cu126"
-url = "https://download.pytorch.org/whl/cu126"
+name = "pytorch-cu132"
+url = "https://download.pytorch.org/whl/cu132"
 explicit = true
 
 [tool.uv]

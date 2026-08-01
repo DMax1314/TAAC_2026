@@ -38,7 +38,7 @@ This is a Linux-only project managed by `uv`.
 Common setup:
 
 ```bash
-uv sync --locked --extra dev --extra cuda126
+uv sync --locked --extra dev --extra cuda132
 ```
 
 CPU-only unit work may only need:

@@ -51,7 +51,7 @@ PCVR cache 存的是增强前的基础 batch。cache 命中后仍会 clone batch
 | 主机    | `HGX-076`                                                          |
 | CPU     | Intel Xeon Platinum 8468，2 sockets，192 logical CPUs              |
 | GPU     | 8 x NVIDIA H800 80GB，driver `535.161.08`                          |
-| Python  | 3.10.20                                                            |
+| Python  | 3.12.13                                                            |
 | PyTorch | 2.7.1+cu126                                                        |
 | CUDA    | 12.6                                                               |
 | 数据集  | `outputs/perf/pcvr_synthetic_300x/demo_300000.parquet`，约 12.0 GB |

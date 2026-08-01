@@ -9,21 +9,21 @@ if [[ ! -f pyproject.toml ]]; then
 fi
 
 actual_uv_extra="${UV_EXTRA:-}"
-expected_uv_extra="${EXPECTED_UV_EXTRA:-cuda126}"
+expected_uv_extra="${EXPECTED_UV_EXTRA:-cuda132}"
 if [[ "${actual_uv_extra}" != "${expected_uv_extra}" ]]; then
     echo "Unsupported UV_EXTRA: expected ${expected_uv_extra}, got ${actual_uv_extra:-<unset>}" >&2
     exit 64
 fi
 
 actual_python_version="$("${UV_PROJECT_ENVIRONMENT:-/opt/venv}/bin/python" -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')"
-expected_python_version="${EXPECTED_PYTHON_VERSION:-3.10.20}"
+expected_python_version="${EXPECTED_PYTHON_VERSION:-3.12.13}"
 if [[ "${actual_python_version}" != "${expected_python_version}" ]]; then
     echo "Unsupported Python version: expected ${expected_python_version}, got ${actual_python_version}" >&2
     exit 65
 fi
 
 actual_base_image="${BASE_IMAGE:-${IMAGE_BASE_NAME:-}}"
-expected_base_image="${EXPECTED_BASE_IMAGE:-nvidia/cuda:12.6.0-devel-ubuntu22.04}"
+expected_base_image="${EXPECTED_BASE_IMAGE:-docker.1ms.run/nvidia/cuda:13.2.0-devel-ubuntu22.04}"
 if [[ -n "${actual_base_image}" && "${actual_base_image}" != "${expected_base_image}" ]]; then
     echo "Unsupported base image: expected ${expected_base_image}, got ${actual_base_image}" >&2
     exit 66

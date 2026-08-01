@@ -22,19 +22,19 @@ icon: lucide/rocket
 git clone https://github.com/Puiching-Memory/TAAC_2026.git
 cd TAAC_2026
 
-uv python install 3.10.20
-uv sync --locked --extra cuda126
+uv python install 3.12.13
+uv sync --locked --extra cuda132
 ```
 
 如果你还要跑测试、lint 或文档站：
 
 ```bash
-uv sync --locked --extra dev --extra cuda126
+uv sync --locked --extra dev --extra cuda132
 ```
 
 说明：
 
-- `cuda126` 是当前仓库支持的本地 CUDA profile。
+- `cuda132` 是当前仓库支持的本地 CUDA profile。
 - `dev` 包含 Ruff、Vulture、Pytest、Coverage 和 Zensical。
 - 线上 bundle 不依赖 `uv`，见 [线上 Bundle 上传](guide/online-training-bundle.md)。
 
@@ -189,7 +189,7 @@ uv run taac-package-infer \
 - `train` 最终调用 `taac-train`。
 - `val` / `eval` / `infer` 最终调用 `taac-evaluate`。
 - 本地默认 runner 是 `uv`；bundle 模式或 `TAAC_RUNNER=python` 会改用当前 Python。
-- `--cuda-profile` 目前只接受 `cuda126`，也可以用 `TAAC_CUDA_PROFILE=cuda126`。
+- `--cuda-profile` 目前只接受 `cuda132`，也可以用 `TAAC_CUDA_PROFILE=cuda132`。
 
 训练 CLI 继承了历史参数命名，常见参数是下划线形式：`--num_workers`、`--batch_size`、`--max_steps`。评估和推理 CLI 使用连字符形式：`--num-workers`、`--batch-size`。
 
