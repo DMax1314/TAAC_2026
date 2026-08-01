@@ -68,7 +68,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.12", "3.13", "3.14"]
 
     steps:
       - name: 检出仓库
@@ -87,12 +87,12 @@ jobs:
 
       - name: 运行单元测试
         if: matrix.python-version != env.CI_CANONICAL_PYTHON_VERSION
-        run: uv run --python "${{ matrix.python-version }}" --with torch==2.7.1 pytest -m "${CPU_TEST_MARKERS}" -v
+        run: uv run --python "${{ matrix.python-version }}" --with torch==2.9.0 pytest -m "${CPU_TEST_MARKERS}" -v
 
       - name: 运行带有覆盖率的单元测试
         if: matrix.python-version == env.CI_CANONICAL_PYTHON_VERSION
         run: >
-          uv run --python "${{ matrix.python-version }}" --with torch==2.7.1 --with coverage coverage run
+          uv run --python "${{ matrix.python-version }}" --with torch==2.9.0 --with coverage coverage run
           --data-file=.coverage.cpu --source="${COVERAGE_SOURCE}"
           -m pytest -m "${CPU_TEST_MARKERS}" -v
 
@@ -145,7 +145,7 @@ jobs:
           {
             echo "## 覆盖率范围"
             echo
-            echo "- 兼容性检查在 Python 3.10, 3.11, 3.12, 和 3.13 上运行"
+            echo "- 兼容性检查在 Python 3.12, 3.13, 和 3.14 上运行"
             echo "- 覆盖率门控从 Python ${CI_CANONICAL_PYTHON_VERSION} 执行"
             echo "- CPU 测试 marker: ${CPU_TEST_MARKERS}"
             echo "- 覆盖率采集 source: ${COVERAGE_SOURCE}"
