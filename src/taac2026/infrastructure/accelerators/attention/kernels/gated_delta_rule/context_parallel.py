@@ -31,7 +31,8 @@ def _calc_cp_seqs(
     chunk_size: int,
     num_v_heads: int,
 ):
-    # TODO: tilelang kernel
+    # Kept in Python: the decision heuristics are host-side, the result is
+    # tensor_cache'd and variable-length, so a kernel brings ~no benefit.
     device = raw_cu_seqlens.device
     seqlen_dtype = raw_cu_seqlens.dtype
     raw_cu_seqlens = raw_cu_seqlens.tolist()

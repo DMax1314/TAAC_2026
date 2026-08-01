@@ -329,7 +329,7 @@ def tilelang_fused_chunk_gdr_bwd(
                     # 11
                     T.barrier_wait(bar_11, (i_s + 0) % 2)
                     # dS0 += K^T @ dVg
-                    T.gemm_v1(
+                    T.gemm(
                         tmp_shared_2_2,
                         tmp_shared_2_3,
                         dh_fragment,
@@ -351,7 +351,7 @@ def tilelang_fused_chunk_gdr_bwd(
                     # 14
                     T.barrier_wait(bar_14, (i_s + 0) % 2)
                     # dS0 += Q^T @ dOg
-                    T.gemm_v1(
+                    T.gemm(
                         tmp_shared_2_1,
                         tmp_shared_2_3,
                         dh_fragment,
@@ -384,7 +384,7 @@ def tilelang_fused_chunk_gdr_bwd(
                     # 01
                     T.barrier_wait(bar_01, (i_s + 0) % 2)
                     # dV' = K @ dSt
-                    T.gemm_v1(k_shared, tmp_shared_4_1, dv_fragment, clear_accum=True)
+                    T.gemm(k_shared, tmp_shared_4_1, dv_fragment, clear_accum=True)
                     # dV' = g_last/g * dV'
                     for j_s, j_v in T.Parallel(block_S, DV):
                         dv_fragment[j_s, j_v] *= g_rev_exp_shared[j_s]
@@ -393,7 +393,7 @@ def tilelang_fused_chunk_gdr_bwd(
                     # 02
                     T.barrier_wait(bar_02, (i_s + 0) % 2)
                     # dV' += Pg^T @ dO
-                    T.gemm_v1(
+                    T.gemm(
                         tmp_shared_1_1,
                         do_shared,
                         dv_fragment,
@@ -411,7 +411,7 @@ def tilelang_fused_chunk_gdr_bwd(
                     # 04
                     T.barrier_wait(bar_04, (i_s + 0) % 2)
                     # dV = Ag^T @ dV'
-                    T.gemm_v1(
+                    T.gemm(
                         tmp_shared_1_2,
                         tmp_shared_2_1,
                         dv_fragment,
@@ -449,7 +449,7 @@ def tilelang_fused_chunk_gdr_bwd(
                     # 07
                     T.barrier_wait(bar_07, (i_s + 0) % 2)
                     # dK = V' @ dSt^T
-                    T.gemm_v1(
+                    T.gemm(
                         tmp_shared_2_1,
                         tmp_shared_4_1,
                         dk_fragment,
@@ -478,7 +478,7 @@ def tilelang_fused_chunk_gdr_bwd(
                     # 09
                     T.barrier_wait(bar_09, (i_s + 0) % 2)
                     # dK += dVg @ S0^T
-                    T.gemm_v1(
+                    T.gemm(
                         tmp_shared_2_3,
                         h_shared,
                         dk_fragment,
@@ -491,7 +491,7 @@ def tilelang_fused_chunk_gdr_bwd(
                     # 12
                     T.barrier_wait(bar_12, (i_s + 0) % 2)
                     # dK += dP^T @ Q
-                    T.gemm_v1(
+                    T.gemm(
                         tmp_shared_1_1,
                         tmp_shared_2_1,
                         dk_fragment,
@@ -504,7 +504,7 @@ def tilelang_fused_chunk_gdr_bwd(
                     # 15
                     T.barrier_wait(bar_15, (i_s + 0) % 2)
                     # dK += dAs @ K
-                    T.gemm_v1(
+                    T.gemm(
                         tmp_shared_1_2, tmp_shared_2_2, dk_fragment, clear_accum=False
                     )
 
@@ -523,7 +523,7 @@ def tilelang_fused_chunk_gdr_bwd(
                     # 00
                     T.barrier_wait(bar_00, (i_s + 0) % 2)
                     # P = Q @ K^T
-                    T.gemm_v1(
+                    T.gemm(
                         q_shared,
                         k_shared,
                         p_fragment,
@@ -569,7 +569,7 @@ def tilelang_fused_chunk_gdr_bwd(
                     # 03
                     T.barrier_wait(bar_03, (i_s + 0) % 2)
                     # U = K @ S0
-                    T.gemm_v1(k_shared, h_shared, u_fragment, clear_accum=True)
+                    T.gemm(k_shared, h_shared, u_fragment, clear_accum=True)
                     T.barrier_arrive(bar_04)
 
                     # 04
@@ -588,7 +588,7 @@ def tilelang_fused_chunk_gdr_bwd(
                     # 05
                     T.barrier_wait(bar_05, (i_s + 0) % 2)
                     # dAg = dV' @ W^T
-                    T.gemm_v1(
+                    T.gemm(
                         tmp_shared_2_1,
                         tmp_shared_2_2,
                         da_fragment,
@@ -596,7 +596,7 @@ def tilelang_fused_chunk_gdr_bwd(
                         clear_accum=True,
                     )
                     # V' = Ag @ W
-                    T.gemm_v1(
+                    T.gemm(
                         tmp_shared_1_2, tmp_shared_2_2, u_fragment, clear_accum=True
                     )
                     # S2[1] V'
@@ -606,7 +606,7 @@ def tilelang_fused_chunk_gdr_bwd(
                     # 06
                     T.barrier_wait(bar_06, (i_s + 0) % 2)
                     # dPg = dO @ V'^T
-                    T.gemm_v1(
+                    T.gemm(
                         do_shared,
                         tmp_shared_2_1,
                         dp_fragment,
@@ -640,7 +640,7 @@ def tilelang_fused_chunk_gdr_bwd(
                     # 08
                     T.barrier_wait(bar_08, (i_s + 0) % 2)
                     # dQ = dO @ S0^T
-                    T.gemm_v1(
+                    T.gemm(
                         do_shared,
                         h_shared,
                         dq_fragment,
@@ -668,7 +668,7 @@ def tilelang_fused_chunk_gdr_bwd(
                     # 10
                     T.barrier_wait(bar_10, (i_s + 0) % 2)
                     # dQ += dP @ K
-                    T.gemm_v1(
+                    T.gemm(
                         tmp_shared_1_1, tmp_shared_2_2, dq_fragment, clear_accum=False
                     )
                     # S2[S] dQ
@@ -707,7 +707,7 @@ def tilelang_fused_chunk_gdr_bwd(
                     # 13
                     T.barrier_wait(bar_13, (i_s + 0) % 2)
                     # dA = -Ar^T @ dAr @ Ar^T
-                    T.gemm_v1(
+                    T.gemm(
                         a_shared,
                         tmp_shared_1_2,
                         da_fragment,
@@ -715,7 +715,7 @@ def tilelang_fused_chunk_gdr_bwd(
                         clear_accum=True,
                     )
                     T.copy(da_fragment, tmp_shared_1_2)
-                    T.gemm_v1(
+                    T.gemm(
                         tmp_shared_1_2,
                         a_shared,
                         da_fragment,
@@ -723,7 +723,7 @@ def tilelang_fused_chunk_gdr_bwd(
                         clear_accum=True,
                     )
                     # At = K @ K^T
-                    T.gemm_v1(
+                    T.gemm(
                         tmp_shared_2_2,
                         tmp_shared_2_2,
                         a_fragment,

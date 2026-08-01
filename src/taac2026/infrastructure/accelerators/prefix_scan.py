@@ -1,14 +1,12 @@
+# pyright: reportInvalidTypeForm=false
+
 import torch
-import tilelang
-import tilelang.language as T
 
 from taac2026.infrastructure.accelerators.chunking import prepare_chunk_indices
+from taac2026.infrastructure.accelerators.tilelang_runtime import T, tl
 
 
-@tilelang.jit(
-    # out_idx=[-1],
-)
-def tilelang_chunk_local_cumsum(
+def _tilelang_chunk_local_cumsum_builder(
     H,
     chunk_size,
     accum_dtype,
@@ -125,6 +123,34 @@ def tilelang_chunk_local_cumsum(
     return tilelang_chunk_local_cumsum_kernel
 
 
+_tilelang_chunk_local_cumsum_jit: object | None = None
+
+
+def tilelang_chunk_local_cumsum(
+    H,
+    chunk_size,
+    accum_dtype,
+    g_dtype,
+    seqlen_dtype,
+    is_varlen,
+    reverse,
+):
+    global _tilelang_chunk_local_cumsum_jit
+    if tl is None:
+        raise RuntimeError("tilelang is not installed")
+    if _tilelang_chunk_local_cumsum_jit is None:
+        _tilelang_chunk_local_cumsum_jit = tl.jit()(_tilelang_chunk_local_cumsum_builder)
+    return _tilelang_chunk_local_cumsum_jit(
+        H,
+        chunk_size,
+        g_dtype=g_dtype,
+        seqlen_dtype=seqlen_dtype,
+        accum_dtype=accum_dtype,
+        is_varlen=is_varlen,
+        reverse=reverse,
+    )
+
+
 def chunk_local_cumsum(
     g: torch.Tensor,
     chunk_size: int = 64,
@@ -135,7 +161,7 @@ def chunk_local_cumsum(
     assert g.stride(-1) == 1
 
     if cu_seqlens is None:
-        num_chunks = batch_size * tilelang.cdiv(num_tokens, chunk_size)
+        num_chunks = batch_size * -(-num_tokens // chunk_size)
         seqlen_dtype = "int32"
         is_varlen = False
     else:

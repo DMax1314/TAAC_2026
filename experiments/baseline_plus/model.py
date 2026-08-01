@@ -145,7 +145,7 @@ class SequenceQueryGenerator(nn.Module):
         domain_count = max(1, num_domains)
         hidden_dim = max(d_model, d_model * hidden_mult)
         self.query_seed = nn.Parameter(torch.randn(domain_count, self.num_queries, d_model) * 0.02)
-        self.domain_embedding = nn.Embedding(domain_count, d_model)
+        self.domain_embedding = nn.Embedding(domain_count, d_model, sparse=True)
         self.context_projection = nn.Sequential(
             RMSNorm(d_model * 2),
             nn.Linear(d_model * 2, hidden_dim),

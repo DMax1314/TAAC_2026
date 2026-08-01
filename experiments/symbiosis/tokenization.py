@@ -341,9 +341,9 @@ class UnifiedSymbiosisTokenizer(nn.Module):
         self.sequence_stats = V2SequenceStatsTokenizer(len(self.seq_domains), d_model) if self.use_sequence_stats_tokens else None
         self.cls_token = nn.Parameter(torch.randn(1, 1, d_model) * 0.02)
         self.candidate_token = nn.Parameter(torch.randn(1, 1, d_model) * 0.02)
-        self.role_embedding = nn.Embedding(ROLE_COUNT, d_model)
-        self.domain_embedding = nn.Embedding(max(1, len(self.seq_domains) + 1), d_model)
-        self.risk_embedding = nn.Embedding(2, d_model)
+        self.role_embedding = nn.Embedding(ROLE_COUNT, d_model, sparse=True)
+        self.domain_embedding = nn.Embedding(max(1, len(self.seq_domains) + 1), d_model, sparse=True)
+        self.risk_embedding = nn.Embedding(2, d_model, sparse=True)
 
         self.num_sequence_tokens = sum(self.event_tokens_by_domain.values())
         if self.sequence_stats is not None:

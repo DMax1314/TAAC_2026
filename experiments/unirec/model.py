@@ -364,8 +364,8 @@ class PCVRUniRec(EmbeddingParameterMixin, nn.Module):
             + self.item_dense.num_tokens
         )
         self.num_ns = self.feature_token_count + 3
-        self.field_embedding = nn.Embedding(max(1, self.feature_token_count), d_model)
-        self.source_embedding = nn.Embedding(max(4, 4 + len(self.seq_domains)), d_model)
+        self.field_embedding = nn.Embedding(max(1, self.feature_token_count), d_model, sparse=True)
+        self.source_embedding = nn.Embedding(max(4, 4 + len(self.seq_domains)), d_model, sparse=True)
         self.target_token = nn.Parameter(torch.randn(1, 1, d_model) * 0.02)
         self.mot_token = nn.Parameter(torch.randn(1, 1, d_model) * 0.02)
         self.interest_token = nn.Parameter(torch.randn(1, 1, d_model) * 0.02)

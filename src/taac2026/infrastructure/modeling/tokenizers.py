@@ -131,17 +131,17 @@ class SequenceTokenizer(nn.Module):
 			elif emb_skip_threshold > 0 and vocab_size > emb_skip_threshold and self.compress_high_cardinality:
 				self._embedding_index.append(-1)
 				self._compressed_embedding_index.append(len(self.compressed_embeddings))
-				self.compressed_embeddings.append(nn.Embedding(int(emb_skip_threshold) + 1, emb_dim, padding_idx=0))
+				self.compressed_embeddings.append(nn.Embedding(int(emb_skip_threshold) + 1, emb_dim, padding_idx=0, sparse=True))
 			elif emb_skip_threshold > 0 and vocab_size > emb_skip_threshold:
 				self._embedding_index.append(-1)
 				self._compressed_embedding_index.append(-1)
 			else:
 				self._embedding_index.append(len(self.embeddings))
 				self._compressed_embedding_index.append(-1)
-				self.embeddings.append(nn.Embedding(vocab_size + 1, emb_dim, padding_idx=0))
+				self.embeddings.append(nn.Embedding(vocab_size + 1, emb_dim, padding_idx=0, sparse=True))
 		input_dim = max(1, len(self.vocab_sizes) * emb_dim)
 		self.project = nn.Sequential(nn.Linear(input_dim, d_model), nn.SiLU(), nn.LayerNorm(d_model))
-		self.time_embedding = nn.Embedding(num_time_buckets, d_model, padding_idx=0) if num_time_buckets > 0 else None
+		self.time_embedding = nn.Embedding(num_time_buckets, d_model, padding_idx=0, sparse=True) if num_time_buckets > 0 else None
 		self.reset_parameters()
 
 	def reset_parameters(self) -> None:

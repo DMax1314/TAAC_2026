@@ -1,12 +1,11 @@
+# pyright: reportInvalidTypeForm=false
+
 import torch
-import tilelang
-import tilelang.language as T
+
+from taac2026.infrastructure.accelerators.tilelang_runtime import T, tl
 
 
-@tilelang.jit(
-    # out_idx=[-1],
-)
-def tilelang_group_reduce_vector(
+def _tilelang_group_reduce_vector_builder(
     H,
     Hg,
     DK,
@@ -28,7 +27,7 @@ def tilelang_group_reduce_vector(
         result: T.Tensor(dqk_shape, dtype=qkva_dtype),
     ):
         with T.Kernel(
-            tilelang.cdiv(num_tokens, block_size), Hg, batch_size, threads=128
+            tl.cdiv(num_tokens, block_size), Hg, batch_size, threads=128
         ) as (bt, bhg, bb):
             buffer_fragment = T.alloc_fragment((block_size, DK), dtype=accum_dtype)
             result_fragment = T.alloc_fragment((block_size, DK), dtype=accum_dtype)
@@ -52,6 +51,32 @@ def tilelang_group_reduce_vector(
             )
 
     return tilelang_group_reduce_vector_kernel
+
+
+_tilelang_group_reduce_vector_jit: object | None = None
+
+
+def tilelang_group_reduce_vector(
+    H,
+    Hg,
+    DK,
+    accum_dtype,
+    qkva_dtype,
+    block_size: int = 16,
+):
+    global _tilelang_group_reduce_vector_jit
+    if tl is None:
+        raise RuntimeError("tilelang is not installed")
+    if _tilelang_group_reduce_vector_jit is None:
+        _tilelang_group_reduce_vector_jit = tl.jit()(_tilelang_group_reduce_vector_builder)
+    return _tilelang_group_reduce_vector_jit(
+        H,
+        Hg,
+        DK,
+        accum_dtype=accum_dtype,
+        qkva_dtype=qkva_dtype,
+        block_size=block_size,
+    )
 
 
 def group_reduce_vector(

@@ -1012,7 +1012,7 @@ class GroupNSTokenizer(nn.Module):
             if skip:
                 embs.append(None)
             else:
-                embs.append(nn.Embedding(int(vs) + 1, emb_dim, padding_idx=0))
+                embs.append(nn.Embedding(int(vs) + 1, emb_dim, padding_idx=0, sparse=True))
         self.embs = nn.ModuleList([e for e in embs if e is not None])
         # Map from fid index to position in self.embs (or -1 if filtered)
         self._emb_index = []
@@ -1111,7 +1111,7 @@ class RankMixerNSTokenizer(nn.Module):
             if skip:
                 embs.append(None)
             else:
-                embs.append(nn.Embedding(int(vs) + 1, emb_dim, padding_idx=0))
+                embs.append(nn.Embedding(int(vs) + 1, emb_dim, padding_idx=0, sparse=True))
         self.embs = nn.ModuleList([e for e in embs if e is not None])
         # Map from fid index to position in self.embs (or -1 if filtered)
         self._emb_index = []
@@ -1344,7 +1344,7 @@ class PCVRHyFormer(nn.Module):
                 if skip:
                     embs_raw.append(None)
                 else:
-                    embs_raw.append(nn.Embedding(int(vs) + 1, emb_dim, padding_idx=0))
+                    embs_raw.append(nn.Embedding(int(vs) + 1, emb_dim, padding_idx=0, sparse=True))
             module_list = nn.ModuleList([e for e in embs_raw if e is not None])
             # Map from position index to real index in module_list (-1 if skipped)
             index_map = []
@@ -1379,7 +1379,7 @@ class PCVRHyFormer(nn.Module):
 
         # ================== Time Interval Bucket Embedding (optional) ==================
         if num_time_buckets > 0:
-            self.time_embedding = nn.Embedding(num_time_buckets, d_model, padding_idx=0)
+            self.time_embedding = nn.Embedding(num_time_buckets, d_model, padding_idx=0, sparse=True)
 
         # ================== HyFormer Components ==================
         # MultiSeqQueryGenerator

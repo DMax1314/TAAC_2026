@@ -345,7 +345,7 @@ class PCVRRankUp(EmbeddingParameterMixin, nn.Module):
             }
         )
 
-        self.type_embedding = nn.Embedding(TYPE_SEQUENCE_START + max(1, len(self.seq_domains)), d_model)
+        self.type_embedding = nn.Embedding(TYPE_SEQUENCE_START + max(1, len(self.seq_domains)), d_model, sparse=True)
         self.global_project = nn.Sequential(nn.Linear(d_model, d_model), nn.SiLU(), nn.LayerNorm(d_model))
         self.candidate_token = nn.Parameter(torch.randn(1, 1, d_model) * 0.02)
         self.task_tokens = nn.Parameter(torch.randn(1, self.task_token_count, d_model) * 0.02)

@@ -8,6 +8,63 @@ import torch.nn as nn
 from taac2026.infrastructure.accelerators.embedding.embedding_bag import embedding_bag_mean
 
 
+class SparseEmbeddingBagMean(torch.autograd.Function):
+    """embedding_bag_mean with a sparse weight gradient.
+
+    ``F.embedding_bag`` materializes dense gradients over the whole vocabulary,
+    which is prohibitive for large tables (hundreds of millions of rows). This
+    wrapper keeps the forward backend (torch/tilelang/triton/cuembed) while the
+    backward constructs a COO gradient that only touches the rows referenced by
+    ``values`` (padding row 0 excluded), matching the mean-over-valid-count
+    semantics of ``F.embedding_bag(values, weight, mode="mean", padding_idx=0)``.
+    """
+
+    @staticmethod
+    def forward(ctx, weight: torch.Tensor, values: torch.Tensor) -> torch.Tensor:
+        ctx.save_for_backward(values)
+        ctx.weight_shape = tuple(weight.shape)
+        batch_size, bag_size = values.shape
+        ctx.batch_idx = torch.arange(batch_size, device=values.device).repeat_interleave(bag_size)
+        return embedding_bag_mean(weight, values)
+
+    @staticmethod
+    def backward(ctx, grad_out: torch.Tensor):
+        (values,) = ctx.saved_tensors
+        grad_out = grad_out.contiguous()
+        num_embeddings, emb_dim = ctx.weight_shape
+        valid_counts = (values != 0).sum(dim=1)  # (B,)
+        counts = valid_counts.clamp(min=1).to(grad_out.dtype)
+        # grad per occurrence: grad_out[b] / valid_counts[b]; zero out all-zero rows.
+        row_scale = grad_out / counts.unsqueeze(1)
+        row_scale = row_scale * (valid_counts > 0).unsqueeze(1).to(grad_out.dtype)
+        flat = values.reshape(-1)
+        keep = flat != 0
+        rows = flat[keep]
+        scaled = row_scale[ctx.batch_idx][keep]
+        if rows.numel() == 0:
+            grad_weight = torch.zeros(
+                num_embeddings, emb_dim, device=grad_out.device, dtype=grad_out.dtype
+            ).to_sparse()
+        else:
+            # Deliberately uncoalesced: the sparse optimizer coalesces exactly
+            # once, so coalescing here would only duplicate that cost.
+            grad_weight = torch.sparse_coo_tensor(
+                rows.unsqueeze(0).contiguous(),
+                scaled,
+                (num_embeddings, emb_dim),
+                device=grad_out.device,
+                dtype=grad_out.dtype,
+            )
+        return grad_weight, None
+
+
+def sparse_embedding_bag_mean(weight: torch.Tensor, values: torch.Tensor) -> torch.Tensor:
+    """embedding_bag_mean with sparse gradient support for nn.Embedding weights."""
+    if torch.is_grad_enabled() and weight.requires_grad:
+        return SparseEmbeddingBagMean.apply(weight, values)
+    return embedding_bag_mean(weight, values)
+
+
 def hash_compress_ids(values: torch.Tensor, num_buckets: int) -> torch.Tensor:
 	if num_buckets <= 0:
 		return values.new_zeros(values.shape)
@@ -40,14 +97,14 @@ class FeatureEmbeddingBank(nn.Module):
 			elif emb_skip_threshold > 0 and int(vocab_size) > emb_skip_threshold and self.compress_high_cardinality:
 				self._embedding_index.append(-1)
 				self._compressed_embedding_index.append(len(self.compressed_embeddings))
-				self.compressed_embeddings.append(nn.Embedding(int(emb_skip_threshold) + 1, emb_dim, padding_idx=0))
+				self.compressed_embeddings.append(nn.Embedding(int(emb_skip_threshold) + 1, emb_dim, padding_idx=0, sparse=True))
 			elif emb_skip_threshold > 0 and int(vocab_size) > emb_skip_threshold:
 				self._embedding_index.append(-1)
 				self._compressed_embedding_index.append(-1)
 			else:
 				self._embedding_index.append(len(self.embeddings))
 				self._compressed_embedding_index.append(-1)
-				self.embeddings.append(nn.Embedding(int(vocab_size) + 1, emb_dim, padding_idx=0))
+				self.embeddings.append(nn.Embedding(int(vocab_size) + 1, emb_dim, padding_idx=0, sparse=True))
 		self.reset_parameters()
 
 	@property
@@ -69,12 +126,12 @@ class FeatureEmbeddingBank(nn.Module):
 			compressed_index = self._compressed_embedding_index[feature_index]
 			if embedding_index >= 0:
 				values = int_feats[:, offset : offset + length].to(torch.long).clamp(min=0, max=int(vocab_size))
-				tokens.append(embedding_bag_mean(self.embeddings[embedding_index].weight, values))
+				tokens.append(sparse_embedding_bag_mean(self.embeddings[embedding_index].weight, values))
 			elif compressed_index >= 0:
 				embedding = self.compressed_embeddings[compressed_index]
 				values = int_feats[:, offset : offset + length].to(torch.long).clamp(min=0)
 				compressed_values = hash_compress_ids(values, embedding.num_embeddings - 1)
-				tokens.append(embedding_bag_mean(embedding.weight, compressed_values))
+				tokens.append(sparse_embedding_bag_mean(embedding.weight, compressed_values))
 			else:
 				tokens.append(int_feats.new_zeros(batch_size, self.emb_dim, dtype=torch.float32))
 		return torch.stack(tokens, dim=1)

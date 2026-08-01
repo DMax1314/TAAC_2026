@@ -478,9 +478,10 @@ def test_discovered_experiment_models_forward_and_backward_under_amp_autocast(ex
     # Check that no gradient is NaN/inf after backward.
     for name, param in model.named_parameters():
         if param.grad is not None:
-            assert torch.isfinite(param.grad).all(), (
+            grad = param.grad._values() if param.grad.is_sparse else param.grad
+            assert torch.isfinite(grad).all(), (
                 f"Non-finite gradient for {name} under AMP {amp_dtype}: "
-                f"{(~torch.isfinite(param.grad)).sum()}/{param.grad.numel()} inf/nan"
+                f"{(~torch.isfinite(grad)).sum()}/{grad.numel()} inf/nan"
             )
 
 

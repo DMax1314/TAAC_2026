@@ -38,10 +38,54 @@ icon: lucide/cpu
 
 ## 已有 TODO 标记
 
-| #   | 位置                                                                                              | 内容                                                 | 优先级 |
-| --- | ------------------------------------------------------------------------------------------------- | ---------------------------------------------------- | ------ |
-| 10  | `src/taac2026/infrastructure/accelerators/chunking.py`                                            | `prepare_chunk_indices` 注释 `TODO: tilelang kernel` | P1     |
-| 11  | `src/taac2026/infrastructure/accelerators/attention/kernels/gated_delta_rule/context_parallel.py` | `_calc_cp_seqs` 注释 `TODO: tilelang kernel`         | P1     |
+| #   | 位置                                                                                              | 内容                                           | 优先级 | 状态                                                                                                 |
+| --- | ------------------------------------------------------------------------------------------------- | ---------------------------------------------- | ------ | ---------------------------------------------------------------------------------------------------- |
+| 10  | `src/taac2026/infrastructure/accelerators/chunking.py`                                            | `prepare_chunk_indices` 已接入 tilelang kernel | P1     | ✅ 已完成（保留 torch fallback，两路径语义一致）                                                      |
+| 11  | `src/taac2026/infrastructure/accelerators/attention/kernels/gated_delta_rule/context_parallel.py` | `_calc_cp_seqs` 保留 Python 实现               | P1     | ⏸ 评估后不 kernel 化：决策启发式本质在 Python，函数被 `tensor_cache` 缓存且输出变长，kernel 化收益≈0 |
+
+## 已解决的历史问题
+
+| #   | 问题                                                                                | 处理                                                                                                                     |
+| --- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| 12  | GDR kernel 族使用已移除的 `T.gemm_v1` API，tilelang 0.1.12 下完全不可编译           | `kkt_solve` / `prepare_h` / `fused_fwd` / `fused_bwd` 共 35 处迁移为 `T.gemm`，sm_90a target 下 6 个 kernel 全部编译通过 |
+| 13  | `prepare_h` 加载 A 时未对最后一个 chunk 越界行做 mask，`X = A^T @ K` 会污染全部输出 | V/A 加载段增加边界检查，越界行置 0                                                                                       |
+
+## 真实模型训练 step profiling（2026-08，A30）
+
+用 `tools/profile_train_step.py` 对 `experiments/baseline_plus`（真实数据管线 + 真实
+模型 + BCE/Muon/Adagrad 全链路）做了 torch profiler 采样，优化前每 step 的 GPU
+self 时间约 168ms，优化后约 120ms（-29%），step 耗时中位数 309ms → 268ms，训练
+loss/AUC 曲线完全一致。
+
+| #   | 优化项                                                                                                                                                                                                                                             | 量化效果                                                                                                                                                                        |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 14  | `Muon` 的 1D/0D AdamW 分支 foreach 化 + 2D 参数按形状分组做 batched Newton-Schulz（`bmm`）                                                                                                                                                         | `Muon.step` GPU 94ms → 40ms（-57%），数学与逐参数实现完全等价                                                                                                                   |
+| 15  | 全部 `nn.Embedding` 开启 `sparse=True`；`FeatureEmbeddingBank` 的 bag-mean 包 `SparseEmbeddingBagMean`（forward 保留多后端加速器，backward 构造 COO 稀疏梯度）                                                                                     | embedding backward 278ms → 28ms（-90%）；每 step dense 梯度从 ~2.2GB 降到 ~MB 级（H20 19.6GiB 显存下避免 OOM 的关键）                                                           |
+| 16  | 自定义 `PCVRSparseAdagrad`（`src/taac2026/infrastructure/optimization/sparse_adagrad.py`）：用 `scatter_reduce` 合并重复行 + `index_add`/`index_select` 更新，完全绕开 torch sparse 原语（`coalesce`/`sparse_mask`/`_make_sparse`/invariant 检查） | 消除 ~165 次/step 的 `coalesce` kernel（~78ms）与 ~640 次/step 的 sparse 张量构造；数值与 `torch.optim.Adagrad` 逐位一致（1e-8 级）；AMP（fp16 GradScaler）下回退 torch Adagrad |
+| 17  | `clip_grad_norms_with_sparse`：torch 2.13 的 `clip_grad_norm_` 已移除 sparse 分支，对 SparseCUDA 直接抛 `NotImplementedError`                                                                                                                      | 兼容稀疏梯度裁剪（`_values()` 范数），旧语义不变                                                                                                                                |
+
+复现命令：
+
+```bash
+uv run python tools/profile_train_step.py \
+  --experiment experiments/baseline_plus --device cuda --max_steps 30 \
+  --dataset-path outputs/sample_data/demo_1000.parquet \
+  --schema-path docs/archive/files/schema/sample_1000_raw.schema.json \
+  --rms_norm_backend torch
+```
+
+剩余热点（按收益排序）：Muon NS 迭代的 `ns_steps=5`（~40ms/step，调小需先验证训练
+质量）、自定义 Adagrad 的 `scatter_reduce`+`any` 行合并（~20ms/step）、DataLoader
+CPU 等待（~170ms/step，本地小数据集固有）。原始 roadmap 中的 Fused SwiGLU / BCE 在
+真实 profile 中不是热点（`mm`/`addmm` 合计仅 ~30ms/step），优先级低于优化器路径。
+
+### 附带发现
+
+| #   | 问题                                                                                                                           | 现状                                                                                                        |
+| --- | ------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| 18  | `baseline_plus` 默认 `rms_norm_backend="tilelang"` 无法训练：fusion 用 `RMSNorm(d_model*6)`=384，非 2 的幂被 tilelang 后端拒绝 | tilelang rms_norm 需要支持非 2 的幂 dim（padding 或泛化 kernel）；当前本地复现需 `--rms_norm_backend torch` |
+| 19  | tilelang rms_norm kernel cache key 含 `rows`，序列 token 数逐 batch 变化导致每 step 重编译                                     | key 应去掉 `rows`（kernel 按固定 block_rows 编译即可复用）                                                  |
+| 20  | torch 2.13 `nn.Embedding(sparse=True)` 的 backward 返回 uncoalesced 稀疏梯度，`clip_grad_norm_` 已移除 sparse 分支             | 已用 `clip_grad_norms_with_sparse` 兼容（见 #17）                                                           |
 
 ## 新算子提案
 
@@ -54,11 +98,15 @@ icon: lucide/cpu
 
 ## 建议开发顺序
 
-1. FlashAttention Triton backend，先补齐文档曾经宣称但源码缺失的 backend。
-2. LayerNorm Triton / TileLang，优先覆盖高频模型路径。
-3. Fused SwiGLU，让 baseline、tokenformer、rankup、symbiosis 等实验同时受益。
-4. `prepare_chunk_indices` 和 `_calc_cp_seqs` 的 TileLang TODO，解除 GDR 性能瓶颈。
-5. Fused BCE loss，聚焦训练 step 热路径。
+1. 优化器热路径（已部分完成，见上表 #14-17）：真实 profile 显示 Muon/Adagrad 占训练
+   step GPU 时间 ~60%。剩余项：Muon NS 迭代 fused kernel（`ns_steps` 迭代的 gemm 链）、
+   自定义 Adagrad 的 `scatter_reduce`+`any` 合并步骤融合。
+2. FlashAttention Triton backend，先补齐文档曾经宣称但源码缺失的 backend。
+3. LayerNorm Triton / TileLang，优先覆盖高频模型路径（真实模型 `RMSNorm(d_model*6)`
+   非 2 的幂被 tilelang 拒绝，见附带发现 #18；cache key 含 `rows` 导致每步重编译，见 #19）。
+4. Fused SwiGLU，让 baseline、tokenformer、rankup、symbiosis 等实验受益（真实 profile
+   中 `mm`/`addmm` 合计 ~30ms/step，收益有限但多实验受益）。
+5. Fused BCE loss，训练 loss 热路径（真实 profile 中占比极小，仅在校验损失前顺手做）。
 6. Gated Delta Rule Triton backend，作为 TileLang kernel 族的可替代实现。
 
 ## 接入验收清单

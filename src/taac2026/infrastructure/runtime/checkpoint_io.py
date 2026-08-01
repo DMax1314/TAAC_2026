@@ -172,9 +172,18 @@ class PCVRTrainerSupportMixin:
 
         reinit_ptrs = self.model.reinit_high_cardinality_params(self.reinit_cardinality_threshold)
         sparse_params = self.model.get_sparse_params()
-        self.sparse_optimizer = torch.optim.Adagrad(
-            sparse_params, lr=self.sparse_lr, weight_decay=self.sparse_weight_decay
-        )
+        from taac2026.infrastructure.runtime.execution import runtime_grad_scaler_enabled
+
+        if not runtime_grad_scaler_enabled(self.runtime_execution, self.device):
+            from taac2026.infrastructure.optimization.sparse_adagrad import PCVRSparseAdagrad
+
+            self.sparse_optimizer = PCVRSparseAdagrad(
+                sparse_params, lr=self.sparse_lr, weight_decay=self.sparse_weight_decay
+            )
+        else:
+            self.sparse_optimizer = torch.optim.Adagrad(
+                sparse_params, lr=self.sparse_lr, weight_decay=self.sparse_weight_decay
+            )
         restored = 0
         for parameter in sparse_params:
             if parameter.data_ptr() not in reinit_ptrs and parameter.data_ptr() in old_state:
