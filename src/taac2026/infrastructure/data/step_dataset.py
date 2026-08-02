@@ -115,6 +115,15 @@ class PCVRStepDataset(Dataset[PCVRBatch]):
 
     def _configure_opt_access_trace(self) -> None:
         """Wire the step trace into the per-process cache (shared cache does it in its builder)."""
+        self.refresh_opt_trace(self._start_step)
+
+    def refresh_opt_trace(self, start_step: int, *, steps: int | None = None) -> None:
+        """Refresh the OPT access-trace window for a training sweep.
+
+        The window starts at ``start_step`` (absolute global step) so a
+        multi-sweep training loop can re-target OPT predictions at each sweep
+        boundary without rebuilding the cache contents.
+        """
         if self.pipeline is None:
             return
         cache = getattr(self.pipeline, "cache", None)
@@ -124,8 +133,9 @@ class PCVRStepDataset(Dataset[PCVRBatch]):
             or getattr(cache, "policy", "lru") != "opt"
         ):
             return
+        trace_steps = self._cache_trace_steps() if steps is None else max(0, int(steps))
         self.pipeline.configure_access_trace(
-            self.iter_step_batch_keys(steps=self._cache_trace_steps()),
+            self.iter_step_batch_keys(steps=trace_steps, start_step=int(start_step)),
             cyclic=False,
             key_universe=self._global_batch_keys(),
         )
@@ -277,7 +287,10 @@ class PCVRStepDataset(Dataset[PCVRBatch]):
     def _cache_trace_steps(self) -> int:
         if self.planned_steps > 0:
             return self.planned_steps
-        return self.logical_sweep_steps()
+        # With unknown total steps, predict two sweeps ahead: rolling window
+        # rebuilds keep the horizon fresh, and 2x sweep captures ~all the
+        # repeat-access locality a longer trace would (offline simulation).
+        return self.logical_sweep_steps() * 2
 
     def _batch_key_for_global_step(self, global_step: int) -> PCVRBatchKey:
         batch_keys = self._global_batch_keys()

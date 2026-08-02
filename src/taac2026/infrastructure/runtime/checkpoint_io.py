@@ -125,6 +125,7 @@ class PCVRTrainerSupportMixin:
         start_step = 0
         while True:
             self._set_train_loader_start_step(start_step)
+            self._refresh_train_opt_trace(start_step)
             yielded = False
             yielded_steps = 0
             for batch in self.train_loader:
@@ -134,6 +135,13 @@ class PCVRTrainerSupportMixin:
             if not yielded:
                 raise RuntimeError("train_loader produced no batches")
             start_step += yielded_steps
+
+    def _refresh_train_opt_trace(self, start_step: int) -> None:
+        """Re-target the OPT access-trace window at each sweep boundary."""
+        dataset = getattr(self.train_loader, "dataset", None)
+        refresh_opt_trace = getattr(dataset, "refresh_opt_trace", None)
+        if callable(refresh_opt_trace):
+            refresh_opt_trace(start_step)
 
     def _set_train_loader_start_step(self, start_step: int) -> None:
         sampler = getattr(self.train_loader, "sampler", None)

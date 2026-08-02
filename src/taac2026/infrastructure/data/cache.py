@@ -152,7 +152,15 @@ class PCVRMemoryBatchCache:
             self._access_count.zero_()
             return
 
-        self._reset_index(key_ids, clear_items=True)
+        if not same_index:
+            # Key universe changed: full index rebuild, drop cached payloads.
+            self._reset_index(key_ids, clear_items=True)
+        else:
+            # Same key universe: refresh the trace window but keep cached
+            # payloads so an OPT window restart does not re-warm the cache.
+            self._access_count.zero_()
+            self._hits = 0
+            self._misses = 0
         self._trace_positions_by_key = trace_positions_by_key
         self._trace_offsets_tensor, self._trace_positions_tensor = _trace_index_tensors(
             trace_positions_by_key, len(key_ids)
@@ -417,7 +425,14 @@ class PCVRSharedBatchCache:
             if same_index and same_trace:
                 return
 
-            self._reset_index(key_ids)
+            if not same_index:
+                # Key universe changed: full shared index rebuild.
+                self._reset_index(key_ids)
+            else:
+                # Same key universe: refresh the trace window but keep shared
+                # slots so an OPT window restart does not re-warm the cache.
+                self._access_count.zero_()
+                self._reset_counters()
             self._trace_positions_by_key = trace_positions_by_key
             offsets, positions_tensor = _trace_index_tensors(trace_positions_by_key, len(key_ids))
             self._trace_offsets_tensor = offsets.share_memory_()

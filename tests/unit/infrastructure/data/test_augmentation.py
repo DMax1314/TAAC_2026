@@ -466,6 +466,44 @@ def test_opt_batch_cache_reconfigures_same_trace() -> None:
     assert cache._access_count == 1
 
 
+def test_opt_batch_cache_window_restart_keeps_payloads() -> None:
+    cache = PCVRMemoryBatchCache.from_config(
+        PCVRDataCacheConfig(mode="opt", max_batches=2)
+    )
+    cache.configure_access_trace(
+        [
+            ("file", 0, 0),
+            ("file", 0, 1),
+            ("file", 0, 0),
+        ],
+        cyclic=False,
+        key_universe=[("file", 0, 0), ("file", 0, 1), ("file", 0, 2)],
+    )
+
+    for key in (("file", 0, 0), ("file", 0, 1)):
+        assert cache.get(key) is None
+        cache.put(key, _make_batch())
+
+    # A new trace window (e.g. next training sweep) over the same key universe
+    # must keep the cached payloads instead of dropping and re-warming them.
+    cache.configure_access_trace(
+        [
+            ("file", 0, 2),
+            ("file", 0, 1),
+            ("file", 0, 0),
+        ],
+        cyclic=False,
+        key_universe=[("file", 0, 0), ("file", 0, 1), ("file", 0, 2)],
+    )
+
+    assert len(cache) == 2
+    assert cache.get(("file", 0, 0)) is not None
+    assert cache.get(("file", 0, 1)) is not None
+    assert cache.get(("file", 0, 2)) is None
+    assert cache.stats()["trace_length"] == 3
+    assert cache._trace_positions_by_key == {2: (0,), 1: (1,), 0: (2,)}
+
+
 def test_shared_opt_batch_cache_evicts_farthest_future_key() -> None:
     cache = PCVRSharedBatchCache(
         enabled=True,
@@ -502,6 +540,49 @@ def test_shared_opt_batch_cache_evicts_farthest_future_key() -> None:
     assert cached_1 is not None
     assert cached_1["label"].tolist() == [2, 12]
     assert cached_2 is None
+
+
+def test_shared_opt_batch_cache_window_restart_keeps_slots() -> None:
+    cache = PCVRSharedBatchCache(
+        enabled=True,
+        max_batches=2,
+        policy="opt",
+        tensor_specs={
+            "label": PCVRSharedTensorSpec(shape=(2,), dtype=torch.long),
+        },
+        static_values={"_seq_domains": []},
+    )
+    key_universe = [("file", 0, 0), ("file", 0, 1), ("file", 0, 2)]
+    cache.configure_access_trace(
+        [("file", 0, 0), ("file", 0, 1), ("file", 0, 0)],
+        cyclic=False,
+        key_universe=key_universe,
+    )
+
+    for key, value in zip(
+        (("file", 0, 0), ("file", 0, 1)),
+        (1, 2),
+        strict=True,
+    ):
+        assert cache.get(key) is None
+        cache.put(key, {"label": torch.tensor([value, value + 10], dtype=torch.long)})
+
+    # A new trace window over the same key universe must keep shared slots.
+    cache.configure_access_trace(
+        [("file", 0, 2), ("file", 0, 1), ("file", 0, 0)],
+        cyclic=False,
+        key_universe=key_universe,
+    )
+
+    assert len(cache) == 2
+    cached_0 = cache.get(("file", 0, 0))
+    cached_1 = cache.get(("file", 0, 1))
+    assert cached_0 is not None
+    assert cached_0["label"].tolist() == [1, 11]
+    assert cached_1 is not None
+    assert cached_1["label"].tolist() == [2, 12]
+    assert cache.get(("file", 0, 2)) is None
+    assert cache.stats()["trace_length"] == 3
 
 
 def test_shared_opt_batch_cache_supports_repeated_step_trace() -> None:
