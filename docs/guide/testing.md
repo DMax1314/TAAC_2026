@@ -93,7 +93,7 @@ uv.lock
 本地复现 CPU 单测口径：
 
 ```bash
-uv run --python 3.13 --with torch==2.9.0 --with coverage \
+uv run --python 3.13 --with torch==2.13.0 --with coverage \
   coverage run --data-file=.coverage.cpu --source=src/taac2026 \
   -m pytest -m "(unit or contract or integration or benchmark_cpu) and not gpu and not benchmark_gpu" -v
 ```
