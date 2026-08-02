@@ -19,7 +19,6 @@ def _ensure_triton() -> None:
 
 
 def build_rms_norm_forward_kernel(
-    rows: int,
     cols: int,
     block_rows: int,
     eps: float,
@@ -34,7 +33,7 @@ def build_rms_norm_forward_kernel(
         weight,
         out,
         inv_rms,
-        ROWS: tl.constexpr,
+        ROWS,
         COLS: tl.constexpr,
         BLOCK_ROWS: tl.constexpr,
         BLOCK_COLS: tl.constexpr,
@@ -51,6 +50,7 @@ def build_rms_norm_forward_kernel(
         tl.store(inv_rms + row_offsets, row_scale, mask=row_offsets < ROWS)
 
     def runner(x: torch.Tensor, weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        rows = x.shape[0]
         out = torch.empty_like(x)
         inv_rms = torch.empty((rows,), dtype=torch.float32, device=x.device)
         grid = (triton.cdiv(rows, block_rows),)
@@ -72,7 +72,6 @@ def build_rms_norm_forward_kernel(
 
 
 def build_rms_norm_backward_kernel(
-    rows: int,
     cols: int,
     block_rows: int,
 ):
@@ -88,7 +87,7 @@ def build_rms_norm_backward_kernel(
         grad_out,
         grad_x,
         grad_weight_partial,
-        ROWS: tl.constexpr,
+        ROWS,
         COLS: tl.constexpr,
         BLOCK_ROWS: tl.constexpr,
         BLOCK_COLS: tl.constexpr,
@@ -122,6 +121,7 @@ def build_rms_norm_backward_kernel(
         inv_rms: torch.Tensor,
         grad_out: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        rows = x.shape[0]
         grad_x = torch.empty_like(x)
         grad_weight_partial = torch.empty(
             (triton.cdiv(rows, block_rows), cols),

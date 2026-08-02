@@ -1,29 +1,34 @@
 """TileLang RMSNorm kernel builders."""
 
 from taac2026.infrastructure.accelerators.tilelang_runtime import T, tl
+from tilelang.language import dynamic
 
 
-def build_rms_norm_forward_kernel(rows: int, cols: int, block_rows: int, eps: float, tl_dtype, accum_dtype):
+def build_rms_norm_forward_kernel(cols: int, block_rows: int, eps: float, tl_dtype, accum_dtype, *, effective_cols: int | None = None):
     if tl is None:
         raise RuntimeError("tilelang is not installed")
 
+    # cols may be padded for layout safety; the mean still divides by the real feature count.
+    effective_cols = cols if effective_cols is None else effective_cols
+    m = dynamic("m")
+
     @tl.jit(out_idx=[2, 3], target="cuda")
     def rms_norm_forward_kernel(
-        rows: int,
         cols: int,
         block_rows: int,
         eps: float,
+        effective_cols: int,
         dtype: T.dtype = tl_dtype,
         acc_dtype: T.dtype = accum_dtype,
     ):
         @T.prim_func
         def main(
-            x: T.Tensor((rows, cols), dtype),
+            x: T.Tensor((m, cols), dtype),
             weight: T.Tensor((cols,), dtype),
-            out: T.Tensor((rows, cols), dtype),
-            inv_rms: T.Tensor((rows,), acc_dtype),
+            out: T.Tensor((m, cols), dtype),
+            inv_rms: T.Tensor((m,), acc_dtype),
         ):
-            with T.Kernel(T.ceildiv(rows, block_rows), threads=128) as bx:
+            with T.Kernel(T.ceildiv(m, block_rows), threads=128) as bx:
                 x_shared = T.alloc_shared((block_rows, cols), dtype)
                 weight_shared = T.alloc_shared((cols,), dtype)
                 x_local = T.alloc_fragment((block_rows, cols), dtype)
@@ -42,7 +47,7 @@ def build_rms_norm_forward_kernel(rows: int, cols: int, block_rows: int, eps: fl
                 T.reduce_sum(x_square, row_scale, dim=1)
 
                 for i in T.Parallel(block_rows):
-                    row_scale[i] = T.rsqrt(row_scale[i] / cols + eps)
+                    row_scale[i] = T.rsqrt(row_scale[i] / effective_cols + eps)
 
                 for i, j in T.Parallel(block_rows, cols):
                     out[bx * block_rows + i, j] = (
@@ -54,31 +59,34 @@ def build_rms_norm_forward_kernel(rows: int, cols: int, block_rows: int, eps: fl
 
         return main
 
-    return rms_norm_forward_kernel(rows, cols, block_rows, eps)
+    return rms_norm_forward_kernel(cols, block_rows, eps, effective_cols)
 
 
-def build_rms_norm_backward_kernel(rows: int, cols: int, block_rows: int, tl_dtype, accum_dtype):
+def build_rms_norm_backward_kernel(cols: int, block_rows: int, tl_dtype, accum_dtype, *, effective_cols: int | None = None):
     if tl is None:
         raise RuntimeError("tilelang is not installed")
 
-    @tl.jit(out_idx=[4, 5], target="cuda")
+    effective_cols = cols if effective_cols is None else effective_cols
+    m = dynamic("m")
+
+    @tl.jit(out_idx=[4], target="cuda")
     def rms_norm_backward_kernel(
-        rows: int,
         cols: int,
         block_rows: int,
+        effective_cols: int,
         dtype: T.dtype = tl_dtype,
         acc_dtype: T.dtype = accum_dtype,
     ):
         @T.prim_func
         def main(
-            x: T.Tensor((rows, cols), dtype),
+            x: T.Tensor((m, cols), dtype),
             weight: T.Tensor((cols,), dtype),
-            inv_rms: T.Tensor((rows,), acc_dtype),
-            grad_out: T.Tensor((rows, cols), dtype),
-            grad_x: T.Tensor((rows, cols), dtype),
-            grad_weight_partial: T.Tensor((T.ceildiv(rows, block_rows), cols), acc_dtype),
+            inv_rms: T.Tensor((m,), acc_dtype),
+            grad_out: T.Tensor((m, cols), dtype),
+            grad_x: T.Tensor((m, cols), dtype),
+            grad_weight_partial: T.Tensor((T.ceildiv(m, block_rows), cols), acc_dtype),
         ):
-            with T.Kernel(T.ceildiv(rows, block_rows), threads=128) as bx:
+            with T.Kernel(T.ceildiv(m, block_rows), threads=128) as bx:
                 x_shared = T.alloc_shared((block_rows, cols), dtype)
                 grad_out_shared = T.alloc_shared((block_rows, cols), dtype)
                 weight_shared = T.alloc_shared((cols,), dtype)
@@ -117,7 +125,7 @@ def build_rms_norm_backward_kernel(rows: int, cols: int, block_rows: int, tl_dty
                     inv_rms_cubed = inv_rms_value * inv_rms_value * inv_rms_value
                     grad_x_local[i, j] = (
                         weighted_grad[i, j] * inv_rms_value
-                        - x_local[i, j].astype(acc_dtype) * row_dot[i] * inv_rms_cubed / cols
+                        - x_local[i, j].astype(acc_dtype) * row_dot[i] * inv_rms_cubed / effective_cols
                     )
                     grad_weight_contrib[i, j] = (
                         grad_out_local[i, j].astype(acc_dtype)
@@ -133,7 +141,7 @@ def build_rms_norm_backward_kernel(rows: int, cols: int, block_rows: int, tl_dty
 
         return main
 
-    return rms_norm_backward_kernel(rows, cols, block_rows)
+    return rms_norm_backward_kernel(cols, block_rows, effective_cols)
 
 
 __all__ = [

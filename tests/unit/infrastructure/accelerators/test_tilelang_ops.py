@@ -648,6 +648,31 @@ def test_resolved_rms_norm_backend_falls_back_to_torch_on_cpu() -> None:
     assert resolved_rms_norm_backend(x, "torch") == "torch"
 
 
+def test_tilelang_padded_cols_keeps_safe_shapes_unchanged() -> None:
+    # Powers of two and multiples of 128 need no padding (verified safe on tilelang 0.1.12).
+    assert rms_norm_ops._tilelang_padded_cols(1) == 1
+    assert rms_norm_ops._tilelang_padded_cols(64) == 64
+    assert rms_norm_ops._tilelang_padded_cols(128) == 128
+    assert rms_norm_ops._tilelang_padded_cols(256) == 256
+    assert rms_norm_ops._tilelang_padded_cols(384) == 384
+
+
+def test_tilelang_padded_cols_pads_unaligned_shapes() -> None:
+    assert rms_norm_ops._tilelang_padded_cols(96) == 128
+    assert rms_norm_ops._tilelang_padded_cols(100) == 128
+    assert rms_norm_ops._tilelang_padded_cols(127) == 128
+    assert rms_norm_ops._tilelang_padded_cols(385) == 512
+    assert rms_norm_ops._tilelang_padded_cols(400) == 512
+
+
+def test_rms_norm_cache_key_ignores_row_count() -> None:
+    # The kernel compiles with a dynamic row count, so it is reused across row counts.
+    x_small = torch.randn(16, 64)
+    x_large = torch.randn(23, 64)
+    assert rms_norm_ops._rms_norm_cache_key(x_small, 1e-6, 8) == rms_norm_ops._rms_norm_cache_key(x_large, 1e-6, 8)
+    assert rms_norm_ops._rms_norm_cache_key(x_small, 1e-6, 8) == rms_norm_ops._rms_norm_cache_key(x_small, 1e-6, 8)
+
+
 def test_rms_norm_triton_no_grad_uses_inference_kernel_for_trainable_parameters(monkeypatch) -> None:
     x = torch.randn(2, 3, 4, dtype=torch.float32, requires_grad=True)
     weight = torch.randn(4, dtype=torch.float32, requires_grad=True)

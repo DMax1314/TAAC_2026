@@ -17,6 +17,7 @@ from taac2026.infrastructure.accelerators import (
 
 
 flash_attention_ops = importlib.import_module("taac2026.infrastructure.accelerators.attention.flash_attention")
+rms_norm_ops = importlib.import_module("taac2026.infrastructure.accelerators.normalization.rms_norm")
 
 pytestmark = pytest.mark.gpu
 
@@ -190,6 +191,53 @@ def test_rms_norm_tilelang_matches_torch_forward_and_backward_on_cuda() -> None:
     tilelang_ops.clear_tilelang_kernel_cache()
     x = torch.randn(16, 64, dtype=torch.float16, device="cuda", requires_grad=True)
     weight = torch.randn(64, dtype=torch.float16, device="cuda", requires_grad=True)
+    x_ref = x.detach().clone().requires_grad_(True)
+    weight_ref = weight.detach().clone().requires_grad_(True)
+
+    output = rms_norm(x, weight, backend="tilelang")
+    reference = rms_norm(x_ref, weight_ref, backend="torch")
+
+    loss = output.float().square().mean()
+    reference_loss = reference.float().square().mean()
+    loss.backward()
+    reference_loss.backward()
+
+    torch.testing.assert_close(output.float(), reference.float(), atol=5e-3, rtol=5e-3)
+    torch.testing.assert_close(x.grad.float(), x_ref.grad.float(), atol=1e-2, rtol=1e-2)
+    torch.testing.assert_close(weight.grad.float(), weight_ref.grad.float(), atol=1e-2, rtol=1e-2)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for TileLang kernel validation")
+def test_rms_norm_tilelang_reuses_kernel_across_row_counts_on_cuda() -> None:
+    if not tilelang_ops.tilelang_available():
+        pytest.skip("tilelang is not installed")
+
+    tilelang_ops.clear_tilelang_kernel_cache()
+    weight = torch.randn(384, dtype=torch.float16, device="cuda", requires_grad=True)
+    for rows in (16, 23, 31, 64):
+        x = torch.randn(rows, 384, dtype=torch.float16, device="cuda", requires_grad=True)
+        x_ref = x.detach().clone().requires_grad_(True)
+        weight_ref = weight.detach().clone().requires_grad_(True)
+        output = rms_norm(x, weight, backend="tilelang")
+        reference = rms_norm(x_ref, weight_ref, backend="torch")
+        output.float().square().mean().backward()
+        reference.float().square().mean().backward()
+        torch.testing.assert_close(output.float(), reference.float(), atol=5e-3, rtol=5e-3)
+        torch.testing.assert_close(x.grad.float(), x_ref.grad.float(), atol=1e-2, rtol=1e-2)
+
+    assert len(rms_norm_ops._rms_norm_forward_kernel_cache) == 1
+    assert len(rms_norm_ops._rms_norm_backward_kernel_cache) == 1
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for TileLang kernel validation")
+@pytest.mark.parametrize("cols", [96, 127, 384, 385, 400])
+def test_rms_norm_tilelang_matches_torch_with_non_power_of_two_cols_on_cuda(cols: int) -> None:
+    if not tilelang_ops.tilelang_available():
+        pytest.skip("tilelang is not installed")
+
+    tilelang_ops.clear_tilelang_kernel_cache()
+    x = torch.randn(24, cols, dtype=torch.float16, device="cuda", requires_grad=True)
+    weight = torch.randn(cols, dtype=torch.float16, device="cuda", requires_grad=True)
     x_ref = x.detach().clone().requires_grad_(True)
     weight_ref = weight.detach().clone().requires_grad_(True)
 

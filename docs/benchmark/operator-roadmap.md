@@ -62,30 +62,30 @@ loss/AUC 曲线完全一致。
 | 14  | `Muon` 的 1D/0D AdamW 分支 foreach 化 + 2D 参数按形状分组做 batched Newton-Schulz（`bmm`）                                                                                                                                                         | `Muon.step` GPU 94ms → 40ms（-57%），数学与逐参数实现完全等价                                                                                                                   |
 | 15  | 全部 `nn.Embedding` 开启 `sparse=True`；`FeatureEmbeddingBank` 的 bag-mean 包 `SparseEmbeddingBagMean`（forward 保留多后端加速器，backward 构造 COO 稀疏梯度）                                                                                     | embedding backward 278ms → 28ms（-90%）；每 step dense 梯度从 ~2.2GB 降到 ~MB 级（H20 19.6GiB 显存下避免 OOM 的关键）                                                           |
 | 16  | 自定义 `PCVRSparseAdagrad`（`src/taac2026/infrastructure/optimization/sparse_adagrad.py`）：用 `scatter_reduce` 合并重复行 + `index_add`/`index_select` 更新，完全绕开 torch sparse 原语（`coalesce`/`sparse_mask`/`_make_sparse`/invariant 检查） | 消除 ~165 次/step 的 `coalesce` kernel（~78ms）与 ~640 次/step 的 sparse 张量构造；数值与 `torch.optim.Adagrad` 逐位一致（1e-8 级）；AMP（fp16 GradScaler）下回退 torch Adagrad |
+| 21  | Adagrad 行合并双策略：大表（vocab > 100K）改排序分段（`unique` + `index_add_`，全部操作保持在 nnz 规模），小表保留全表 scatter+any（固定 kernel 开销占优）                                                                                         | 165 参数模拟训练场景 GPU step 58ms → 41ms（-30%）；大表单独 3.4x；与旧实现及 torch Adagrad 数学完全一致（1e-8 级）                                                              |
 | 17  | `clip_grad_norms_with_sparse`：torch 2.13 的 `clip_grad_norm_` 已移除 sparse 分支，对 SparseCUDA 直接抛 `NotImplementedError`                                                                                                                      | 兼容稀疏梯度裁剪（`_values()` 范数），旧语义不变                                                                                                                                |
 
-复现命令：
+复现命令（默认 tilelang 后端即可，无需 `--rms_norm_backend torch`）：
 
 ```bash
 uv run python tools/profile_train_step.py \
   --experiment experiments/baseline_plus --device cuda --max_steps 30 \
   --dataset-path outputs/sample_data/demo_1000.parquet \
-  --schema-path docs/archive/files/schema/sample_1000_raw.schema.json \
-  --rms_norm_backend torch
+  --schema-path docs/archive/files/schema/sample_1000_raw.schema.json
 ```
 
 剩余热点（按收益排序）：Muon NS 迭代的 `ns_steps=5`（~40ms/step，调小需先验证训练
-质量）、自定义 Adagrad 的 `scatter_reduce`+`any` 行合并（~20ms/step）、DataLoader
-CPU 等待（~170ms/step，本地小数据集固有）。原始 roadmap 中的 Fused SwiGLU / BCE 在
-真实 profile 中不是热点（`mm`/`addmm` 合计仅 ~30ms/step），优先级低于优化器路径。
+质量）、DataLoader CPU 等待（~170ms/step，本地小数据集固有）。原始 roadmap 中的
+Fused SwiGLU / BCE 在真实 profile 中不是热点（`mm`/`addmm` 合计仅 ~30ms/step），
+优先级低于优化器路径。Adagrad 行合并已通过双策略优化（见 #21）。
 
 ### 附带发现
 
-| #   | 问题                                                                                                                           | 现状                                                                                                        |
-| --- | ------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
-| 18  | `baseline_plus` 默认 `rms_norm_backend="tilelang"` 无法训练：fusion 用 `RMSNorm(d_model*6)`=384，非 2 的幂被 tilelang 后端拒绝 | tilelang rms_norm 需要支持非 2 的幂 dim（padding 或泛化 kernel）；当前本地复现需 `--rms_norm_backend torch` |
-| 19  | tilelang rms_norm kernel cache key 含 `rows`，序列 token 数逐 batch 变化导致每 step 重编译                                     | key 应去掉 `rows`（kernel 按固定 block_rows 编译即可复用）                                                  |
-| 20  | torch 2.13 `nn.Embedding(sparse=True)` 的 backward 返回 uncoalesced 稀疏梯度，`clip_grad_norm_` 已移除 sparse 分支             | 已用 `clip_grad_norms_with_sparse` 兼容（见 #17）                                                           |
+| #   | 问题                                                                                                                           | 现状                                                                                                                                                                              |
+| --- | ------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 18  | `baseline_plus` 默认 `rms_norm_backend="tilelang"` 无法训练：fusion 用 `RMSNorm(d_model*6)`=384，非 2 的幂被 tilelang 后端拒绝 | ✅ 已完成：非 2 幂 dim 自动 pad 到安全形状（2 的幂或 128 的倍数，`effective_cols` 保持真实除数）；`baseline_plus` 默认后端可直接训练（GPU smoke 3 步通过）                         |
+| 19  | tilelang rms_norm kernel cache key 含 `rows`，序列 token 数逐 batch 变化导致每 step 重编译                                     | ✅ 已完成：kernel 改用动态行数（`T.dynamic`）编译，cache key 去掉 `rows`；同一 `(cols, dtype, eps, block_rows)` 只编译一次（GPU 测试断言 fwd/bwd cache 各 1），triton 后端同步支持 |
+| 20  | torch 2.13 `nn.Embedding(sparse=True)` 的 backward 返回 uncoalesced 稀疏梯度，`clip_grad_norm_` 已移除 sparse 分支             | 已用 `clip_grad_norms_with_sparse` 兼容（见 #17）                                                                                                                                 |
 
 ## 新算子提案
 
@@ -102,8 +102,8 @@ CPU 等待（~170ms/step，本地小数据集固有）。原始 roadmap 中的 F
    step GPU 时间 ~60%。剩余项：Muon NS 迭代 fused kernel（`ns_steps` 迭代的 gemm 链）、
    自定义 Adagrad 的 `scatter_reduce`+`any` 合并步骤融合。
 2. FlashAttention Triton backend，先补齐文档曾经宣称但源码缺失的 backend。
-3. LayerNorm Triton / TileLang，优先覆盖高频模型路径（真实模型 `RMSNorm(d_model*6)`
-   非 2 的幂被 tilelang 拒绝，见附带发现 #18；cache key 含 `rows` 导致每步重编译，见 #19）。
+3. LayerNorm Triton / TileLang，优先覆盖高频模型路径（tilelang rms_norm 的非 2 幂
+   dim 已通过 pad 解决、动态行数复用已解决，见附带发现 #18/#19）。
 4. Fused SwiGLU，让 baseline、tokenformer、rankup、symbiosis 等实验受益（真实 profile
    中 `mm`/`addmm` 合计 ~30ms/step，收益有限但多实验受益）。
 5. Fused BCE loss，训练 loss 热路径（真实 profile 中占比极小，仅在校验损失前顺手做）。

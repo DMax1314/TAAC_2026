@@ -36,7 +36,8 @@ _rms_norm_kernel: RMSNormKernel | None = None
 
 @dataclass(frozen=True, slots=True)
 class RMSNormKernelKey:
-    rows: int
+    # rows is intentionally excluded: the kernel compiles with dynamic row count
+    # and is reused across changing sequence lengths.
     cols: int
     dtype: torch.dtype
     eps: float
@@ -92,8 +93,6 @@ def _resolve_rms_norm_backend(x: torch.Tensor, backend: RMSNormBackend) -> Liter
         if not tilelang_available():
             raise RuntimeError("tilelang backend requested but tilelang is not installed")
         require_cuda_tensors("tilelang rms_norm", x)
-        if not _is_power_of_two(int(x.shape[-1])):
-            raise RuntimeError("tilelang rms_norm currently requires the last dimension to be a power of two")
         return "tilelang"
     if backend != "triton":
         raise ValueError(f"unsupported rms_norm backend: {backend}")
@@ -107,6 +106,20 @@ def _resolve_rms_norm_backend(x: torch.Tensor, backend: RMSNormBackend) -> Liter
 
 def _is_power_of_two(value: int) -> bool:
     return value > 0 and (value & (value - 1)) == 0
+
+
+def _tilelang_padded_cols(cols: int) -> int:
+    # tilelang 0.1.12 layout inference fails or corrupts results for unaligned
+    # cols; powers of two and multiples of 128 are verified safe, pad the rest.
+    if _is_power_of_two(cols):
+        return cols
+    return max(128, ((cols + 127) // 128) * 128)
+
+
+def _tilelang_pad_cols(x: torch.Tensor, cols: int) -> torch.Tensor:
+    if x.shape[-1] == cols:
+        return x
+    return torch.nn.functional.pad(x, (0, cols - x.shape[-1]))
 
 
 def _rms_norm_registered_kernel(x: torch.Tensor, weight: torch.Tensor, eps: float) -> torch.Tensor:
@@ -123,7 +136,6 @@ def _run_torch_rms_norm(x: torch.Tensor, weight: torch.Tensor, eps: float) -> to
 
 def _rms_norm_cache_key(x: torch.Tensor, eps: float, block_rows: int | None) -> RMSNormKernelKey:
     return RMSNormKernelKey(
-        rows=x.shape[0],
         cols=x.shape[1],
         dtype=x.dtype,
         eps=float(eps),
@@ -132,11 +144,12 @@ def _rms_norm_cache_key(x: torch.Tensor, eps: float, block_rows: int | None) -> 
 
 
 def _compile_tilelang_rms_norm_kernel(key: RMSNormKernelKey) -> Callable[[torch.Tensor, torch.Tensor], torch.Tensor]:
+    padded_cols = _tilelang_padded_cols(key.cols)
     forward_kernel = _compile_tilelang_rms_norm_forward_kernel(key)
 
     def runner(x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
-        out, _inv_rms = forward_kernel(x, weight)
-        return out
+        out, _inv_rms = forward_kernel(_tilelang_pad_cols(x, padded_cols), _tilelang_pad_cols(weight, padded_cols))
+        return out[:, : key.cols]
 
     return runner
 
@@ -151,7 +164,15 @@ def _compile_tilelang_rms_norm_forward_kernel(
 
     tl_dtype = tilelang_dtype(key.dtype)
     accum_dtype = T.float32
-    compiled = build_rms_norm_forward_kernel(key.rows, key.cols, key.block_rows, key.eps, tl_dtype, accum_dtype)
+    padded_cols = _tilelang_padded_cols(key.cols)
+    compiled = build_rms_norm_forward_kernel(
+        padded_cols,
+        key.block_rows,
+        key.eps,
+        tl_dtype,
+        accum_dtype,
+        effective_cols=key.cols,
+    )
 
     def runner(x: torch.Tensor, weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         return compiled(x, weight)
@@ -170,7 +191,14 @@ def _compile_tilelang_rms_norm_backward_kernel(
 
     tl_dtype = tilelang_dtype(key.dtype)
     accum_dtype = T.float32
-    compiled = build_rms_norm_backward_kernel(key.rows, key.cols, key.block_rows, tl_dtype, accum_dtype)
+    padded_cols = _tilelang_padded_cols(key.cols)
+    compiled = build_rms_norm_backward_kernel(
+        padded_cols,
+        key.block_rows,
+        tl_dtype,
+        accum_dtype,
+        effective_cols=key.cols,
+    )
 
     def runner(
         x: torch.Tensor,
@@ -178,7 +206,13 @@ def _compile_tilelang_rms_norm_backward_kernel(
         inv_rms: torch.Tensor,
         grad_out: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        return compiled(x, weight, inv_rms, grad_out)
+        grad_weight_partial = torch.zeros(
+            ((x.shape[0] + key.block_rows - 1) // key.block_rows, padded_cols),
+            dtype=torch.float32,
+            device=x.device,
+        )
+        grad_x = compiled(x, weight, inv_rms, grad_out, grad_weight_partial)
+        return grad_x, grad_weight_partial
 
     _rms_norm_backward_kernel_cache[key] = runner
     return runner
@@ -202,7 +236,7 @@ def _compile_triton_rms_norm_forward_kernel(
     if key in _triton_rms_norm_forward_kernel_cache:
         return _triton_rms_norm_forward_kernel_cache[key]
 
-    compiled = build_triton_rms_norm_forward_kernel(key.rows, key.cols, key.block_rows, key.eps)
+    compiled = build_triton_rms_norm_forward_kernel(key.cols, key.block_rows, key.eps)
 
     def runner(x: torch.Tensor, weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         return compiled(x, weight)
@@ -219,7 +253,7 @@ def _compile_triton_rms_norm_backward_kernel(
     if key in _triton_rms_norm_backward_kernel_cache:
         return _triton_rms_norm_backward_kernel_cache[key]
 
-    compiled = build_triton_rms_norm_backward_kernel(key.rows, key.cols, key.block_rows)
+    compiled = build_triton_rms_norm_backward_kernel(key.cols, key.block_rows)
 
     def runner(
         x: torch.Tensor,
@@ -261,19 +295,24 @@ class _TilelangRMSNormFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x: torch.Tensor, weight: torch.Tensor, eps: float, block_rows: int) -> torch.Tensor:
         key = _rms_norm_cache_key(x, eps, block_rows)
+        padded_cols = _tilelang_padded_cols(key.cols)
         forward_kernel = _compile_tilelang_rms_norm_forward_kernel(key)
-        out, inv_rms = forward_kernel(x, weight)
+        out, inv_rms = forward_kernel(_tilelang_pad_cols(x, padded_cols), _tilelang_pad_cols(weight, padded_cols))
         ctx.save_for_backward(x, weight, inv_rms)
         ctx.key = key
-        return out
+        return out[:, : key.cols]
 
     @staticmethod
     def backward(ctx, grad_out: torch.Tensor):
         x, weight, inv_rms = ctx.saved_tensors
+        padded_cols = _tilelang_padded_cols(ctx.key.cols)
+        padded_x = _tilelang_pad_cols(x, padded_cols)
+        padded_weight = _tilelang_pad_cols(weight, padded_cols)
+        padded_grad_out = _tilelang_pad_cols(grad_out.contiguous(), padded_cols)
         backward_kernel = _compile_tilelang_rms_norm_backward_kernel(ctx.key)
-        grad_x, grad_weight_partial = backward_kernel(x, weight, inv_rms, grad_out.contiguous())
-        grad_weight = grad_weight_partial.sum(dim=0).to(weight.dtype)
-        return grad_x, grad_weight, None, None
+        grad_x, grad_weight_partial = backward_kernel(padded_x, padded_weight, inv_rms, padded_grad_out)
+        grad_weight = grad_weight_partial.sum(dim=0).to(weight.dtype)[: ctx.key.cols]
+        return grad_x[:, : ctx.key.cols], grad_weight, None, None
 
 
 class _TritonRMSNormFunction(torch.autograd.Function):
