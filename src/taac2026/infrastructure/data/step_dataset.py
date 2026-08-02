@@ -111,6 +111,24 @@ class PCVRStepDataset(Dataset[PCVRBatch]):
         self._worker_row_group_iterators: dict[
             tuple[str, int], tuple[Iterator[pa.RecordBatch], int]
         ] = {}
+        self._configure_opt_access_trace()
+
+    def _configure_opt_access_trace(self) -> None:
+        """Wire the step trace into the per-process cache (shared cache does it in its builder)."""
+        if self.pipeline is None:
+            return
+        cache = getattr(self.pipeline, "cache", None)
+        if (
+            cache is None
+            or not getattr(cache, "enabled", False)
+            or getattr(cache, "policy", "lru") != "opt"
+        ):
+            return
+        self.pipeline.configure_access_trace(
+            self.iter_step_batch_keys(steps=self._cache_trace_steps()),
+            cyclic=False,
+            key_universe=self._global_batch_keys(),
+        )
 
     def __len__(self) -> int:
         return self.logical_sweep_steps()

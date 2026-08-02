@@ -408,6 +408,37 @@ def test_get_pcvr_data_uses_shared_opt_cache_for_step_random_training(
     assert stats["trace_length"] == 12
 
 
+def test_get_pcvr_data_uses_memory_opt_cache_for_single_worker_step_random(
+    tmp_path: Path,
+) -> None:
+    schema_path = tmp_path / "schema.json"
+    parquet_path = tmp_path / "demo.parquet"
+    _write_observed_schema_fixture(schema_path, parquet_path)
+    data_pipeline_config = PCVRDataPipelineConfig(
+        cache=PCVRDataCacheConfig(mode="opt", max_batches=4),
+    )
+
+    train_loader, _valid_loader, train_dataset = pcvr_data.get_pcvr_data(
+        data_dir=str(parquet_path),
+        schema_path=str(schema_path),
+        batch_size=1,
+        valid_ratio=0.5,
+        num_workers=0,
+        buffer_batches=1,
+        sampling_strategy="step_random",
+        data_pipeline_config=data_pipeline_config,
+        max_steps=12,
+    )
+
+    assert train_loader.dataset is train_dataset
+    assert isinstance(train_dataset, PCVRStepDataset)
+    assert train_dataset.pipeline.cache.__class__.__name__ == "PCVRMemoryBatchCache"
+    stats = train_dataset.pipeline.cache.stats()
+    assert stats["opt_active"] is True
+    assert stats["native_opt_active"] is True
+    assert stats["trace_length"] == 12
+
+
 def test_get_pcvr_data_uses_shared_native_cache_for_all_policies(tmp_path: Path) -> None:
     schema_path = tmp_path / "schema.json"
     parquet_path = tmp_path / "demo.parquet"

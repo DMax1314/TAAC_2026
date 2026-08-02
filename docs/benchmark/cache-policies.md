@@ -4,6 +4,8 @@ icon: lucide/database-zap
 
 # Cache Policies Benchmark
 
+> **2026-08-02 更新**：下文 2026-05-07 的测评在 symbiosis v3（`6047913`）之前测得。该提交为序列转换引入了逐元素 Python 去重/统计循环，使基础 batch 转换慢了约一个数量级；`batch_converter.py` 已于 2026-08-02 将 `_sequence_stats_and_dedup` 向量化（64 位哈希分组 + 精确校验），demo 口径下 convert 从约 `1.6s` 降至约 `0.2s`。因此下文表格中的**绝对吞吐数字已被取代**（当前 `none` 单 worker 约 `936 rows/s`，`lru` 约 `1721 rows/s`、1.84x），cache 相对收益结论方向不变，建议按文末命令重测。
+
 ## 当前结论
 
 这页记录当前代码下 PCVR 数据管线 cache 策略的完整测评。比较对象包括 `none`、`lru`、`fifo`、`lfu`、`rr`、`opt`。所有启用的 cache 策略都使用项目内 native C++ policy index：单 worker 在 Python dict 中保存 batch payload，多 worker 在 shared-memory tensor slot 中保存 batch payload。
