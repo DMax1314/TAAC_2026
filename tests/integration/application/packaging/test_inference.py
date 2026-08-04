@@ -43,10 +43,8 @@ def test_build_inference_bundle_contains_runtime_sources(tmp_path: Path) -> None
     assert "run_inference_bundle" in infer_script
 
     manifest = code_package_manifest(result.code_package_path, ".taac_inference_manifest.json")
-    assert manifest["manifest_version"] == 1
     assert manifest["bundle_kind"] == "inference"
-    assert manifest["bundle_format"] == "taac2026-inference-v1"
-    assert manifest["bundle_format_version"] == 1
+    assert manifest["bundle_format"] == "taac2026-inference"
     assert manifest["framework"]["name"] == "taac2026"
     assert manifest["framework"]["version"]
     assert manifest["bundled_experiment_path"] == "experiments/baseline"

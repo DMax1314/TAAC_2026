@@ -21,7 +21,6 @@ from taac2026.domain.config import (
     PCVRDataSamplingStrategy,
     PCVRDataSplitStrategy,
     PCVRTrainConfig,
-    PCVRValidationProbeMode,
     RMSNormBackend,
     RankMixerMode,
     SeqEncoderType,
@@ -90,7 +89,6 @@ class PCVRTrainCLIArgs:
     sampling_strategy: Annotated[PCVRDataSamplingStrategy, _arg("--sampling-strategy")] = "step_random"
     eval_every_n_steps: Annotated[int, _arg("--eval-every-n-steps")] = 5_000
     seq_max_lens: Annotated[str, _arg("--seq-max-lens")] = "seq_a:256,seq_b:256,seq_c:512,seq_d:512"
-    validation_probe_mode: Annotated[PCVRValidationProbeMode, _arg("--validation-probe-mode")] = "none"
     early_stopping_metric: Annotated[PCVREarlyStoppingMetric, _arg("--early-stopping-metric")] = "auc"
 
     d_model: Annotated[int, _arg("--d-model")] = 64

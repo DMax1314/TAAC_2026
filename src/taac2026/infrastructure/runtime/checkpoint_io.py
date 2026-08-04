@@ -115,8 +115,6 @@ class PCVRTrainerSupportMixin:
             "best_val_AUC": val_auc,
             "best_val_logloss": val_logloss,
             "best_val_score_diagnostics": self.last_eval_diagnostics,
-            "best_val_probe_metrics": getattr(self, "last_eval_probe_metrics", {}),
-            "best_val_probe_score_diagnostics": getattr(self, "last_eval_probe_diagnostics", {}),
         }
         self.early_stopping(stop_score, self.model, extra_metrics, step=total_step)
         self._save_step_checkpoint(total_step, {"auc": val_auc})

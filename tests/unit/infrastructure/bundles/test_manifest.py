@@ -5,22 +5,19 @@ from pathlib import Path
 import pytest
 
 from taac2026.infrastructure.bundles.manifest_store import (
-    BUNDLE_MANIFEST_VERSION,
     build_bundle_manifest,
     validate_bundle_manifest,
 )
 
 
-def test_build_training_bundle_manifest_contains_versioned_contract(tmp_path: Path) -> None:
+def test_build_training_bundle_manifest_contains_contract(tmp_path: Path) -> None:
     experiment_path = tmp_path / "experiments" / "baseline"
     experiment_path.mkdir(parents=True)
 
     manifest = build_bundle_manifest(kind="training", experiment_path=experiment_path, root=tmp_path)
 
-    assert manifest["manifest_version"] == BUNDLE_MANIFEST_VERSION
     assert manifest["bundle_kind"] == "training"
-    assert manifest["bundle_format"] == "taac2026-training-v2"
-    assert manifest["bundle_format_version"] == 2
+    assert manifest["bundle_format"] == "taac2026-training"
     assert manifest["framework"]["version"]
     assert manifest["bundled_experiment_path"] == "experiments/baseline"
     assert manifest["entrypoint"] == "run.sh"
@@ -34,7 +31,7 @@ def test_build_inference_bundle_manifest_contains_runtime_variables(tmp_path: Pa
     manifest = build_bundle_manifest(kind="inference", experiment_path=experiment_path, root=tmp_path)
 
     assert manifest["bundle_kind"] == "inference"
-    assert manifest["bundle_format"] == "taac2026-inference-v1"
+    assert manifest["bundle_format"] == "taac2026-inference"
     assert manifest["entrypoint"] == "infer.py"
     assert manifest["runtime_env"]["model_path"] == "MODEL_OUTPUT_PATH"
     assert manifest["runtime_env"]["result_path"] == "EVAL_RESULT_PATH"
@@ -107,13 +104,13 @@ def test_validate_bundle_manifest_rejects_kind_mismatch(tmp_path: Path) -> None:
         validate_bundle_manifest(manifest, kind="inference")
 
 
-def test_validate_bundle_manifest_rejects_unknown_manifest_version(tmp_path: Path) -> None:
+def test_validate_bundle_manifest_rejects_unknown_format(tmp_path: Path) -> None:
     experiment_path = tmp_path / "experiments" / "baseline"
     experiment_path.mkdir(parents=True)
     manifest = build_bundle_manifest(kind="training", experiment_path=experiment_path, root=tmp_path)
-    manifest["manifest_version"] = 999
+    manifest["bundle_format"] = "unknown-format"
 
-    with pytest.raises(ValueError, match="unsupported bundle manifest version: 999"):
+    with pytest.raises(ValueError, match="unsupported training bundle format"):
         validate_bundle_manifest(manifest, kind="training")
 
 

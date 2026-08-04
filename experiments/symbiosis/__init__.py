@@ -22,7 +22,6 @@ from taac2026.api import (
     PCVROptimizerConfig,
     PCVRSparseOptimizerConfig,
     PCVRTrainConfig,
-    PCVRValidationConfig,
 )
 from taac2026.api import create_pcvr_experiment
 from taac2026.application.evaluation.workflow import (
@@ -246,10 +245,6 @@ TRAIN_DEFAULTS = PCVRTrainConfig(
         emb_skip_threshold=1_000_000,
         seq_id_threshold=10000,
         gradient_checkpointing=False,
-    ),
-    validation=PCVRValidationConfig(
-        probe_mode="none",
-        early_stopping_metric="auc",
     ),
     ns=PCVRNSConfig(
         # NS token groups for parquet data. Values are fids, using the numeric suffix

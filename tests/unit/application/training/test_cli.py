@@ -19,7 +19,6 @@ from taac2026.domain.config import (
     PCVROptimizerConfig,
     PCVRSequenceCropConfig,
     PCVRTrainConfig,
-    PCVRValidationConfig,
 )
 from taac2026.application.training.cli import main, parse_train_args
 from taac2026.infrastructure.experiments.module_loader import load_module_from_path
@@ -279,27 +278,6 @@ def test_parse_pcvr_train_args_uses_runtime_progress_log_interval_default(tmp_pa
     args = parse_pcvr_train_args([], package_dir=tmp_path, defaults=defaults)
 
     assert args.progress_log_interval_steps == 77
-
-
-def test_parse_pcvr_train_args_accepts_validation_probe_flags(tmp_path: Path) -> None:
-    args = parse_pcvr_train_args(
-        [
-            "--validation-probe-mode",
-            "drop_all_sparse",
-            "--early-stopping-metric",
-            "probe_auc_retention",
-        ],
-        package_dir=tmp_path,
-        defaults=PCVRTrainConfig(
-            validation=PCVRValidationConfig(
-                probe_mode="drop_nonseq_sparse",
-                early_stopping_metric="probe_auc",
-            )
-        ),
-    )
-
-    assert args.validation_probe_mode == "drop_all_sparse"
-    assert args.early_stopping_metric == "probe_auc_retention"
 
 
 def test_default_build_train_model_configures_shared_flash_runtime(

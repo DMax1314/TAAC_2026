@@ -13,21 +13,19 @@ icon: lucide/package
 
 它们都由专门 CLI 生成，不走 `bash run.sh package`。
 
-## 格式版本
+## Bundle 格式
 
-当前 manifest 版本在 `src/taac2026/infrastructure/bundles/manifest_store.py` 中定义：
+bundle 格式在 `src/taac2026/infrastructure/bundles/manifest_store.py` 中定义：
 
-| bundle    | manifest                                | format                  | version | entrypoint |
-| --------- | --------------------------------------- | ----------------------- | ------- | ---------- |
-| training  | `project/.taac_training_manifest.json`  | `taac2026-training-v2`  | 2       | `run.sh`   |
-| inference | `project/.taac_inference_manifest.json` | `taac2026-inference-v1` | 1       | `infer.py` |
+| bundle    | manifest                                | format               | entrypoint |
+| --------- | --------------------------------------- | -------------------- | ---------- |
+| training  | `project/.taac_training_manifest.json`  | `taac2026-training`  | `run.sh`   |
+| inference | `project/.taac_inference_manifest.json` | `taac2026-inference` | `infer.py` |
 
 manifest 会记录：
 
-- `manifest_version`
 - `bundle_kind`
 - `bundle_format`
-- `bundle_format_version`
 - `framework.name` / `framework.version`
 - `bundled_experiment_path`
 - `entrypoint`

@@ -20,7 +20,6 @@ from taac2026.application.experiments.registry import load_experiment_package
 from taac2026.domain.config import PCVRTrainConfig
 from taac2026.domain.sidecar import (
     PCVR_TRAIN_CONFIG_FORMAT,
-    PCVR_TRAIN_CONFIG_VERSION,
     build_pcvr_train_config_sidecar,
 )
 from taac2026.infrastructure.modeling.model_contract import (
@@ -657,19 +656,17 @@ def test_write_checkpoint_sidecars_cases(
     if "train_config" in expected_keys:
         payload = loads((checkpoint_dir / "train_config.json").read_bytes())
         assert payload["train_config_format"] == PCVR_TRAIN_CONFIG_FORMAT
-        assert payload["train_config_version"] == PCVR_TRAIN_CONFIG_VERSION
         assert payload["train_config"]["ns_grouping_strategy"] == "explicit"
         assert payload["train_config"]["user_ns_groups"] == {"u": [10, 20]}
         assert payload["train_config"]["item_ns_groups"] == {"i": [7]}
 
 
-def test_build_pcvr_train_config_sidecar_adds_version_metadata() -> None:
+def test_build_pcvr_train_config_sidecar_adds_framework_metadata() -> None:
     flat_config = PCVRTrainConfig().to_flat_dict()
 
     payload = build_pcvr_train_config_sidecar(flat_config)
 
     assert payload["train_config_format"] == PCVR_TRAIN_CONFIG_FORMAT
-    assert payload["train_config_version"] == PCVR_TRAIN_CONFIG_VERSION
     assert payload["framework_name"] == "taac2026"
     assert payload["framework_version"]
     assert payload["train_config"]["d_model"] == flat_config["d_model"]
@@ -686,19 +683,17 @@ def test_default_load_train_config_requires_current_payload(tmp_path: Path) -> N
 
     assert loaded["d_model"] == flat_config["d_model"]
     assert loaded["ns_grouping_strategy"] == flat_config["ns_grouping_strategy"]
-    assert loaded["train_config_version"] == PCVR_TRAIN_CONFIG_VERSION
+    assert loaded["train_config_format"] == PCVR_TRAIN_CONFIG_FORMAT
 
 
-def test_default_load_train_config_migrates_flat_payload(tmp_path: Path) -> None:
+def test_default_load_train_config_rejects_flat_payload(tmp_path: Path) -> None:
     checkpoint_dir = tmp_path / "global_step1"
     checkpoint_dir.mkdir()
     flat_config = PCVRTrainConfig().to_flat_dict()
     (checkpoint_dir / "train_config.json").write_text(dumps(flat_config), encoding="utf-8")
 
-    loaded = default_load_train_config(None, checkpoint_dir)
-
-    assert loaded["d_model"] == flat_config["d_model"]
-    assert loaded["train_config_version"] == PCVR_TRAIN_CONFIG_VERSION
+    with pytest.raises(ValueError):
+        default_load_train_config(None, checkpoint_dir)
 
 
 @pytest.mark.parametrize("identifier_kind", ["path", "path_object"])
@@ -756,7 +751,7 @@ def test_bundle_manifest_points_to_selected_experiment(
     assert result.output_dir.is_dir()
     assert result.run_script_path.exists()
     assert result.code_package_path.exists()
-    assert manifest["bundle_format"] == "taac2026-training-v2"
+    assert manifest["bundle_format"] == "taac2026-training"
     assert manifest["bundled_experiment_path"] == experiment_case.path
     assert manifest["entrypoint"] == "run.sh"
     assert manifest["code_package"] == "code_package.zip"

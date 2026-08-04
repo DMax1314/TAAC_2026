@@ -168,7 +168,6 @@ def default_build_train_trainer(
         reporter=context.reporter,
         schema_path=context.schema_path,
         eval_every_n_steps=context.args.eval_every_n_steps,
-        validation_probe_mode=context.args.validation_probe_mode,
         early_stopping_metric=context.args.early_stopping_metric,
         train_config=context.config,
         runtime_execution=context.runtime_execution,
@@ -247,8 +246,6 @@ class TrainReporter(Protocol):
         logloss: float,
         metrics: Mapping[str, float],
         score_diagnostics: Mapping[str, float | int],
-        probe_metrics: Mapping[str, float],
-        probe_score_diagnostics: Mapping[str, float | int],
     ) -> None:
         ...
 
@@ -280,8 +277,6 @@ class NoopTrainReporter:
         logloss: float,
         metrics: Mapping[str, float],
         score_diagnostics: Mapping[str, float | int],
-        probe_metrics: Mapping[str, float],
-        probe_score_diagnostics: Mapping[str, float | int],
     ) -> None:
         pass
 
@@ -321,18 +316,12 @@ class TensorBoardTrainReporter:
         logloss: float,
         metrics: Mapping[str, float],
         score_diagnostics: Mapping[str, float | int],
-        probe_metrics: Mapping[str, float],
-        probe_score_diagnostics: Mapping[str, float | int],
     ) -> None:
         del metrics
         self.writer.add_scalar("AUC/valid", float(auc), int(step))
         self.writer.add_scalar("LogLoss/valid", float(logloss), int(step))
         for metric_name, value in score_diagnostics.items():
             self.writer.add_scalar(f"score/{metric_name}", float(value), int(step))
-        for metric_name, value in probe_metrics.items():
-            self.writer.add_scalar(f"Probe/{metric_name}", float(value), int(step))
-        for metric_name, value in probe_score_diagnostics.items():
-            self.writer.add_scalar(f"Probe/score/{metric_name}", float(value), int(step))
         self.writer.flush()
 
     def should_collect_model_scalars(self, *, phase: str, step: int | None, trainer: Any) -> bool:

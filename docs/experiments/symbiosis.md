@@ -34,7 +34,7 @@ Symbiosis 的假设是：统一架构不能只统一数值表示，还必须统�
 | sparse lr           | `0.01`                                                  |
 | AMP / compile       | BF16 AMP 开启，compile 开启                             |
 | loss                | BCE                                                     |
-| validation          | `probe_mode="none"`，early stopping 监控 AUC            |
+| validation          | early stopping 监控 AUC                             |
 
 默认数据增强：
 

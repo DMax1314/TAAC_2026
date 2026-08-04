@@ -1,26 +1,21 @@
-"""Versioned PCVR train_config.json sidecar helpers."""
+"""PCVR train_config.json sidecar helpers."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from copy import deepcopy
 from typing import Any
 
 from pydantic import field_validator
 
 from taac2026 import __version__
-from taac2026.domain.config import PCVRTrainConfig
 from taac2026.domain.validation import TAACBoundaryModel
 
 
 PCVR_TRAIN_CONFIG_FORMAT = "taac2026-pcvr-train-config"
-PCVR_TRAIN_CONFIG_VERSION = 3
-PCVR_TRAIN_CONFIG_SUPPORTED_VERSIONS = frozenset({1, 2, PCVR_TRAIN_CONFIG_VERSION})
 
 PCVR_TRAIN_CONFIG_METADATA_KEYS = frozenset(
     {
         "train_config_format",
-        "train_config_version",
         "framework_name",
         "framework_version",
     }
@@ -28,10 +23,9 @@ PCVR_TRAIN_CONFIG_METADATA_KEYS = frozenset(
 
 
 class PCVRTrainConfigSidecar(TAACBoundaryModel):
-    """Pydantic model for the current PCVR train_config payload."""
+    """Pydantic model for the PCVR train_config payload."""
 
     train_config_format: str
-    train_config_version: int
     framework_name: str
     framework_version: str
     train_config: dict[str, Any]
@@ -41,13 +35,6 @@ class PCVRTrainConfigSidecar(TAACBoundaryModel):
     def _validate_format(cls, value: str) -> str:
         if value != PCVR_TRAIN_CONFIG_FORMAT:
             raise ValueError(f"unsupported PCVR train_config format: {value}")
-        return value
-
-    @field_validator("train_config_version")
-    @classmethod
-    def _validate_version(cls, value: int) -> int:
-        if value not in PCVR_TRAIN_CONFIG_SUPPORTED_VERSIONS:
-            raise ValueError(f"unsupported PCVR train_config version: {value}")
         return value
 
     def to_runtime_config(self) -> dict[str, Any]:
@@ -65,13 +52,12 @@ class PCVRTrainConfigSidecar(TAACBoundaryModel):
 
 
 def build_pcvr_train_config_sidecar(train_config: Mapping[str, Any] | None) -> dict[str, Any]:
-    """Return the current PCVR train_config.json payload."""
+    """Return the PCVR train_config.json payload."""
 
     config = {} if train_config is None else dict(train_config)
     return PCVRTrainConfigSidecar.model_validate(
         {
             "train_config_format": PCVR_TRAIN_CONFIG_FORMAT,
-            "train_config_version": PCVR_TRAIN_CONFIG_VERSION,
             "framework_name": "taac2026",
             "framework_version": __version__,
             "train_config": config,
@@ -79,65 +65,16 @@ def build_pcvr_train_config_sidecar(train_config: Mapping[str, Any] | None) -> d
     ).to_sidecar_payload()
 
 
-def _ema_train_config_defaults() -> dict[str, Any]:
-    return PCVRTrainConfig().ema.to_flat_dict()
-
-
-def _with_ema_train_config_defaults(payload: dict[str, Any]) -> dict[str, Any]:
-    migrated = dict(payload)
-    train_config = dict(migrated.get("train_config") or {})
-    for key, value in _ema_train_config_defaults().items():
-        train_config.setdefault(key, deepcopy(value))
-    migrated["train_config"] = train_config
-    migrated["train_config_version"] = PCVR_TRAIN_CONFIG_VERSION
-    return migrated
-
-
-def _migrate_pcvr_train_config_v1(payload: dict[str, Any]) -> dict[str, Any]:
-    return _with_ema_train_config_defaults(payload)
-
-
-def _migrate_pcvr_train_config_v2(payload: dict[str, Any]) -> dict[str, Any]:
-    return _with_ema_train_config_defaults(payload)
-
-
-def _migrate_pcvr_train_config_v3(payload: dict[str, Any]) -> dict[str, Any]:
-    return _with_ema_train_config_defaults(payload)
-
-
-_PCVR_TRAIN_CONFIG_MIGRATIONS = {
-    1: _migrate_pcvr_train_config_v1,
-    2: _migrate_pcvr_train_config_v2,
-    3: _migrate_pcvr_train_config_v3,
-}
-
-
-def migrate_pcvr_train_config_sidecar_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
-    raw_payload = dict(payload)
-    if not PCVR_TRAIN_CONFIG_METADATA_KEYS <= raw_payload.keys():
-        return _with_ema_train_config_defaults(build_pcvr_train_config_sidecar(raw_payload))
-    if raw_payload.get("train_config_format") != PCVR_TRAIN_CONFIG_FORMAT:
-        raise ValueError(f"unsupported PCVR train_config format: {raw_payload.get('train_config_format')}")
-    version = int(raw_payload.get("train_config_version", 0))
-    migration = _PCVR_TRAIN_CONFIG_MIGRATIONS.get(version)
-    if migration is None:
-        raise ValueError(f"unsupported PCVR train_config version: {version}")
-    return migration(raw_payload)
-
-
 def load_pcvr_train_config_sidecar(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Load the current PCVR train_config.json payload."""
+    """Load the PCVR train_config.json payload."""
 
-    return PCVRTrainConfigSidecar.model_validate(migrate_pcvr_train_config_sidecar_payload(payload)).to_runtime_config()
+    return PCVRTrainConfigSidecar.model_validate(dict(payload)).to_runtime_config()
 
 
 __all__ = [
     "PCVR_TRAIN_CONFIG_FORMAT",
     "PCVR_TRAIN_CONFIG_METADATA_KEYS",
-    "PCVR_TRAIN_CONFIG_SUPPORTED_VERSIONS",
-    "PCVR_TRAIN_CONFIG_VERSION",
     "PCVRTrainConfigSidecar",
     "build_pcvr_train_config_sidecar",
     "load_pcvr_train_config_sidecar",
-    "migrate_pcvr_train_config_sidecar_payload",
 ]

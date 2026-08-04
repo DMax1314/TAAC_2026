@@ -91,10 +91,8 @@ class _RecordingReporter:
         logloss: float,
         metrics,
         score_diagnostics,
-        probe_metrics,
-        probe_score_diagnostics,
     ) -> None:
-        del metrics, score_diagnostics, probe_metrics, probe_score_diagnostics
+        del metrics, score_diagnostics
         self.scalars.append(("AUC/valid", float(auc), int(step)))
         self.scalars.append(("LogLoss/valid", float(logloss), int(step)))
 
@@ -733,57 +731,20 @@ def test_evaluate_records_score_diagnostics(tmp_path, log_capture) -> None:
     assert "Validation score diagnostics" in log_capture.text
 
 
-def test_evaluate_does_not_run_legacy_sparse_drop_probe(tmp_path) -> None:
-    model = _SparseProbeDummyModel()
-    trainer = PCVRPointwiseTrainer(
-        model=model,
-        model_input_type=_DummyModelInput,
-        train_loader=[],
-        valid_loader=[_sparse_probe_batch()],
-        lr=1e-3,
-        max_steps=1,
-        device="cpu",
-        save_dir=tmp_path / "checkpoints",
-        early_stopping=EarlyStopping(tmp_path / "best" / "model.safetensors", patience_steps=2),
-        validation_probe_mode="drop_nonseq_sparse",
-        early_stopping_metric="probe_auc",
-    )
-
-    auc, logloss = trainer.evaluate(step=1)
-
-    assert auc == 1.0
-    assert math.isfinite(logloss)
-    assert model.forward_calls == 1
-    assert trainer.early_stopping_metric == "auc"
-    assert trainer.last_eval_probe_metrics == {}
-    assert "probe_auc" not in trainer.last_eval_metrics
-    assert trainer.validation_early_stopping_score(auc, logloss) == pytest.approx(1.0)
-
-
-def test_validation_result_uses_auc_for_legacy_probe_early_stopping_metric(tmp_path) -> None:
-    early_stopping = EarlyStopping(tmp_path / "best" / "model.safetensors", patience_steps=2)
-    trainer = PCVRPointwiseTrainer(
-        model=_SparseProbeDummyModel(),
-        model_input_type=_DummyModelInput,
-        train_loader=[],
-        valid_loader=[],
-        lr=1e-3,
-        max_steps=1,
-        device="cpu",
-        save_dir=tmp_path / "checkpoints",
-        early_stopping=early_stopping,
-        validation_probe_mode="drop_nonseq_sparse",
-        early_stopping_metric="probe_auc",
-    )
-    trainer.last_eval_diagnostics = {"sample_count": 2}
-
-    trainer._handle_validation_result(total_step=1, val_auc=0.95, val_logloss=0.2)
-
-    assert trainer.early_stopping_metric == "auc"
-    assert early_stopping.best_score == pytest.approx(0.95)
-    assert early_stopping.best_extra_metrics is not None
-    assert early_stopping.best_extra_metrics["early_stopping_metric"] == "auc"
-    assert early_stopping.best_extra_metrics["best_val_AUC"] == pytest.approx(0.95)
+def test_trainer_rejects_probe_early_stopping_metric(tmp_path) -> None:
+    with pytest.raises(ValueError, match="unsupported early stopping metric"):
+        PCVRPointwiseTrainer(
+            model=_SparseProbeDummyModel(),
+            model_input_type=_DummyModelInput,
+            train_loader=[],
+            valid_loader=[_sparse_probe_batch()],
+            lr=1e-3,
+            max_steps=1,
+            device="cpu",
+            save_dir=tmp_path / "checkpoints",
+            early_stopping=EarlyStopping(tmp_path / "best" / "model.safetensors", patience_steps=2),
+            early_stopping_metric="probe_auc",
+        )
 
 
 def test_validation_result_saves_current_step_checkpoint(tmp_path) -> None:

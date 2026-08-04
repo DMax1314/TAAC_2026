@@ -89,7 +89,7 @@ def _write_train_config(checkpoint_dir: Path, overrides: dict[str, object] | Non
     (checkpoint_dir / "train_config.json").write_text(dumps(build_pcvr_train_config_sidecar(config)), encoding="utf-8")
 
 
-def test_resolve_infer_runtime_settings_requires_train_config_values(tmp_path: Path) -> None:
+def test_resolve_prediction_runtime_settings_requires_train_config_values(tmp_path: Path) -> None:
     experiment = _make_experiment(
         tmp_path,
         train_defaults=PCVRTrainConfig(data=PCVRDataConfig(batch_size=128, num_workers=8)),
@@ -103,10 +103,10 @@ def test_resolve_infer_runtime_settings_requires_train_config_values(tmp_path: P
     )
 
     with pytest.raises(KeyError, match="batch_size"):
-        experiment._resolve_infer_runtime_settings(request, {})
+        experiment._resolve_prediction_runtime_settings(request, {})
 
 
-def test_resolve_infer_runtime_settings_preserves_explicit_request_values(tmp_path: Path) -> None:
+def test_resolve_prediction_runtime_settings_preserves_explicit_request_values(tmp_path: Path) -> None:
     experiment = _make_experiment(
         tmp_path,
         train_defaults=PCVRTrainConfig(data=PCVRDataConfig(batch_size=128, num_workers=8)),
@@ -121,7 +121,7 @@ def test_resolve_infer_runtime_settings_preserves_explicit_request_values(tmp_pa
         num_workers=2,
     )
 
-    resolved = experiment._resolve_infer_runtime_settings(request, {"batch_size": 32, "num_workers": 6})
+    resolved = experiment._resolve_prediction_runtime_settings(request, {"batch_size": 32, "num_workers": 6})
 
     assert resolved == (64, "request", 2, "request")
 

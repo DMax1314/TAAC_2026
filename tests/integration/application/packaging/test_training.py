@@ -51,10 +51,8 @@ def test_build_training_bundle_contains_runtime_sources(tmp_path: Path) -> None:
     assert "taac-train" in run_script
 
     manifest = code_package_manifest(result.code_package_path, ".taac_training_manifest.json")
-    assert manifest["manifest_version"] == 1
     assert manifest["bundle_kind"] == "training"
-    assert manifest["bundle_format"] == "taac2026-training-v2"
-    assert manifest["bundle_format_version"] == 2
+    assert manifest["bundle_format"] == "taac2026-training"
     assert manifest["framework"]["name"] == "taac2026"
     assert manifest["framework"]["version"]
     assert manifest["bundled_experiment_path"] == "experiments/baseline"

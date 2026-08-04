@@ -76,13 +76,6 @@ class PCVRExperimentRuntimeMixin:
 
         return batch_size, batch_size_source, num_workers, num_workers_source
 
-    def _resolve_infer_runtime_settings(
-        self,
-        request: InferRequest,
-        config: dict[str, Any],
-    ) -> tuple[int, str, int, str]:
-        return self._resolve_prediction_runtime_settings(request, config)
-
     def _configured_runtime_bool(
         self,
         request_value: bool | None,

@@ -1,4 +1,4 @@
-"""Versioned bundle manifest helpers."""
+"""Bundle manifest helpers."""
 
 from __future__ import annotations
 
@@ -17,12 +17,8 @@ from taac2026.domain.validation import TAACBoundaryModel
 
 BundleKind = Literal["training", "inference"]
 
-BUNDLE_MANIFEST_VERSION = 1
-BUNDLE_MANIFEST_SUPPORTED_VERSIONS = frozenset({BUNDLE_MANIFEST_VERSION})
-TRAINING_BUNDLE_FORMAT = "taac2026-training-v2"
-TRAINING_BUNDLE_FORMAT_VERSION = 2
-INFERENCE_BUNDLE_FORMAT = "taac2026-inference-v1"
-INFERENCE_BUNDLE_FORMAT_VERSION = 1
+TRAINING_BUNDLE_FORMAT = "taac2026-training"
+INFERENCE_BUNDLE_FORMAT = "taac2026-inference"
 
 @dataclass(frozen=True, slots=True)
 class BundleDefinition:
@@ -30,7 +26,6 @@ class BundleDefinition:
     manifest_name: str
     entrypoint: str
     bundle_format: str
-    bundle_format_version: int
     runtime_env: tuple[tuple[str, str], ...]
     summary_runtime_fields: tuple[tuple[str, str], ...]
 
@@ -48,7 +43,6 @@ _BUNDLE_DEFINITIONS: dict[BundleKind, BundleDefinition] = {
         manifest_name=".taac_training_manifest.json",
         entrypoint="run.sh",
         bundle_format=TRAINING_BUNDLE_FORMAT,
-        bundle_format_version=TRAINING_BUNDLE_FORMAT_VERSION,
         runtime_env=(
             ("dataset_path", "TRAIN_DATA_PATH"),
             ("schema_path", "TAAC_SCHEMA_PATH"),
@@ -69,7 +63,6 @@ _BUNDLE_DEFINITIONS: dict[BundleKind, BundleDefinition] = {
         manifest_name=".taac_inference_manifest.json",
         entrypoint="infer.py",
         bundle_format=INFERENCE_BUNDLE_FORMAT,
-        bundle_format_version=INFERENCE_BUNDLE_FORMAT_VERSION,
         runtime_env=(
             ("model_path", "MODEL_OUTPUT_PATH"),
             ("dataset_path", "EVAL_DATA_PATH"),
@@ -141,10 +134,8 @@ class FrameworkMetadata(TAACBoundaryModel):
 
 
 class BundleManifest(TAACBoundaryModel):
-    manifest_version: int = BUNDLE_MANIFEST_VERSION
     kind: BundleKind = Field(alias="bundle_kind")
     bundle_format: str
-    bundle_format_version: int
     framework: FrameworkMetadata
     bundled_experiment_path: str
     entrypoint: str
@@ -160,7 +151,6 @@ def build_bundle_manifest(*, kind: BundleKind, experiment_path: Path, root: Path
     manifest = BundleManifest(
         bundle_kind=kind,
         bundle_format=definition.bundle_format,
-        bundle_format_version=definition.bundle_format_version,
         framework=FrameworkMetadata(version=__version__),
         bundled_experiment_path=_bundled_experiment_path(experiment_path, root),
         entrypoint=definition.entrypoint,
@@ -170,29 +160,9 @@ def build_bundle_manifest(*, kind: BundleKind, experiment_path: Path, root: Path
     return validate_bundle_manifest(manifest.to_dict(), kind=kind)
 
 
-def _migrate_bundle_manifest_v1(manifest: dict[str, Any]) -> dict[str, Any]:
-    return manifest
-
-
-_BUNDLE_MANIFEST_MIGRATIONS = {
-    1: _migrate_bundle_manifest_v1,
-}
-
-
-def migrate_bundle_manifest_payload(manifest: Mapping[str, Any]) -> dict[str, Any]:
-    raw_manifest = dict(manifest)
-    version = int(raw_manifest.get("manifest_version", BUNDLE_MANIFEST_VERSION))
-    migration = _BUNDLE_MANIFEST_MIGRATIONS.get(version)
-    if migration is None:
-        raise ValueError(f"unsupported bundle manifest version: {version}")
-    return migration(raw_manifest)
-
-
 def validate_bundle_manifest(manifest: Mapping[str, Any], *, kind: BundleKind | None = None) -> dict[str, object]:
-    model = BundleManifest.model_validate(migrate_bundle_manifest_payload(manifest))
+    model = BundleManifest.model_validate(dict(manifest))
     payload = model.to_dict()
-    if model.manifest_version not in BUNDLE_MANIFEST_SUPPORTED_VERSIONS:
-        raise ValueError(f"unsupported bundle manifest version: {model.manifest_version}")
 
     manifest_kind = model.kind
     if kind is not None and manifest_kind != kind:
@@ -201,8 +171,6 @@ def validate_bundle_manifest(manifest: Mapping[str, Any], *, kind: BundleKind | 
     definition = get_bundle_definition(manifest_kind)
     if model.bundle_format != definition.bundle_format:
         raise ValueError(f"unsupported {manifest_kind} bundle format: {model.bundle_format}")
-    if model.bundle_format_version != definition.bundle_format_version:
-        raise ValueError(f"unsupported {manifest_kind} bundle format version: {model.bundle_format_version}")
 
     _validate_bundled_experiment_path(model.bundled_experiment_path)
     if model.entrypoint != definition.entrypoint:
@@ -218,18 +186,13 @@ def validate_bundle_manifest(manifest: Mapping[str, Any], *, kind: BundleKind | 
 
 
 __all__ = [
-    "BUNDLE_MANIFEST_SUPPORTED_VERSIONS",
-    "BUNDLE_MANIFEST_VERSION",
     "INFERENCE_BUNDLE_FORMAT",
-    "INFERENCE_BUNDLE_FORMAT_VERSION",
     "TRAINING_BUNDLE_FORMAT",
-    "TRAINING_BUNDLE_FORMAT_VERSION",
     "BundleDefinition",
     "BundleKind",
     "BundleManifest",
     "FrameworkMetadata",
     "build_bundle_manifest",
     "get_bundle_definition",
-    "migrate_bundle_manifest_payload",
     "validate_bundle_manifest",
 ]

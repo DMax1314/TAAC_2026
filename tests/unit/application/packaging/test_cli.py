@@ -29,7 +29,7 @@ CASES = (
         builder_name="build_training_bundle",
         main_name="training_main",
         entrypoint_name="run.sh",
-        bundle_format="taac2026-training-v2",
+        bundle_format="taac2026-training",
         runtime_env={
             "dataset_path": "TRAIN_DATA_PATH",
             "schema_path": "TAAC_SCHEMA_PATH",
@@ -44,7 +44,7 @@ CASES = (
         builder_name="build_inference_bundle",
         main_name="inference_main",
         entrypoint_name="infer.py",
-        bundle_format="taac2026-inference-v1",
+        bundle_format="taac2026-inference",
         runtime_env={
             "model_path": "MODEL_OUTPUT_PATH",
             "dataset_path": "EVAL_DATA_PATH",

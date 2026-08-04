@@ -22,7 +22,6 @@ from taac2026.domain.metrics import binary_auc, binary_score_diagnostics
 from taac2026.domain.config import (
     DENSE_LR_SCHEDULER_TYPE_CHOICES,
     PCVR_EARLY_STOPPING_METRIC_CHOICES,
-    PCVR_VALIDATION_PROBE_MODE_CHOICES,
 )
 from taac2026.infrastructure.modeling.model_contract import batch_to_model_input
 from taac2026.domain.runtime_config import DENSE_OPTIMIZER_TYPE_CHOICES, PCVRLossConfig, RuntimeExecutionConfig
@@ -124,18 +123,12 @@ class _ScalarWriterReporter:
         logloss: float,
         metrics: Mapping[str, float],
         score_diagnostics: Mapping[str, float | int],
-        probe_metrics: Mapping[str, float],
-        probe_score_diagnostics: Mapping[str, float | int],
     ) -> None:
         del metrics
         self.writer.add_scalar("AUC/valid", float(auc), int(step))
         self.writer.add_scalar("LogLoss/valid", float(logloss), int(step))
         for metric_name, value in score_diagnostics.items():
             self.writer.add_scalar(f"score/{metric_name}", float(value), int(step))
-        for metric_name, value in probe_metrics.items():
-            self.writer.add_scalar(f"Probe/{metric_name}", float(value), int(step))
-        for metric_name, value in probe_score_diagnostics.items():
-            self.writer.add_scalar(f"Probe/score/{metric_name}", float(value), int(step))
         flush = getattr(self.writer, "flush", None)
         if callable(flush):
             flush()
@@ -218,7 +211,6 @@ class PCVRPointwiseTrainer(PCVRTrainerSupportMixin):
         reporter: Any | None = None,
         schema_path: str | Path | None = None,
         eval_every_n_steps: int = 5_000,
-        validation_probe_mode: str = "none",
         early_stopping_metric: str = "auc",
         train_config: dict[str, Any] | None = None,
         runtime_execution: RuntimeExecutionConfig | None = None,
@@ -341,30 +333,11 @@ class PCVRPointwiseTrainer(PCVRTrainerSupportMixin):
         self.eval_every_n_steps = int(eval_every_n_steps)
         if self.eval_every_n_steps < 0:
             raise ValueError("eval_every_n_steps must be non-negative")
-        self.validation_probe_mode = str(validation_probe_mode).strip().lower()
-        if self.validation_probe_mode not in PCVR_VALIDATION_PROBE_MODE_CHOICES:
-            raise ValueError(f"unsupported validation probe mode: {validation_probe_mode}")
         self.early_stopping_metric = str(early_stopping_metric).strip().lower()
         if self.early_stopping_metric not in PCVR_EARLY_STOPPING_METRIC_CHOICES:
             raise ValueError(f"unsupported early stopping metric: {early_stopping_metric}")
-        if self.validation_probe_mode != "none":
-            logger.info(
-                "validation_probe_mode={} is configured but training evaluation no longer runs a validation probe; "
-                "use data-pipeline training augmentation for sparse-drop robustness",
-                self.validation_probe_mode,
-            )
-        if self.early_stopping_metric.startswith("probe_"):
-            fallback_metric = "logloss" if self.early_stopping_metric == "probe_logloss" else "auc"
-            logger.warning(
-                "early_stopping_metric={} is no longer computed during training evaluation; using {} instead",
-                self.early_stopping_metric,
-                fallback_metric,
-            )
-            self.early_stopping_metric = fallback_metric
         self.train_config = train_config
         self.last_eval_diagnostics: dict[str, float | int] = {}
-        self.last_eval_probe_diagnostics: dict[str, float | int] = {}
-        self.last_eval_probe_metrics: dict[str, float] = {}
         self.last_eval_metrics: dict[str, float] = {}
         self.last_train_model_scalars: dict[str, float] = {}
         self.last_eval_model_scalars: dict[str, float] = {}
@@ -373,7 +346,7 @@ class PCVRPointwiseTrainer(PCVRTrainerSupportMixin):
             "PCVRPointwiseTrainer loss_terms={}, "
             "dense_optimizer_type={}, scheduler_type={}, warmup_steps={}, min_lr_ratio={}, "
             "max_steps={}, reinit_sparse_every_n_steps={}, "
-            "ema_enabled={}, validation_probe_mode={}, early_stopping_metric={}",
+            "ema_enabled={}, early_stopping_metric={}",
             self.loss_config.summary(),
             self.dense_optimizer_type,
             self.scheduler_type,
@@ -382,7 +355,6 @@ class PCVRPointwiseTrainer(PCVRTrainerSupportMixin):
             self.max_steps,
             self.reinit_sparse_every_n_steps,
             self.ema is not None,
-            self.validation_probe_mode,
             self.early_stopping_metric,
         )
         logger.info("PCVRPointwiseTrainer runtime: {}", runtime_execution_summary(self.runtime_execution, self.device))
@@ -646,8 +618,6 @@ class PCVRPointwiseTrainer(PCVRTrainerSupportMixin):
 
         self.last_eval_diagnostics = diagnostics
         self.last_eval_metrics = {"auc": auc, "logloss": logloss}
-        self.last_eval_probe_diagnostics = {}
-        self.last_eval_probe_metrics = {}
         self.last_eval_model_scalars = {
             tag: model_scalar_sums[tag] / model_scalar_counts[tag]
             for tag in model_scalar_sums
@@ -672,8 +642,6 @@ class PCVRPointwiseTrainer(PCVRTrainerSupportMixin):
             logloss=val_logloss,
             metrics=self.last_eval_metrics,
             score_diagnostics=self.last_eval_diagnostics,
-            probe_metrics=self.last_eval_probe_metrics,
-            probe_score_diagnostics=self.last_eval_probe_diagnostics,
         )
         self._write_model_training_scalars("valid", self.last_eval_model_scalars, total_step)
 
