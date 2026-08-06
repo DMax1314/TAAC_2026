@@ -31,6 +31,7 @@ from taac2026.infrastructure.modeling.model_contract import (
     build_pcvr_model_specs,
 )
 from taac2026.domain.runtime_config import PCVRLossConfig, PCVRLossTermConfig, RuntimeExecutionConfig
+from taac2026.domain.schema import PCVRSchema
 from taac2026.infrastructure import modeling as _modeling
 from taac2026.infrastructure.modeling import (
     DenseTokenProjector,
@@ -43,6 +44,7 @@ from taac2026.infrastructure.modeling import (
     SequenceTokenizer,
     causal_valid_attention_mask,
     choose_num_heads,
+    deduplicate_sequence_events,
     flash_attention_runtime_state,
     make_padding_mask,
     masked_last,
@@ -102,6 +104,7 @@ __all__ = [
     "PCVRNSConfig",
     "PCVRNonSequentialSparseDropoutConfig",
     "PCVROptimizerConfig",
+    "PCVRSchema",
     "PCVRSequenceCropConfig",
     "PCVRSequenceInput",
     "PCVRSparseOptimizerConfig",
@@ -120,6 +123,7 @@ __all__ = [
     "configure_flash_attention_runtime",
     "configure_rms_norm_runtime",
     "create_pcvr_experiment",
+    "deduplicate_sequence_events",
     "flash_attention_runtime_state",
     "make_padding_mask",
     "masked_last",

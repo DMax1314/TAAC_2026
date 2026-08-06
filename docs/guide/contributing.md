@@ -139,10 +139,10 @@ uv run python -c "from taac2026.application.experiments.registry import load_exp
 bash run.sh train \
   --experiment experiments/my_experiment \
   --run-dir outputs/my_experiment_smoke \
-  --device cpu \
-  --num_workers 0 \
-  --batch_size 8 \
-  --max_steps 1
+  --optimizer.device cpu \
+  --data.num_workers 0 \
+  --data.batch_size 8 \
+  --optimizer.max_steps 1
 ```
 
 最后跑契约测试：

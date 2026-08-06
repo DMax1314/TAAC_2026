@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 import torch
 
 from taac2026.infrastructure.io.json import dumps
@@ -116,6 +117,11 @@ def _label_only_batch(labels: list[int]) -> PCVRBatch:
         label=torch.tensor(labels, dtype=torch.long),
         user_id=[],
     )
+
+
+def _label_only_batch_with_user_ids(labels: list[int], user_ids: list[str]) -> PCVRBatch:
+    batch = _label_only_batch(labels)
+    return PCVRBatch(inputs=batch.inputs, label=batch.label, user_id=user_ids)
 
 
 def _assert_batch_equal(left: PCVRBatch, right: PCVRBatch) -> None:
@@ -732,6 +738,63 @@ def test_shared_batch_cache_treats_busy_slot_as_miss() -> None:
     stats = cache.stats()
     assert stats["hits"] == 0
     assert stats["misses"] == 1
+
+
+def test_shared_batch_cache_preserves_per_row_user_ids_round_trip() -> None:
+    cache = PCVRSharedBatchCache(
+        enabled=True,
+        max_batches=2,
+        policy="lru",
+        tensor_specs=_shared_label_specs(2),
+        static_values={"_seq_domains": []},
+        user_id_max_bytes=64,
+    )
+    cache.configure_key_universe([("file", 0, 0), ("file", 0, 1)])
+
+    first = _label_only_batch_with_user_ids([1, 0], ["u0", "u1"])
+    cache.put(("file", 0, 0), first)
+    second = _label_only_batch([7, 8])
+    cache.put(("file", 0, 1), second)
+
+    cached_first = cache.get(("file", 0, 0))
+    cached_second = cache.get(("file", 0, 1))
+
+    assert cached_first is not None
+    assert cached_first.user_id == ["u0", "u1"]
+    assert cached_first.label.tolist() == [1, 0]
+    assert cached_second is not None
+    assert cached_second.user_id == []
+    assert cached_second.label.tolist() == [7, 8]
+
+
+def test_shared_batch_cache_rejects_user_ids_without_storage_budget() -> None:
+    cache = PCVRSharedBatchCache(
+        enabled=True,
+        max_batches=1,
+        policy="lru",
+        tensor_specs=_shared_label_specs(2),
+        static_values={"_seq_domains": []},
+        user_id_max_bytes=0,
+    )
+    cache.configure_key_universe([("file", 0, 0)])
+
+    with pytest.raises(ValueError, match="user_id_max_bytes"):
+        cache.put(("file", 0, 0), _label_only_batch_with_user_ids([1, 0], ["u0", "u1"]))
+
+
+def test_shared_batch_cache_rejects_user_ids_exceeding_budget() -> None:
+    cache = PCVRSharedBatchCache(
+        enabled=True,
+        max_batches=1,
+        policy="lru",
+        tensor_specs=_shared_label_specs(2),
+        static_values={"_seq_domains": []},
+        user_id_max_bytes=2,
+    )
+    cache.configure_key_universe([("file", 0, 0)])
+
+    with pytest.raises(ValueError, match="exceeds user_id_max_bytes"):
+        cache.put(("file", 0, 0), _label_only_batch_with_user_ids([1, 0], ["u0", "u1"]))
 
 
 def test_shared_batch_cache_discards_payload_when_version_changes(monkeypatch) -> None:

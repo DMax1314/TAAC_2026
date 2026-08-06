@@ -16,16 +16,16 @@ icon: lucide/refresh-cw
 bash run.sh train \
   --experiment experiments/baseline_plus \
   --run-dir outputs/baseline_plus_gc \
-  --gradient-checkpointing
+  --model.gradient_checkpointing
 ```
 
-这个参数由 `argparse.BooleanOptionalAction` 处理，因此也支持显式关闭：
+布尔参数也支持显式关闭：
 
 ```bash
 bash run.sh train \
   --experiment experiments/symbiosis \
   --run-dir outputs/symbiosis_no_gc \
-  --no-gradient-checkpointing
+  --model.no_gradient_checkpointing
 ```
 
 实验默认值写在实验包的 `TRAIN_DEFAULTS` 中：
@@ -41,7 +41,7 @@ TRAIN_DEFAULTS = PCVRTrainConfig(
 )
 ```
 
-CLI 参数会覆盖实验默认值。线上训练 bundle 也走同一套训练 CLI，所以可以把 `--gradient-checkpointing` 追加到 bundle 的 `run.sh` 后面。
+CLI 参数会覆盖实验默认值。线上训练 bundle 也走同一套训练 CLI，所以可以把 `--model.gradient_checkpointing` 追加到 bundle 的 `run.sh` 后面。
 
 ## 行为边界
 
@@ -86,7 +86,7 @@ Embedding lookup、输入构造、最终 classifier、loss 计算和 optimizer s
 
 - OOM 主要来自 embedding table 参数或 optimizer state。
 - batch 已经很小，瓶颈主要是数据加载或 CPU 侧处理。
-- 正在做极短 smoke，例如 `--max_steps 1`，此时打开它只能验证通路，不能代表性能收益。
+- 正在做极短 smoke，例如 `--optimizer.max_steps 1`，此时打开它只能验证通路，不能代表性能收益。
 
 ## 和其他运行时开关的关系
 
@@ -98,13 +98,13 @@ Embedding lookup、输入构造、最终 classifier、loss 计算和 optimizer s
 bash run.sh train \
   --experiment experiments/baseline_plus \
   --run-dir outputs/baseline_plus_mem \
-  --device cuda \
-  --amp \
-  --amp-dtype bfloat16 \
-  --gradient-checkpointing
+  --optimizer.device cuda \
+  --runtime.amp \
+  --runtime.amp_dtype bfloat16 \
+  --model.gradient_checkpointing
 ```
 
-如果你同时打开 `--compile` 后遇到编译慢、图捕获失败或显存没有改善，先分别验证 `--compile` 和 `--gradient-checkpointing`，再组合运行。
+如果你同时打开 `--runtime.compile` 后遇到编译慢、图捕获失败或显存没有改善，先分别验证 `--runtime.compile` 和 `--model.gradient_checkpointing`，再组合运行。
 
 ## 新实验怎么接入
 
@@ -153,4 +153,4 @@ for block in self.blocks:
 | 打开后显存下降不明显    | 当前模型只 checkpoint 显式包住的 block；embedding 参数、optimizer state 和未包住的激活不会减少 |
 | 评估或推理看起来没变化  | no-grad 路径不会触发 activation checkpointing，这是正常行为                                    |
 | 新实验传参失败          | 确认模型构造函数接收 `gradient_checkpointing`，或共享模型构造链路能把该字段转发进去            |
-| 和 `--compile` 组合出错 | 先分别跑 `--gradient-checkpointing` 和 `--compile`，确认单独开关健康后再组合                   |
+| 和 `--runtime.compile` 组合出错 | 先分别跑 `--model.gradient_checkpointing` 和 `--runtime.compile`，确认单独开关健康后再组合                   |

@@ -36,11 +36,11 @@ for exp in baseline baseline_plus interformer onetrans tokenformer unirec symbio
     --experiment "experiments/${exp}" \
     --run-dir "$run_dir" \
     --schema-path "$SCHEMA" \
-    --seed 42 \
-    --num_workers 0 \
-    --flash-attention-backend torch \
-    --rms-norm-backend torch \
-    --no-compile
+    --optimizer.seed 42 \
+    --data.num_workers 0 \
+    --model.flash_attention_backend torch \
+    --model.rms_norm_backend torch \
+    --runtime.no_compile
 
   checkpoint="$(find "$run_dir" -mindepth 2 -maxdepth 2 -name model.safetensors | sort | tail -n 1)"
 

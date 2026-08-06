@@ -12,7 +12,9 @@ from taac2026.api import (
     EmbeddingParameterMixin,
     FeatureEmbeddingBank,
     NUM_TIME_BUCKETS,
+    PCVRModelConfig,
     PCVRModelInput,
+    PCVRSchema,
     RMSNorm,
     SequenceTokenizer,
     build_pcvr_model_specs,
@@ -25,8 +27,6 @@ from taac2026.api import (
     safe_key_padding_mask,
     sinusoidal_positions,
 )
-from taac2026.domain.config import PCVRModelConfig
-from taac2026.domain.schema import PCVRSchema
 
 
 def configure_rms_norm_runtime(*, rms_norm_backend: str, rms_norm_block_rows: int) -> None:

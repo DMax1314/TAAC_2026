@@ -13,13 +13,13 @@ from taac2026.api import (
     EmbeddingParameterMixin,
     NUM_TIME_BUCKETS,
     PCVRModelInput,
+    PCVRSchema,
     RMSNorm,
     build_pcvr_model_specs,
     choose_num_heads,
     configure_rms_norm_runtime as _configure_rms_norm_runtime,
     maybe_gradient_checkpoint,
 )
-from taac2026.domain.schema import PCVRSchema
 
 from .config import SymbiosisModelConfig
 

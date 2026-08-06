@@ -26,11 +26,11 @@ icon: lucide/settings-2
 bash run.sh train \
   --experiment experiments/baseline_plus \
   --run-dir outputs/baseline_plus_muon \
-  --dense-optimizer-type muon \
-  --max_steps 10000
+  --optimizer.dense_optimizer_type muon \
+  --optimizer.max_steps 10000
 ```
 
-训练 CLI 同时接受连字符和下划线参数名，所以 `--dense-optimizer-type` 和 `--dense_optimizer_type` 等价。
+训练 CLI 使用嵌套下划线参数，`--optimizer.dense_optimizer_type muon` 对应 `PCVRTrainConfig.optimizer.dense_optimizer_type`。
 
 也可以把默认值写进实验包的 `TRAIN_DEFAULTS`：
 
@@ -47,7 +47,7 @@ TRAIN_DEFAULTS = PCVRTrainConfig(
 )
 ```
 
-CLI 参数会覆盖实验默认值。线上训练 bundle 也会走同一套训练 CLI，因此可以在 bundle 的 `run.sh` 参数里追加 `--dense-optimizer-type muon`。
+CLI 参数会覆盖实验默认值。线上训练 bundle 也会走同一套训练 CLI，因此可以在 bundle 的 `run.sh` 参数里追加 `--optimizer.dense_optimizer_type muon`。
 
 ## 参数分组
 

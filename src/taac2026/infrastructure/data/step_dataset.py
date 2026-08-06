@@ -224,6 +224,7 @@ class PCVRStepDataset(Dataset[PCVRBatch]):
             policy=policy,
             tensor_specs=tensor_specs,
             static_values={"_seq_domains": list(self.source_dataset.seq_domains)},
+            user_id_max_bytes=self.source_dataset.shared_cache_user_id_max_bytes(),
         )
         key_universe = self._global_batch_keys()
         if policy == "opt":

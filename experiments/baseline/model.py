@@ -7,13 +7,13 @@ import torch.nn.functional as F
 
 from taac2026.api import (
     NUM_TIME_BUCKETS,
+    PCVRModelConfig,
     PCVRModelInput,
+    PCVRSchema,
     build_pcvr_model_specs,
     compute_sequence_time_buckets,
     maybe_gradient_checkpoint,
 )
-from taac2026.domain.config import PCVRModelConfig
-from taac2026.domain.schema import PCVRSchema
 from taac2026.infrastructure.logging import logger
 
 

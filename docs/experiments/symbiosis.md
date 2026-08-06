@@ -153,7 +153,7 @@ SymbiosisV2/embedding/norm_mean/<phase>
 | `symbiosis_v2_tokenization_mode`             | `group` / `group_compressed` / `random_chunk`     |
 | `symbiosis_v2_high_risk_token_dropout_rate`  | 训练期 high-risk token dropout                    |
 | `symbiosis_v2_compress_large_ids`            | 高基数 sparse / sequence id 是否 hash compression |
-| `symbiosis_v2_compile_backbone`              | 开启 `--compile` 时是否只编译 V2 backbone         |
+| `symbiosis_v2_compile_backbone`              | 开启 `--runtime.compile` 时是否只编译 V2 backbone         |
 | `symbiosis_v3_enabled`                       | 是否启用 V3 selector                              |
 | `symbiosis_v3_memory_selection_mode`         | `uniform` / `stratified` / `quality_stratified`   |
 | `symbiosis_v3_recent_event_tokens_by_domain` | 各 domain recent 预算                             |

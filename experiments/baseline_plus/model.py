@@ -11,7 +11,9 @@ from taac2026.api import (
     DenseTokenProjector,
     EmbeddingParameterMixin,
     NUM_TIME_BUCKETS,
+    PCVRModelConfig,
     PCVRModelInput,
+    PCVRSchema,
     NonSequentialTokenizer,
     RMSNorm,
     SequenceTokenizer,
@@ -20,6 +22,7 @@ from taac2026.api import (
     compute_sequence_stats,
     configure_flash_attention_runtime as _configure_flash_attention_runtime,
     configure_rms_norm_runtime as _configure_rms_norm_runtime,
+    deduplicate_sequence_events,
     make_padding_mask,
     masked_last,
     masked_mean,
@@ -28,8 +31,6 @@ from taac2026.api import (
     scaled_dot_product_attention,
     sinusoidal_positions,
 )
-from taac2026.domain.config import PCVRModelConfig
-from taac2026.domain.schema import PCVRSchema
 
 
 def configure_flash_attention_runtime(*, flash_attention_backend: str) -> None:
@@ -488,10 +489,12 @@ class PCVRBaselinePlus(EmbeddingParameterMixin, nn.Module):
         lengths: list[torch.Tensor] = []
         for domain in self.seq_domains:
             sequence_input = inputs.sequences[domain]
-            raw_sequence = sequence_input.values
-            seq_len = sequence_input.lengths.to(raw_sequence.device).clamp_min(0).clamp_max(raw_sequence.shape[2])
+            raw_sequence, raw_lengths, raw_timestamps = deduplicate_sequence_events(
+                sequence_input.values, sequence_input.lengths, sequence_input.timestamps
+            )
+            seq_len = raw_lengths.to(raw_sequence.device).clamp_min(0).clamp_max(raw_sequence.shape[2])
             tokens = self.sequence_tokenizers[domain](
-                raw_sequence, sequence_input.timestamps, inputs.request_timestamp
+                raw_sequence, raw_timestamps, inputs.request_timestamp
             )
             tokens = self._tail_crop(tokens, seq_len)
             seq_len = seq_len.clamp_max(tokens.shape[1])

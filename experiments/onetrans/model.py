@@ -11,13 +11,16 @@ from taac2026.api import (
     DenseTokenProjector,
     EmbeddingParameterMixin,
     NUM_TIME_BUCKETS,
+    PCVRModelConfig,
     PCVRModelInput,
+    PCVRSchema,
     NonSequentialTokenizer,
     RMSNorm,
     SequenceTokenizer,
     build_pcvr_model_specs,
     compute_sequence_stats,
     configure_rms_norm_runtime as _configure_rms_norm_runtime,
+    deduplicate_sequence_events,
     maybe_gradient_checkpoint,
     causal_valid_attention_mask,
     choose_num_heads,
@@ -26,8 +29,6 @@ from taac2026.api import (
     scaled_dot_product_attention,
     sinusoidal_positions,
 )
-from taac2026.domain.config import PCVRModelConfig
-from taac2026.domain.schema import PCVRSchema
 
 
 def configure_rms_norm_runtime(*, rms_norm_backend: str, rms_norm_block_rows: int) -> None:
@@ -297,10 +298,12 @@ class PCVROneTrans(EmbeddingParameterMixin, nn.Module):
         sep_index = 0
         for domain_index, domain in enumerate(self.seq_domains):
             sequence_input = inputs.sequences[domain]
-            raw_sequence = sequence_input.values
-            seq_len = sequence_input.lengths.to(raw_sequence.device).clamp_min(0).clamp_max(raw_sequence.shape[2])
+            raw_sequence, raw_lengths, raw_timestamps = deduplicate_sequence_events(
+                sequence_input.values, sequence_input.lengths, sequence_input.timestamps
+            )
+            seq_len = raw_lengths.to(raw_sequence.device).clamp_min(0).clamp_max(raw_sequence.shape[2])
             tokens = self.sequence_tokenizers[domain](
-                raw_sequence, sequence_input.timestamps, inputs.request_timestamp
+                raw_sequence, raw_timestamps, inputs.request_timestamp
             )
             tokens = self._tail_crop(tokens, seq_len)
             seq_len = seq_len.clamp_max(tokens.shape[1])

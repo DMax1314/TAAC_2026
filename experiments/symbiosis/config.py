@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import ConfigDict, Field
 
-from taac2026.domain.config import PCVRModelConfig, PCVRTrainConfig
+from taac2026.api import PCVRModelConfig, PCVRTrainConfig
 
 
 class SymbiosisModelConfig(PCVRModelConfig):

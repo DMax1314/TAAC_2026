@@ -138,17 +138,17 @@ uv run pytest tests/integration/application/bootstrap/test_cpu_smoke.py -q
 bash run.sh train \
   --experiment experiments/baseline \
   --run-dir outputs/baseline_smoke \
-  --device cpu \
-  --num_workers 0 \
-  --batch_size 8 \
-  --max_steps 1
+  --optimizer.device cpu \
+  --data.num_workers 0 \
+  --data.batch_size 8 \
+  --optimizer.max_steps 1
 ```
 
 ## 常见失败
 
 | 现象                                              | 优先检查                                              |
 | ------------------------------------------------- | ----------------------------------------------------- |
-| `unrecognized arguments`                          | 训练参数多为下划线，评估 / 推理参数多为连字符         |
+| `unrecognized arguments`                          | 训练参数是嵌套下划线形式（如 `--data.batch_size`），评估 / 推理参数是扁平连字符形式 |
 | 找不到本地 parquet 或 `schema.json`               | 检查 `--dataset-path` / `--schema-path`，或使用默认 demo smoke |
 | accelerator 测试 skip                             | 当前机器没有 CUDA 或缺 TileLang / Triton runtime      |
 | bundle 测试失败但本地 import 正常                 | 检查 zip 内容和 manifest，而不是只看仓库根目录 import |

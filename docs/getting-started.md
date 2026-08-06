@@ -62,10 +62,10 @@ uv run huggingface-cli download TAAC2026/data_sample_1000 \
 bash run.sh train \
   --experiment experiments/baseline \
   --run-dir outputs/quickstart_baseline \
-  --device cpu \
-  --num_workers 0 \
-  --batch_size 8 \
-  --max_steps 1 \
+  --optimizer.device cpu \
+  --data.num_workers 0 \
+  --data.batch_size 8 \
+  --optimizer.max_steps 1 \
   --schema-path docs/archive/files/schema/sample_1000_raw.schema.json
 ```
 
@@ -79,7 +79,7 @@ outputs/quickstart_baseline/
     └── train_config.json
 ```
 
-如果你有可用 GPU，可以把 `--device cpu` 改成 `--device cuda`，并适当调大 batch size / max steps。
+如果你有可用 GPU，可以把 `--optimizer.device cpu` 改成 `--optimizer.device cuda`，并适当调大 batch size / max steps。
 
 ## 评估训练结果
 
@@ -142,10 +142,10 @@ outputs/quickstart_infer/
 bash run.sh train \
   --experiment experiments/baseline_plus \
   --run-dir outputs/quickstart_baseline_plus \
-  --device cpu \
-  --num_workers 0 \
-  --batch_size 8 \
-  --max_steps 1 \
+  --optimizer.device cpu \
+  --data.num_workers 0 \
+  --data.batch_size 8 \
+  --optimizer.max_steps 1 \
   --schema-path docs/archive/files/schema/sample_1000_raw.schema.json
 ```
 
@@ -191,7 +191,7 @@ uv run taac-package-infer \
 - 本地默认 runner 是 `uv`；bundle 模式或 `TAAC_RUNNER=python` 会改用当前 Python。
 - `--cuda-profile` 目前只接受 `cuda132`，也可以用 `TAAC_CUDA_PROFILE=cuda132`。
 
-训练 CLI 继承了历史参数命名，常见参数是下划线形式：`--num_workers`、`--batch_size`、`--max_steps`。评估和推理 CLI 使用连字符形式：`--num-workers`、`--batch-size`。
+训练 CLI 使用嵌套配置：参数按 `PCVRTrainConfig` 的分组加前缀，例如 `--data.batch_size`、`--data.num_workers`、`--optimizer.max_steps`、`--optimizer.device`。评估和推理 CLI 仍是扁平参数，使用连字符形式：`--num-workers`、`--batch-size`、`--device`。
 
 ## 常见失败
 
@@ -201,4 +201,4 @@ uv run taac-package-infer \
 | 找不到默认 `schema.json` | 传 `--schema-path docs/archive/files/schema/sample_1000_raw.schema.json` |
 | 找不到 checkpoint | 确认 `--run-dir` 或 `--checkpoint` 指向包含 `global_step*/` 的目录 |
 | 推理缺 `train_config.json` 或 `schema.json` | checkpoint 目录不完整，需要使用训练产物目录而不是只拷贝权重 |
-| CUDA OOM | 降低 `--batch_size`、序列长度、模型宽度或改用 `--device cpu` 做链路检查 |
+| CUDA OOM | 降低 `--data.batch_size`、序列长度、模型宽度或改用 `--optimizer.device cpu` 做链路检查 |

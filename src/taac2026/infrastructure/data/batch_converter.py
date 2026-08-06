@@ -104,92 +104,6 @@ def pad_list_offsets_values(
     return padded, lengths
 
 
-def _sequence_event_signatures(
-    tokens: NDArray[np.int64],
-    lengths: NDArray[np.int64],
-) -> tuple[NDArray[np.int64], NDArray[np.bool_], NDArray[Any]]:
-    """Return per-row capped lengths, active-event mask and exact event signatures."""
-    batch_size, feature_count, max_len = tokens.shape
-    raw_lengths = np.minimum(np.maximum(lengths, 0), max_len).astype(np.int64, copy=False)
-    positions = np.arange(max_len)
-    length_mask = positions[None, :] < raw_lengths[:, None]
-    active = length_mask & np.any(tokens > 0, axis=1)
-    event_dtype = np.dtype([(f"f{index}", np.int64) for index in range(feature_count)])
-    events = np.moveaxis(tokens, 1, 2).copy()
-    signatures = events.view(event_dtype).reshape(batch_size, max_len)
-    return raw_lengths, active, signatures
-
-
-def _event_signature_hashes(signatures: NDArray[Any]) -> np.ndarray:
-    """64-bit mix of each event's features; collisions are re-verified exactly."""
-    events = signatures.view(np.uint64).reshape(*signatures.shape, -1)
-    weights = (
-        np.arange(events.shape[-1], dtype=np.uint64) * np.uint64(0xBF58476D1CE4E5B9)
-        ^ np.uint64(0x9E3779B97F4A7C15)
-    )
-    hashes = np.bitwise_xor.reduce(events * weights[None, None, :], axis=-1)
-    hashes = (hashes ^ (hashes >> np.uint64(33))) * np.uint64(0xFF51AFD7ED558CCD)
-    hashes ^= hashes >> np.uint64(29)
-    return hashes
-
-
-def _active_event_groups(
-    active: NDArray[np.bool_],
-    signatures: NDArray[Any],
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Group active events by exact signature; return (row_ids, order, group_ends).
-
-    ``order`` sorts active events by (row, signature hash, original position) so
-    each exact-signature block ends at the rightmost occurrence; hash collisions
-    are split again with an exact structured sort.
-    """
-    batch_size, max_len = signatures.shape
-    flat_active = active.reshape(-1)
-    row_ids = np.repeat(np.arange(batch_size), max_len)[flat_active]
-    hashes = _event_signature_hashes(signatures).reshape(-1)[flat_active]
-    row_bits = max(1, (batch_size - 1).bit_length())
-    hash_mask = (np.uint64(1) << (64 - row_bits)) - 1
-    combined = (row_ids.astype(np.uint64) << (64 - row_bits)) | (hashes & hash_mask)
-    order = np.argsort(combined, kind="stable")
-    if len(order) == 0:
-        return row_ids, order, np.empty(0, dtype=bool)
-    sorted_combined = combined[order]
-    boundary = np.empty(len(order), dtype=bool)
-    boundary[0] = True
-    boundary[1:] = sorted_combined[1:] != sorted_combined[:-1]
-    sig_flat = signatures.reshape(-1)[flat_active]
-    sig_sorted = sig_flat[order]
-    group_starts = np.flatnonzero(boundary)
-    group_ids = np.cumsum(boundary) - 1
-    first_sigs = sig_sorted[group_starts[group_ids]]
-    mixed = sig_sorted != first_sigs
-    if mixed.any():
-        # hash collision: re-sort every member of affected groups exactly
-        mixed_groups = np.unique(group_ids[mixed])
-        members = np.flatnonzero(np.isin(group_ids, mixed_groups))
-        member_rows = row_ids[order[members]]
-        member_positions = np.flatnonzero(flat_active)[order[members]] % max_len
-        member_sigs = sig_flat[order[members]]
-        composite = np.empty(
-            len(members),
-            dtype=np.dtype(
-                [("row", np.int64), ("sig", member_sigs.dtype), ("pos", np.int64)]
-            ),
-        )
-        composite["row"] = member_rows
-        composite["sig"] = member_sigs
-        composite["pos"] = member_positions
-        order = order.copy()
-        order[members] = order[members[np.argsort(composite, kind="stable")]]
-        sig_sorted = sig_flat[order]
-        boundary[1:] = (sorted_combined[1:] != sorted_combined[:-1]) | (
-            sig_sorted[1:] != sig_sorted[:-1]
-        )
-    group_ends = np.roll(boundary, -1)
-    group_ends[-1] = True
-    return row_ids, order, group_ends
-
-
 def build_pcvr_column_plan(
     layout: PCVRSchemaLayout,
     parquet_schema_names: list[str],
@@ -220,14 +134,12 @@ def build_pcvr_column_plan(
         )
         output_offset += dim
 
-    # ``item_dense`` columns are compiled from the schema contract; a column
-    # absent from the parquet file keeps a placeholder index and stays missing.
     item_dense: list[DenseColumnPlan] = []
     output_offset = 0
     for fid, dim in layout.item_dense_cols:
         item_dense.append(
             DenseColumnPlan(
-                column_index=column_indices.get(f"item_dense_feats_{fid}", -1),
+                column_index=column_indices[f"item_dense_feats_{fid}"],
                 dim=dim,
                 output_offset=output_offset,
             )
@@ -526,8 +438,6 @@ class PCVRRecordBatchConverter:
         buffer[:] = 0
         missing_buffer[:] = True
         for feature in plan:
-            if feature.column_index < 0:
-                continue
             padded, missing = self.pad_float_column(
                 batch.column(feature.column_index), feature.dim, row_count
             )
@@ -575,7 +485,6 @@ class PCVRRecordBatchConverter:
 
             tokens[tokens <= 0] = 0
             self._clip_sequence_vocab(domain, sequence_plan, tokens)
-            self._deduplicate_sequence_events(tokens, lengths, timestamps_padded)
 
             sequence_inputs[domain] = PCVRSequenceInput(
                 values=torch.from_numpy(tokens.copy()),
@@ -699,57 +608,6 @@ class PCVRRecordBatchConverter:
                 )
             else:
                 slice_tokens[:] = 0
-
-    def _deduplicate_sequence_events(
-        self,
-        tokens: NDArray[np.int64],
-        lengths: NDArray[np.int64],
-        timestamps_padded: NDArray[np.int64],
-    ) -> None:
-        """Drop duplicate event signatures within each row, keeping first occurrence."""
-        batch_size, feature_count, max_len = tokens.shape
-        raw_lengths = np.minimum(np.maximum(lengths, 0), max_len).astype(np.int64, copy=False)
-        if feature_count <= 0:
-            # zero-length event tuples are never kept, so rows longer than 1 get emptied
-            for row_index in np.flatnonzero(raw_lengths > 1):
-                tokens[row_index].fill(0)
-                timestamps_padded[row_index].fill(0)
-                lengths[row_index] = 0
-            return
-        raw_lengths, active, signatures = _sequence_event_signatures(tokens, lengths)
-        _row_ids, order, group_ends = _active_event_groups(active, signatures)
-
-        flat_active = active.reshape(-1)
-        if not bool(flat_active.any()):
-            return
-        kept_flat = np.flatnonzero(flat_active)[order[group_ends]]
-        kept_rows = kept_flat // max_len
-        kept_positions = kept_flat % max_len
-        # the reference semantics never touch rows with raw_length <= 1
-        dedup_rows = raw_lengths > 1
-        row_keep = dedup_rows[kept_rows]
-        kept_rows = kept_rows[row_keep]
-        kept_positions = kept_positions[row_keep]
-        new_lengths = np.bincount(kept_rows, minlength=batch_size)
-        changed = (new_lengths != raw_lengths) & dedup_rows
-        if not bool(changed.any()):
-            return
-        order2 = np.lexsort((kept_positions, kept_rows))
-        kr = kept_rows[order2]
-        kp = kept_positions[order2]
-        counts = np.bincount(kr, minlength=batch_size)
-        offsets = np.zeros(batch_size + 1, dtype=np.int64)
-        np.cumsum(counts, out=offsets[1:])
-        segment_positions = np.arange(int(kr.size)) - np.repeat(offsets[:-1], counts)
-        values = tokens[kr[:, None], np.arange(feature_count)[None, :], kp[:, None]]
-        timestamp_values = timestamps_padded[kr, kp]
-        changed_rows = np.flatnonzero(changed)
-        for row_index in changed_rows:
-            tokens[row_index].fill(0)
-            timestamps_padded[row_index].fill(0)
-        tokens[kr[:, None], np.arange(feature_count)[None, :], segment_positions[:, None]] = values
-        timestamps_padded[kr, segment_positions] = timestamp_values
-        lengths[changed_rows] = new_lengths[changed_rows]
 
     def record_oob(
         self,

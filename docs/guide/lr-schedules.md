@@ -16,15 +16,15 @@ icon: lucide/trending-up
 bash run.sh train \
   --experiment experiments/baseline_plus \
   --run-dir outputs/baseline_plus_cosine \
-  --max_steps 10000 \
-  --eval-every-n-steps 5000 \
-  --patience-steps 25000 \
-  --scheduler-type cosine \
-  --warmup-steps 500 \
-  --min-lr-ratio 0.1
+  --optimizer.max_steps 10000 \
+  --data.eval_every_n_steps 5000 \
+  --optimizer.patience_steps 25000 \
+  --optimizer.scheduler_type cosine \
+  --optimizer.warmup_steps 500 \
+  --optimizer.min_lr_ratio 0.1
 ```
 
-训练 CLI 同时接受连字符和下划线参数名，所以 `--eval-every-n-steps` / `--eval_every_n_steps`、`--patience-steps` / `--patience_steps`、`--scheduler-type` / `--scheduler_type`、`--warmup-steps` / `--warmup_steps`、`--min-lr-ratio` / `--min_lr_ratio` 等价。
+训练 CLI 使用嵌套下划线参数，参数名与 `PCVRTrainConfig` 的字段一一对应：`--data.eval_every_n_steps`、`--optimizer.patience_steps`、`--optimizer.scheduler_type`、`--optimizer.warmup_steps`、`--optimizer.min_lr_ratio`。
 
 实验默认值写在实验包的 `TRAIN_DEFAULTS` 中：
 
@@ -90,8 +90,8 @@ decay_progress = clamp((step - warmup_steps) / decay_steps, 0.0, 1.0)
 bash run.sh train \
   --experiment experiments/baseline \
   --run-dir outputs/baseline_warmup \
-  --scheduler-type none \
-  --warmup-steps 500
+  --optimizer.scheduler_type none \
+  --optimizer.warmup_steps 500
 ```
 
 做 warmup + cosine decay：
@@ -100,10 +100,10 @@ bash run.sh train \
 bash run.sh train \
   --experiment experiments/symbiosis \
   --run-dir outputs/symbiosis_cosine \
-  --max_steps 20000 \
-  --scheduler-type cosine \
-  --warmup-steps 2000 \
-  --min-lr-ratio 0.1
+  --optimizer.max_steps 20000 \
+  --optimizer.scheduler_type cosine \
+  --optimizer.warmup_steps 2000 \
+  --optimizer.min_lr_ratio 0.1
 ```
 
 做 warmup + linear decay：
@@ -112,13 +112,13 @@ bash run.sh train \
 bash run.sh train \
   --experiment experiments/baseline_plus \
   --run-dir outputs/baseline_plus_linear \
-  --max_steps 10000 \
-  --scheduler-type linear \
-  --warmup-steps 500 \
-  --min-lr-ratio 0.2
+  --optimizer.max_steps 10000 \
+  --optimizer.scheduler_type linear \
+  --optimizer.warmup_steps 500 \
+  --optimizer.min_lr_ratio 0.2
 ```
 
-如果不传 `--max_steps`，当前默认值通常是 0。此时训练总步数会按数据 sweep 推导，但 scheduler 的 decay 会被关闭；如果你期望真的看到 `linear` 或 `cosine` 衰减，需要显式设置 `--max_steps`。
+如果不传 `--optimizer.max_steps`，当前默认值通常是 0。此时训练总步数会按数据 sweep 推导，但 scheduler 的 decay 会被关闭；如果你期望真的看到 `linear` 或 `cosine` 衰减，需要显式设置 `--optimizer.max_steps`。
 
 ## 现有实验默认值
 
@@ -148,7 +148,7 @@ bash run.sh train \
 
 | 现象                                      | 原因和处理                                                                                                           |
 | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| 传了 `--scheduler-type cosine` 但没有衰减 | 确认是否设置了 `--max_steps`；`max_steps <= 0` 时只会 warmup，不会 decay                                             |
+| 传了 `--optimizer.scheduler_type cosine` 但没有衰减 | 确认是否设置了 `--optimizer.max_steps`；`max_steps <= 0` 时只会 warmup，不会 decay                                             |
 | warmup 覆盖了整个训练                     | `warmup_steps` 大于或接近总 optimizer step 数；调小 warmup 或调大 `max_steps`                                        |
 | sparse embedding 学习率没变化             | 这里的 scheduler 只管 dense optimizer；调整 sparse 参数要用 `sparse_lr` 等配置                                       |
 | 早停比预期更早触发                        | `patience_steps` 是 optimizer step 数；如果验证间隔较大，要把它设得大于期望容忍的 step 距离                         |

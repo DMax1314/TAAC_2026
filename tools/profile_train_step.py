@@ -2,7 +2,7 @@
 
 Usage:
     uv run python tools/profile_train_step.py \
-        --experiment experiments/baseline_plus --device cuda --max_steps 30
+        --experiment experiments/baseline_plus --optimizer.device cuda --optimizer.max_steps 30
 
 The profiler wraps PCVRPointwiseTrainer._train_step via monkey-patching, so the
 traced region contains exactly the model forward, loss, backward, and optimizer

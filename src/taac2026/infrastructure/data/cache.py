@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import multiprocessing as mp
+import pickle
 from collections.abc import Hashable, Iterable
 from typing import Any
 
@@ -329,6 +330,7 @@ class PCVRSharedBatchCache:
         policy: str = "lru",
         tensor_specs: dict[str, PCVRSharedTensorSpec] | None = None,
         static_values: dict[str, Any] | None = None,
+        user_id_max_bytes: int = 0,
     ) -> None:
         self.enabled = enabled
         self.max_batches = max(0, int(max_batches))
@@ -362,6 +364,19 @@ class PCVRSharedBatchCache:
             for key, spec in self.tensor_specs.items()
         }
         self._storage_items = tuple(self._storage.items())
+        self.user_id_max_bytes = max(0, int(user_id_max_bytes))
+        batch_size = max((spec.shape[0] for spec in self.tensor_specs.values()), default=0)
+        self._slot_user_id_lengths = torch.zeros(
+            (self.max_batches, batch_size), dtype=torch.int64
+        ).share_memory_()
+        self._slot_user_id_bytes = (
+            torch.empty(
+                (self.max_batches, batch_size, self.user_id_max_bytes),
+                dtype=torch.uint8,
+            ).share_memory_()
+            if self.user_id_max_bytes > 0
+            else torch.empty((self.max_batches, batch_size, 0), dtype=torch.uint8).share_memory_()
+        )
 
     def __len__(self) -> int:
         if not self.enabled or self.max_batches <= 0:
@@ -524,6 +539,29 @@ class PCVRSharedBatchCache:
             target = storage[slot_index]
             if row_count > 0:
                 target[:row_count].copy_(value)
+        self._slot_user_id_lengths[slot_index].zero_()
+        if not batch.user_id:
+            return row_count
+        if len(batch.user_id) != row_count:
+            raise ValueError(
+                f"cache batch user_id length {len(batch.user_id)} does not match row count {row_count}"
+            )
+        if self.user_id_max_bytes <= 0:
+            raise ValueError(
+                "shared cache user_id storage requires user_id_max_bytes; "
+                "the dataset must derive it from the parquet user_id column"
+            )
+        for row_index, user_id in enumerate(batch.user_id):
+            encoded = pickle.dumps(user_id, protocol=pickle.HIGHEST_PROTOCOL)
+            if len(encoded) > self.user_id_max_bytes:
+                raise ValueError(
+                    f"cached user_id {user_id!r} needs {len(encoded)} bytes, "
+                    f"exceeds user_id_max_bytes={self.user_id_max_bytes}"
+                )
+            self._slot_user_id_lengths[slot_index, row_index] = len(encoded)
+            self._slot_user_id_bytes[slot_index, row_index, : len(encoded)].copy_(
+                torch.frombuffer(bytearray(encoded), dtype=torch.uint8)
+            )
         return row_count
 
     def _materialize_slot(self, slot_index: int, row_count: int) -> PCVRBatch:
@@ -531,10 +569,18 @@ class PCVRSharedBatchCache:
             tensor_key: storage[slot_index][:row_count].clone()
             for tensor_key, storage in self._storage_items
         }
+        user_ids: list[Any] = []
+        if self.user_id_max_bytes > 0 and row_count > 0:
+            lengths = self._slot_user_id_lengths[slot_index, :row_count].tolist()
+            for row_index, length in enumerate(lengths):
+                if length <= 0:
+                    continue
+                blob = self._slot_user_id_bytes[slot_index, row_index, :length]
+                user_ids.append(pickle.loads(bytes(blob.tolist())))
         return pcvr_batch_from_parts(
             tensors,
             seq_domains=list(self.static_values.get("_seq_domains", [])),
-            user_id=list(self.static_values.get("user_id", [])),
+            user_id=user_ids,
         )
 
     def _key_id_for(self, key: Hashable) -> int:

@@ -12,7 +12,9 @@ from taac2026.api import (
     EmbeddingParameterMixin,
     FeatureEmbeddingBank,
     NUM_TIME_BUCKETS,
+    PCVRModelConfig,
     PCVRModelInput,
+    PCVRSchema,
     RMSNorm,
     SequenceTokenizer,
     build_pcvr_model_specs,
@@ -24,8 +26,6 @@ from taac2026.api import (
     scaled_dot_product_attention,
     sinusoidal_positions,
 )
-from taac2026.domain.config import PCVRModelConfig
-from taac2026.domain.schema import PCVRSchema
 
 
 TYPE_GLOBAL = 0

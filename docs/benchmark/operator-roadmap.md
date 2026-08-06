@@ -69,7 +69,7 @@ loss/AUC 曲线完全一致。
 
 ```bash
 uv run python tools/profile_train_step.py \
-  --experiment experiments/baseline_plus --device cuda --max_steps 30 \
+  --experiment experiments/baseline_plus --optimizer.device cuda --optimizer.max_steps 30 \
   --dataset-path outputs/sample_data/demo_1000.parquet \
   --schema-path docs/archive/files/schema/sample_1000_raw.schema.json
 ```

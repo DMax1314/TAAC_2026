@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+import pickle
 import zlib
 from collections import OrderedDict
 from collections.abc import Iterator, Sequence
@@ -397,6 +398,21 @@ class PCVRParquetDataset(IterableDataset):
             )
         return tensor_specs
 
+    def shared_cache_user_id_max_bytes(self) -> int:
+        """Max pickled size of any user_id row; bounds shared cache user_id storage."""
+        if "user_id" not in self.column_plan.column_indices:
+            return 0
+        max_bytes = 0
+        for parquet_path in self._parquet_files:
+            user_id_column = pq.read_table(parquet_path, columns=["user_id"]).column("user_id")
+            for chunk in user_id_column.chunks:
+                for value in chunk.to_pylist():
+                    max_bytes = max(
+                        max_bytes,
+                        len(pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)),
+                    )
+        return max_bytes
+
     def build_shared_batch_cache(self, num_workers: int) -> PCVRSharedBatchCache:
         del num_workers
         cache_config = self.data_pipeline_config.cache
@@ -407,6 +423,7 @@ class PCVRParquetDataset(IterableDataset):
             policy=policy,
             tensor_specs=self.shared_cache_tensor_specs(),
             static_values={"_seq_domains": list(self.seq_domains)},
+            user_id_max_bytes=self.shared_cache_user_id_max_bytes(),
         )
         if policy == "opt":
             cache.configure_access_trace(

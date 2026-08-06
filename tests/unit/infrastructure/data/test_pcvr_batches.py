@@ -140,6 +140,16 @@ def test_take_pcvr_rows_selects_rows() -> None:
     assert taken.inputs.sequences["seq_a"].lengths.tolist() == [3]
 
 
+def test_take_pcvr_rows_accepts_bool_mask() -> None:
+    batch = _make_batch()
+
+    taken = take_pcvr_rows(batch, torch.tensor([True, False]))
+
+    assert taken.label.tolist() == [1]
+    assert taken.user_id == ["u0"]
+    assert taken.inputs.sequences["seq_a"].lengths.tolist() == [2]
+
+
 def test_concat_pcvr_batches_stacks_rows() -> None:
     batch = _make_batch()
     batch_b = _make_batch()

@@ -135,10 +135,10 @@ CPU smoke：
 bash run.sh train \
   --experiment experiments/tokenformer \
   --run-dir outputs/tokenformer_smoke \
-  --device cpu \
-  --num_workers 0 \
-  --batch_size 8 \
-  --max_steps 1 \
+  --optimizer.device cpu \
+  --data.num_workers 0 \
+  --data.batch_size 8 \
+  --optimizer.max_steps 1 \
   --schema-path docs/archive/files/schema/sample_1000_raw.schema.json
 ```
 

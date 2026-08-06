@@ -139,12 +139,73 @@ def sinusoidal_positions(length: int, dim: int, device: torch.device) -> torch.T
     return values
 
 
+def deduplicate_sequence_events(
+    values: torch.Tensor,
+    lengths: torch.Tensor,
+    timestamps: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Drop duplicate event signatures per row, keeping the last occurrence.
+
+    Returns (values, lengths, timestamps) compacted in original event order.
+    Rows with raw length <= 1 are returned unchanged; changed rows are zero-filled
+    past their new length. Event signatures use the sequence feature values only,
+    so timestamps follow the kept events without participating in the signature.
+    """
+    batch_size, feature_count, max_len = values.shape
+    raw_lengths = torch.clamp(lengths, min=0, max=max_len).to(torch.long)
+    positions = torch.arange(max_len, device=values.device)
+    active = (values > 0).any(dim=1) & (positions[None, :] < raw_lengths[:, None])
+
+    events = values.transpose(1, 2)  # [B, L, F]
+    masked = torch.where(active.unsqueeze(-1), events, torch.full_like(events, -1))
+    order = positions.expand(batch_size, -1).clone()
+    for feature_index in range(feature_count - 1, -1, -1):
+        keys = masked.gather(1, order.unsqueeze(-1).expand(-1, -1, feature_count))[:, :, feature_index]
+        permutation = torch.argsort(keys, dim=1, stable=True)
+        order = order.gather(1, permutation)
+    sorted_masked = masked.gather(1, order.unsqueeze(-1).expand(-1, -1, feature_count))
+    sorted_active = active.gather(1, order)
+    last_of_group = torch.cat(
+        [
+            (sorted_masked[:, 1:] != sorted_masked[:, :-1]).any(dim=-1),
+            torch.ones(batch_size, 1, dtype=torch.bool, device=values.device),
+        ],
+        dim=1,
+    )
+    keep_sorted = last_of_group & sorted_active
+    keep = torch.zeros_like(keep_sorted)
+    keep.scatter_(1, order, keep_sorted)
+
+    keep_count = keep.sum(dim=1)
+    changed_rows = (keep_count != raw_lengths) & (raw_lengths > 1)
+    ranks = torch.cumsum(keep.to(torch.long), dim=1) - 1
+    flat_keep = keep.flatten()
+    flat_rank = ranks.flatten()[flat_keep]
+    row_ids = torch.arange(batch_size, device=values.device).repeat_interleave(max_len)[flat_keep]
+    src_positions = positions.expand(batch_size, -1).flatten()[flat_keep]
+    gather_flat = torch.zeros(batch_size * max_len, dtype=torch.long, device=values.device)
+    gather_flat.scatter_(0, row_ids * max_len + flat_rank, src_positions)
+    gather_index = gather_flat.view(batch_size, max_len)
+
+    gathered_values = values.gather(2, gather_index.unsqueeze(1).expand(-1, feature_count, -1))
+    gathered_timestamps = timestamps.gather(1, gather_index)
+    zero_out = (positions[None, :] >= keep_count[:, None]) & changed_rows[:, None]
+    gathered_values = gathered_values.masked_fill(zero_out.unsqueeze(1), 0)
+    gathered_timestamps = gathered_timestamps.masked_fill(zero_out, 0)
+
+    new_values = torch.where(changed_rows[:, None, None], gathered_values, values)
+    new_timestamps = torch.where(changed_rows[:, None], gathered_timestamps, timestamps)
+    new_lengths = torch.where(changed_rows, keep_count.to(lengths.dtype), lengths)
+    return new_values, new_lengths, new_timestamps
+
+
 __all__ = [
     "FLASH_ATTENTION_BACKEND",
     "FlashAttentionBackend",
     "causal_valid_attention_mask",
     "choose_num_heads",
     "configure_flash_attention_runtime",
+    "deduplicate_sequence_events",
     "flash_attention_runtime_state",
     "make_padding_mask",
     "masked_last",

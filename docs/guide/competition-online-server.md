@@ -36,7 +36,7 @@ export TRAIN_DATA_PATH=/path/to/train.parquet_or_dataset_dir
 export TAAC_SCHEMA_PATH=/path/to/schema.json
 export TRAIN_CKPT_PATH=/path/to/output
 
-bash run.sh --device cuda
+bash run.sh --optimizer.device cuda
 ```
 
 ## 网络和依赖

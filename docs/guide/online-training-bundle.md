@@ -94,7 +94,7 @@ export TRAIN_DATA_PATH=data/sample_1000_raw/demo_1000.parquet
 export TAAC_SCHEMA_PATH=docs/archive/files/schema/sample_1000_raw.schema.json
 export TRAIN_CKPT_PATH=/tmp/taac-training-output
 
-bash outputs/bundles/baseline_training/run.sh --device cpu --num_workers 0
+bash outputs/bundles/baseline_training/run.sh --optimizer.device cpu --data.num_workers 0
 ```
 
 ## 推理 Bundle

@@ -277,6 +277,8 @@ def repeat_pcvr_rows(batch: PCVRBatch, repeats: int) -> PCVRBatch:
 
 
 def take_pcvr_rows(batch: PCVRBatch, row_indices: torch.Tensor) -> PCVRBatch:
+    if row_indices.dtype == torch.bool:
+        row_indices = torch.nonzero(row_indices).flatten()
     indices = row_indices.detach().cpu().tolist()
     row_count = pcvr_batch_row_count(batch)
 
