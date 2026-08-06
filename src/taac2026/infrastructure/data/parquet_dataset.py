@@ -16,9 +16,9 @@ from torch.utils.data import IterableDataset
 from taac2026.domain.config import PCVRDataPipelineConfig
 from taac2026.infrastructure.data.batch_converter import (
     PCVRRecordBatchConverter,
-    SEQUENCE_STATS_DIM,
     build_pcvr_column_plan,
 )
+from taac2026.infrastructure.data.batches import PCVRBatch, take_pcvr_rows
 from taac2026.infrastructure.data.observation import (
     PCVRTimestampRange,
     count_pcvr_rows_in_timestamp_range,
@@ -121,6 +121,8 @@ class PCVRParquetDataset(IterableDataset):
         self.item_dense_schema = self.layout.item_dense_schema
         self.user_int_vocab_sizes = self.layout.user_int_vocab_sizes
         self.item_int_vocab_sizes = self.layout.item_int_vocab_sizes
+        self.user_dense_vocab_sizes: list[int] = []
+        self.item_dense_vocab_sizes: list[int] = []
         self.seq_domains = self.layout.seq_domains
         self.seq_feature_ids = self.layout.seq_feature_ids
         self.seq_vocab_sizes = self.layout.seq_vocab_sizes
@@ -144,7 +146,7 @@ class PCVRParquetDataset(IterableDataset):
             self.user_dense_schema.total_dim,
             ", ".join(self.seq_domains) if self.seq_domains else "<none>",
         )
-        logger.info("PCVR {} schema payload: {}", self.dataset_role, dumps(self.layout.raw_payload))
+        logger.info("PCVR {} schema payload: {}", self.dataset_role, dumps(self.layout.schema.model_dump(mode="json")))
         logger.info(
             "PCVRParquetDataset: {} rows from {} file(s), batch_size={}, "
             "buffer_batches={}, shuffle={}, timestamp_range={}, hash_split={}",
@@ -206,7 +208,7 @@ class PCVRParquetDataset(IterableDataset):
     def record_batch_columns(self) -> list[str] | None:
         return self.column_plan.record_batch_columns()
 
-    def convert_record_batch(self, batch: pa.RecordBatch) -> dict[str, Any]:
+    def convert_record_batch(self, batch: pa.RecordBatch) -> PCVRBatch:
         return self.converter.convert(batch)
 
     def dump_oob_stats(self, path: str | None = None) -> None:
@@ -214,11 +216,11 @@ class PCVRParquetDataset(IterableDataset):
 
     def filter_batch_by_timestamp_range(
         self,
-        batch_dict: dict[str, Any],
-    ) -> dict[str, Any] | None:
+        batch: PCVRBatch,
+    ) -> PCVRBatch | None:
         if self.timestamp_range is None:
-            return batch_dict
-        timestamps = batch_dict["timestamp"]
+            return batch
+        timestamps = batch.inputs.request_timestamp
         row_count = int(timestamps.shape[0])
         mask = torch.ones(row_count, dtype=torch.bool)
         start, end = self.timestamp_range
@@ -227,37 +229,29 @@ class PCVRParquetDataset(IterableDataset):
         if end is not None:
             mask &= timestamps < end
         if bool(mask.all()):
-            return batch_dict
+            return batch
         if not bool(mask.any()):
             return None
-        keep = mask.tolist()
-        return {
-            key: _filter_value_by_mask(value, mask, keep, row_count)
-            for key, value in batch_dict.items()
-        }
+        return take_pcvr_rows(batch, mask)
 
     def filter_batch_by_runtime_split(
         self,
-        batch_dict: dict[str, Any],
+        batch: PCVRBatch,
         batch_context: _ScanBatchContext,
-    ) -> dict[str, Any] | None:
-        batch_dict = self.filter_batch_by_timestamp_range(batch_dict)
-        if batch_dict is None or self.hash_split_filter is None:
-            return batch_dict
-        timestamps = batch_dict["timestamp"]
+    ) -> PCVRBatch | None:
+        batch = self.filter_batch_by_timestamp_range(batch)
+        if batch is None or self.hash_split_filter is None:
+            return batch
+        timestamps = batch.inputs.request_timestamp
         row_count = int(timestamps.shape[0])
         if row_count == 0:
             return None
-        mask = _hash_split_mask(batch_dict, batch_context, self.hash_split_filter, row_count)
+        mask = _hash_split_mask(batch, batch_context, self.hash_split_filter, row_count)
         if bool(mask.all()):
-            return batch_dict
+            return batch
         if not bool(mask.any()):
             return None
-        keep = mask.tolist()
-        return {
-            key: _filter_value_by_mask(value, mask, keep, row_count)
-            for key, value in batch_dict.items()
-        }
+        return take_pcvr_rows(batch, mask)
 
     def iter_base_batch_keys(
         self,
@@ -382,9 +376,10 @@ class PCVRParquetDataset(IterableDataset):
             user_int_dim=self.user_int_schema.total_dim,
             user_dense_dim=self.user_dense_schema.total_dim,
             item_int_dim=self.item_int_schema.total_dim,
+            item_dense_dim=self.item_dense_schema.total_dim,
         )
         for domain in self.seq_domains:
-            tensor_specs[domain] = PCVRSharedTensorSpec(
+            tensor_specs[f"{domain}_values"] = PCVRSharedTensorSpec(
                 shape=(
                     self.batch_size,
                     len(self.sideinfo_fids[domain]),
@@ -392,17 +387,13 @@ class PCVRParquetDataset(IterableDataset):
                 ),
                 dtype=torch.long,
             )
-            tensor_specs[f"{domain}_len"] = PCVRSharedTensorSpec(
+            tensor_specs[f"{domain}_lengths"] = PCVRSharedTensorSpec(
                 shape=(self.batch_size,),
                 dtype=torch.long,
             )
-            tensor_specs[f"{domain}_time_bucket"] = PCVRSharedTensorSpec(
+            tensor_specs[f"{domain}_timestamps"] = PCVRSharedTensorSpec(
                 shape=(self.batch_size, self.sequence_max_lengths[domain]),
                 dtype=torch.long,
-            )
-            tensor_specs[f"{domain}_stats"] = PCVRSharedTensorSpec(
-                shape=(self.batch_size, SEQUENCE_STATS_DIM),
-                dtype=torch.float32,
             )
         return tensor_specs
 
@@ -427,7 +418,7 @@ class PCVRParquetDataset(IterableDataset):
             cache.configure_key_universe(self.global_batch_keys())
         return cache
 
-    def __iter__(self) -> Iterator[dict[str, Any]]:
+    def __iter__(self) -> Iterator[PCVRBatch]:
         worker_info = torch.utils.data.get_worker_info()
         worker_id = worker_info.id if worker_info is not None else 0
         row_groups = _row_groups_for_worker(self._row_groups, worker_info)
@@ -453,18 +444,18 @@ class PCVRParquetDataset(IterableDataset):
                     batch_index=batch_context.batch_index,
                 )
                 last_generator = generator
-            batch_dict = self.pipeline.materialize(
+            batch = self.pipeline.materialize(
                 batch_context.cache_key,
                 lambda record_batch=batch_context.record_batch: self.convert_record_batch(record_batch),
                 generator=generator,
-                preprocess=lambda batch_dict, batch_context=batch_context: self.filter_batch_by_runtime_split(
-                    batch_dict,
+                preprocess=lambda batch, batch_context=batch_context: self.filter_batch_by_runtime_split(
+                    batch,
                     batch_context,
                 ),
             )
-            if batch_dict is None:
+            if batch is None:
                 continue
-            yield from shuffle_buffer.push(batch_dict, generator=generator)
+            yield from shuffle_buffer.push(batch, generator=generator)
 
         yield from shuffle_buffer.flush(generator=last_generator)
         del shuffle_buffer
@@ -573,26 +564,13 @@ def _row_groups_for_worker(
     ]
 
 
-def _filter_value_by_mask(
-    value: Any,
-    mask: torch.Tensor,
-    keep: list[bool],
-    row_count: int,
-) -> Any:
-    if isinstance(value, torch.Tensor) and value.ndim > 0 and value.shape[0] == row_count:
-        return value[mask]
-    if isinstance(value, list) and len(value) == row_count:
-        return [item for item, should_keep in zip(value, keep, strict=True) if should_keep]
-    return value
-
-
 def _hash_split_mask(
-    batch_dict: dict[str, Any],
+    batch: PCVRBatch,
     batch_context: _ScanBatchContext,
     split_filter: PCVRHashSplitFilter,
     row_count: int,
 ) -> torch.Tensor:
-    timestamps = batch_dict["timestamp"]
+    timestamps = batch.inputs.request_timestamp
     device = timestamps.device
     sample_values = torch.arange(
         batch_context.batch_start_row,
@@ -602,9 +580,9 @@ def _hash_split_mask(
     )
     sample_salt = int(split_filter.seed) ^ int(batch_context.path_crc) ^ (int(batch_context.row_group_index) << 32)
     if split_filter.strategy == "user_hash":
-        user_int_feats = batch_dict.get("user_int_feats")
-        if isinstance(user_int_feats, torch.Tensor) and user_int_feats.ndim == 2 and user_int_feats.shape[1] > 0:
-            user_values = user_int_feats[:, 0].to(torch.long)
+        user_int_values = batch.inputs.user.int_values
+        if user_int_values.ndim == 2 and user_int_values.shape[1] > 0:
+            user_values = user_int_values[:, 0].to(torch.long)
             values = torch.where(user_values > 0, user_values, sample_values)
             salt = int(split_filter.seed)
         else:
@@ -688,9 +666,10 @@ def _base_tensor_specs(
     user_int_dim: int,
     user_dense_dim: int,
     item_int_dim: int,
+    item_dense_dim: int,
 ) -> dict[str, PCVRSharedTensorSpec]:
     return {
-        "user_int_feats": PCVRSharedTensorSpec(
+        "user_int_values": PCVRSharedTensorSpec(
             shape=(batch_size, user_int_dim),
             dtype=torch.long,
         ),
@@ -698,7 +677,7 @@ def _base_tensor_specs(
             shape=(batch_size, user_int_dim),
             dtype=torch.bool,
         ),
-        "user_dense_feats": PCVRSharedTensorSpec(
+        "user_dense_values": PCVRSharedTensorSpec(
             shape=(batch_size, user_dense_dim),
             dtype=torch.float32,
         ),
@@ -706,7 +685,7 @@ def _base_tensor_specs(
             shape=(batch_size, user_dense_dim),
             dtype=torch.bool,
         ),
-        "item_int_feats": PCVRSharedTensorSpec(
+        "item_int_values": PCVRSharedTensorSpec(
             shape=(batch_size, item_int_dim),
             dtype=torch.long,
         ),
@@ -714,16 +693,16 @@ def _base_tensor_specs(
             shape=(batch_size, item_int_dim),
             dtype=torch.bool,
         ),
-        "item_dense_feats": PCVRSharedTensorSpec(
-            shape=(batch_size, 0),
+        "item_dense_values": PCVRSharedTensorSpec(
+            shape=(batch_size, item_dense_dim),
             dtype=torch.float32,
         ),
         "item_dense_missing_mask": PCVRSharedTensorSpec(
-            shape=(batch_size, 0),
+            shape=(batch_size, item_dense_dim),
             dtype=torch.bool,
         ),
         "label": PCVRSharedTensorSpec(shape=(batch_size,), dtype=torch.long),
-        "timestamp": PCVRSharedTensorSpec(shape=(batch_size,), dtype=torch.long),
+        "request_timestamp": PCVRSharedTensorSpec(shape=(batch_size,), dtype=torch.long),
     }
 
 

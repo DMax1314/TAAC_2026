@@ -15,6 +15,7 @@ from taac2026.infrastructure.checkpoints import (
     save_checkpoint_state_dict,
     write_checkpoint_sidecars,
 )
+from taac2026.infrastructure.data.batches import PCVRBatch
 from taac2026.infrastructure.logging import logger
 from taac2026.infrastructure.optimization.registry import build_dense_optimizer, dense_optimizer_display_name
 from taac2026.infrastructure.optimization.schedules import dense_lr_multiplier
@@ -88,14 +89,8 @@ class PCVRTrainerSupportMixin:
             return ema.state_dict()
         return self.model.state_dict()
 
-    def _batch_to_device(self, batch: dict[str, Any]) -> dict[str, Any]:
-        device_batch: dict[str, Any] = {}
-        for key, value in batch.items():
-            if isinstance(value, torch.Tensor):
-                device_batch[key] = value.to(self.device, non_blocking=True)
-            else:
-                device_batch[key] = value
-        return device_batch
+    def _batch_to_device(self, batch: PCVRBatch) -> PCVRBatch:
+        return batch.to(self.device, non_blocking=True)
 
     def _handle_validation_result(
         self,

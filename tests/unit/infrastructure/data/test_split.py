@@ -75,6 +75,7 @@ def _patch_parquet_runtime(monkeypatch, row_group_rows: list[int]) -> None:
 
 def _write_observed_schema_fixture(schema_path: Path, parquet_path: Path) -> None:
     schema = {
+        "format": "raw_parquet",
         "user_int": [[1, 10, 1], [2, 20, 4]],
         "item_int": [[3, 10, 1]],
         "user_dense": [[4, 4]],
@@ -105,6 +106,7 @@ def _write_observed_schema_fixture(schema_path: Path, parquet_path: Path) -> Non
 
 def _write_single_row_group_multi_batch_fixture(schema_path: Path, parquet_path: Path) -> None:
     schema = {
+        "format": "raw_parquet",
         "user_int": [[1, 10, 1], [2, 20, 2]],
         "item_int": [[3, 10, 1]],
         "user_dense": [[4, 2]],
@@ -130,6 +132,7 @@ def _write_single_row_group_multi_batch_fixture(schema_path: Path, parquet_path:
 
 def _write_multi_row_group_partial_batch_fixture(schema_path: Path, parquet_path: Path) -> None:
     schema = {
+        "format": "raw_parquet",
         "user_int": [[1, 10, 1], [2, 20, 2]],
         "item_int": [[3, 10, 1]],
         "user_dense": [[4, 2]],
@@ -518,8 +521,8 @@ def test_step_dataset_keeps_one_optimizer_batch_after_multi_view_transform(
 
     batch = dataset[0]
 
-    assert batch["label"].shape[0] == 2
-    assert batch["user_int_feats"].shape[0] == 2
+    assert batch.label.shape[0] == 2
+    assert batch.inputs.user.int_values.shape[0] == 2
 
 
 def test_get_pcvr_data_step_loader_materializes_optimizer_batches(
@@ -547,8 +550,8 @@ def test_get_pcvr_data_step_loader_materializes_optimizer_batches(
 
     assert isinstance(train_dataset, PCVRStepDataset)
     assert len(train_loader) == 3
-    assert batch["label"].shape[0] == 2
-    assert batch["user_int_feats"].shape[0] == 2
+    assert batch.label.shape[0] == 2
+    assert batch.inputs.user.int_values.shape[0] == 2
 
 
 def test_step_index_sampler_offsets_indices_by_start_step() -> None:

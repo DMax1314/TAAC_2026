@@ -11,9 +11,11 @@ import torch.nn as nn
 from taac2026.api import (
     EmbeddingParameterMixin,
     FeatureEmbeddingBank,
-    ModelInput,
+    NUM_TIME_BUCKETS,
+    PCVRModelInput,
     RMSNorm,
     SequenceTokenizer,
+    build_pcvr_model_specs,
     choose_num_heads,
     configure_rms_norm_runtime as _configure_rms_norm_runtime,
     make_padding_mask,
@@ -22,6 +24,8 @@ from taac2026.api import (
     scaled_dot_product_attention,
     sinusoidal_positions,
 )
+from taac2026.domain.config import PCVRModelConfig
+from taac2026.domain.schema import PCVRSchema
 
 
 TYPE_GLOBAL = 0
@@ -263,7 +267,40 @@ class RankUpBlock(nn.Module):
 class PCVRRankUp(EmbeddingParameterMixin, nn.Module):
     """RankUp-style PCVR model focused on high-rank token representations."""
 
-    def __init__(
+    def __init__(self, schema: PCVRSchema, config: PCVRModelConfig) -> None:
+        specs = build_pcvr_model_specs(schema, config.ns)
+        self._init_specs(
+            user_int_feature_specs=specs.user_int_feature_specs,
+            item_int_feature_specs=specs.item_int_feature_specs,
+            user_dense_dim=specs.user_dense_dim,
+            item_dense_dim=specs.item_dense_dim,
+            seq_vocab_sizes=specs.seq_vocab_sizes,
+            user_ns_groups=specs.user_ns_groups,
+            item_ns_groups=specs.item_ns_groups,
+            d_model=config.d_model,
+            emb_dim=config.emb_dim,
+            num_queries=config.num_queries,
+            num_blocks=config.num_blocks,
+            num_heads=config.num_heads,
+            seq_encoder_type=config.seq_encoder_type,
+            hidden_mult=config.hidden_mult,
+            dropout_rate=config.dropout_rate,
+            seq_top_k=config.seq_top_k,
+            seq_causal=config.seq_causal,
+            action_num=config.action_num,
+            num_time_buckets=NUM_TIME_BUCKETS if config.use_time_buckets else 0,
+            rank_mixer_mode=config.rank_mixer_mode,
+            use_rope=config.use_rope,
+            rope_base=config.rope_base,
+            emb_skip_threshold=config.emb_skip_threshold,
+            seq_id_threshold=config.seq_id_threshold,
+            gradient_checkpointing=config.gradient_checkpointing,
+            ns_tokenizer_type=config.ns.tokenizer_type,
+            user_ns_tokens=config.ns.user_tokens,
+            item_ns_tokens=config.ns.item_tokens,
+        )
+
+    def _init_specs(
         self,
         user_int_feature_specs: list[tuple[int, int, int]],
         item_int_feature_specs: list[tuple[int, int, int]],
@@ -441,13 +478,16 @@ class PCVRRankUp(EmbeddingParameterMixin, nn.Module):
             return ~torch.isfinite(features.float())
         return features <= 0
 
-    def _encode_sequence_events(self, inputs: ModelInput) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+    def _encode_sequence_events(self, inputs: PCVRModelInput) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         pieces: list[torch.Tensor] = []
         masks: list[torch.Tensor] = []
         for domain_index, domain in enumerate(self.seq_domains):
-            raw_sequence = inputs.seq_data[domain]
-            seq_len = inputs.seq_lens[domain].to(raw_sequence.device).clamp_max(raw_sequence.shape[2])
-            tokens = self.sequence_tokenizers[domain](raw_sequence, inputs.seq_time_buckets.get(domain))
+            sequence_input = inputs.sequences[domain]
+            raw_sequence = sequence_input.values
+            seq_len = sequence_input.lengths.to(raw_sequence.device).clamp_max(raw_sequence.shape[2])
+            tokens = self.sequence_tokenizers[domain](
+                raw_sequence, sequence_input.timestamps, inputs.request_timestamp
+            )
             keep_count = min(tokens.shape[1], self.seq_keep_per_domain)
             if keep_count < tokens.shape[1]:
                 start = (seq_len - keep_count).clamp_min(0)
@@ -469,18 +509,18 @@ class PCVRRankUp(EmbeddingParameterMixin, nn.Module):
             masks.append(mask)
         return pieces, masks
 
-    def _encode_tokens(self, inputs: ModelInput) -> RankUpTokenBatch:
-        batch_size = inputs.user_int_feats.shape[0]
-        user_int_missing = self._missing_mask_or_default(inputs.user_int_missing_mask, inputs.user_int_feats, dense=False)
-        item_int_missing = self._missing_mask_or_default(inputs.item_int_missing_mask, inputs.item_int_feats, dense=False)
-        user_dense_missing = self._missing_mask_or_default(inputs.user_dense_missing_mask, inputs.user_dense_feats, dense=True)
-        item_dense_missing = self._missing_mask_or_default(inputs.item_dense_missing_mask, inputs.item_dense_feats, dense=True)
+    def _encode_tokens(self, inputs: PCVRModelInput) -> RankUpTokenBatch:
+        batch_size = inputs.user.int_values.shape[0]
+        user_int_missing = self._missing_mask_or_default(inputs.user.int_missing_mask, inputs.user.int_values, dense=False)
+        item_int_missing = self._missing_mask_or_default(inputs.item.int_missing_mask, inputs.item.int_values, dense=False)
+        user_dense_missing = self._missing_mask_or_default(inputs.user.dense_missing_mask, inputs.user.dense_values, dense=True)
+        item_dense_missing = self._missing_mask_or_default(inputs.item.dense_missing_mask, inputs.item.dense_values, dense=True)
 
-        user_sparse = self.user_sparse(inputs.user_int_feats, user_int_missing)
-        item_sparse = self.item_sparse(inputs.item_int_feats, item_int_missing)
-        user_dense = self.user_dense(inputs.user_dense_feats, user_dense_missing)
-        item_dense = self.item_dense(inputs.item_dense_feats, item_dense_missing)
-        cross_dense = self.cross_dense(inputs.user_dense_feats, inputs.item_dense_feats)
+        user_sparse = self.user_sparse(inputs.user.int_values, user_int_missing)
+        item_sparse = self.item_sparse(inputs.item.int_values, item_int_missing)
+        user_dense = self.user_dense(inputs.user.dense_values, user_dense_missing)
+        item_dense = self.item_dense(inputs.item.dense_values, item_dense_missing)
+        cross_dense = self.cross_dense(inputs.user.dense_values, inputs.item.dense_values)
 
         non_sequence_parts = [user_sparse, item_sparse]
         if user_dense.shape[1] > 0:
@@ -540,7 +580,7 @@ class PCVRRankUp(EmbeddingParameterMixin, nn.Module):
             self._put_scalar(f"effective_rank/block{block_index}_ffn", self._effective_rank(tokens, batch.padding_mask))
         return self.final_norm(tokens)
 
-    def _embed(self, inputs: ModelInput) -> torch.Tensor:
+    def _embed(self, inputs: PCVRModelInput) -> torch.Tensor:
         batch = self._encode_tokens(inputs)
         tokens = self._run_backbone(batch)
         global_summary = tokens[:, 0, :]
@@ -552,12 +592,12 @@ class PCVRRankUp(EmbeddingParameterMixin, nn.Module):
         self._put_scalar("embedding/norm_mean", embedding.detach().float().norm(dim=-1).mean())
         return embedding
 
-    def forward(self, inputs: ModelInput) -> torch.Tensor:
+    def forward(self, inputs: PCVRModelInput) -> torch.Tensor:
         return self.classifier(self._embed(inputs))
 
-    def predict(self, inputs: ModelInput) -> tuple[torch.Tensor, torch.Tensor]:
+    def predict(self, inputs: PCVRModelInput) -> tuple[torch.Tensor, torch.Tensor]:
         embeddings = self._embed(inputs)
         return self.classifier(embeddings), embeddings
 
 
-__all__ = ["ModelInput", "PCVRRankUp", "RankUpSelfAttention", "configure_rms_norm_runtime"]
+__all__ = ["PCVRRankUp", "RankUpSelfAttention", "configure_rms_norm_runtime"]

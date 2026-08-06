@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import field_validator
 
-from taac2026 import __version__
+from taac2026.domain.config import PCVRTrainConfig
 from taac2026.domain.validation import TAACBoundaryModel
 
 
@@ -17,7 +17,6 @@ PCVR_TRAIN_CONFIG_METADATA_KEYS = frozenset(
     {
         "train_config_format",
         "framework_name",
-        "framework_version",
     }
 )
 
@@ -27,7 +26,6 @@ class PCVRTrainConfigSidecar(TAACBoundaryModel):
 
     train_config_format: str
     framework_name: str
-    framework_version: str
     train_config: dict[str, Any]
 
     @field_validator("train_config_format")
@@ -37,38 +35,72 @@ class PCVRTrainConfigSidecar(TAACBoundaryModel):
             raise ValueError(f"unsupported PCVR train_config format: {value}")
         return value
 
-    def to_runtime_config(self) -> dict[str, Any]:
-        config = dict(self.train_config)
-        metadata = self.model_dump(
-            mode="python",
-            include=PCVR_TRAIN_CONFIG_METADATA_KEYS,
-            exclude_none=True,
-        )
-        config.update(metadata)
-        return config
-
-    def to_sidecar_payload(self) -> dict[str, Any]:
-        return self.model_dump(mode="python")
+    @field_validator("framework_name")
+    @classmethod
+    def _validate_framework_name(cls, value: str) -> str:
+        if value != "taac2026":
+            raise ValueError(f"unsupported framework_name: {value}")
+        return value
 
 
-def build_pcvr_train_config_sidecar(train_config: Mapping[str, Any] | None) -> dict[str, Any]:
-    """Return the PCVR train_config.json payload."""
+def build_pcvr_train_config_sidecar(train_config: PCVRTrainConfig) -> dict[str, Any]:
+    """Serialize a typed train config into the PCVR train_config.json payload."""
 
-    config = {} if train_config is None else dict(train_config)
     return PCVRTrainConfigSidecar.model_validate(
         {
             "train_config_format": PCVR_TRAIN_CONFIG_FORMAT,
             "framework_name": "taac2026",
-            "framework_version": __version__,
-            "train_config": config,
+            "train_config": train_config.model_dump(mode="json"),
         }
-    ).to_sidecar_payload()
+    ).model_dump(mode="python")
 
 
-def load_pcvr_train_config_sidecar(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Load the PCVR train_config.json payload."""
+def _missing_keys(
+    payload: Any,
+    expected: Any,
+    *,
+    prefix: str = "",
+) -> list[str]:
+    """Recursively find keys present in ``expected`` but missing from ``payload``.
 
-    return PCVRTrainConfigSidecar.model_validate(dict(payload)).to_runtime_config()
+    Recurses into both mappings and sequences so nested config entries (loss
+    terms, data pipeline transforms) are validated as complete snapshots too.
+    """
+    missing: list[str] = []
+    if isinstance(expected, Mapping) and isinstance(payload, Mapping):
+        for key, value in expected.items():
+            full_key = f"{prefix}{key}" if not prefix else f"{prefix}.{key}"
+            if key not in payload:
+                missing.append(full_key)
+                continue
+            missing.extend(_missing_keys(payload[key], value, prefix=full_key))
+    elif isinstance(expected, list) and isinstance(payload, list):
+        for index, (expected_item, actual_item) in enumerate(zip(expected, payload, strict=False)):
+            missing.extend(_missing_keys(actual_item, expected_item, prefix=f"{prefix}[{index}]"))
+    return missing
+
+
+def validate_complete_config(
+    payload: Mapping[str, Any],
+    config_type: type[PCVRTrainConfig],
+) -> PCVRTrainConfig:
+    """Validate a full config snapshot; missing fields fail instead of defaulting."""
+    config = config_type.model_validate(dict(payload))
+    missing = _missing_keys(payload, config.model_dump(mode="json"))
+    if missing:
+        raise ValueError(f"incomplete train_config sidecar; missing fields: {missing}")
+    return config
+
+
+def load_pcvr_train_config_sidecar(
+    payload: Mapping[str, Any],
+    *,
+    config_type: type[PCVRTrainConfig],
+) -> PCVRTrainConfig:
+    """Load and validate the structured payload back into a typed train config."""
+
+    config_body = PCVRTrainConfigSidecar.model_validate(dict(payload)).train_config
+    return validate_complete_config(config_body, config_type)
 
 
 __all__ = [
@@ -77,4 +109,5 @@ __all__ = [
     "PCVRTrainConfigSidecar",
     "build_pcvr_train_config_sidecar",
     "load_pcvr_train_config_sidecar",
+    "validate_complete_config",
 ]

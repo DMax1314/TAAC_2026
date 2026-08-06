@@ -44,19 +44,13 @@ NS 分组直接写在 `PCVRNSConfig.user_groups` 和 `PCVRNSConfig.item_groups` 
 
 ## 三、输入与 tokenization
 
-共享 runtime 会把 batch 转成 `ModelInput`：
+数据层构造统一的 `PCVRBatch`（`PCVRSequenceInput` / `PCVREntityInput`），模型入口统一为 `PCVRModelInput`；模型构造只依赖 `PCVRSchema` 与 `PCVRModelConfig`：
 
 ```python
-ModelInput(
-    user_int_feats,
-    item_int_feats,
-    user_dense_feats,
-    item_dense_feats,
-    seq_data,
-    seq_lens,
-    seq_time_buckets,
-)
+model = PCVRHyFormer(schema=resolved_schema, config=config.model)
 ```
+
+模型内部通过 `build_pcvr_model_specs(schema, config.ns)` 编译用户/物品特征 specs、dense 维度和序列域 vocab 大小，再构造各 tokenizer。
 
 Baseline 的输入流可以拆成三段。
 

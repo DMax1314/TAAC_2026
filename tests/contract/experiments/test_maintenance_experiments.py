@@ -72,6 +72,7 @@ def _load_host_device_info_runner_module():
 
 def _write_schema(path: Path) -> None:
     payload = {
+        "format": "raw_parquet",
         "user_int": [[1, 10, 1], [2, 20, 1]],
         "item_int": [[3, 20, 1]],
         "user_dense": [[4, 2]],

@@ -1,3 +1,5 @@
+"""Record-batch to canonical PCVR batch conversion."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -9,12 +11,14 @@ import pyarrow as pa
 import torch
 from numpy.typing import NDArray
 
-from taac2026.domain.schema import BUCKET_BOUNDARIES
+from taac2026.infrastructure.data.batches import (
+    PCVRBatch,
+    PCVREntityInput,
+    PCVRModelInput,
+    PCVRSequenceInput,
+)
 from taac2026.infrastructure.data.schema_layout import PCVRSchemaLayout
 from taac2026.infrastructure.logging import logger
-
-
-SEQUENCE_STATS_DIM = 6
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +58,7 @@ class PCVRColumnPlan:
     user_int: tuple[IntColumnPlan, ...]
     item_int: tuple[IntColumnPlan, ...]
     user_dense: tuple[DenseColumnPlan, ...]
+    item_dense: tuple[DenseColumnPlan, ...]
     sequences: dict[str, SequenceColumnPlan]
 
     def record_batch_columns(self) -> list[str] | None:
@@ -215,6 +220,20 @@ def build_pcvr_column_plan(
         )
         output_offset += dim
 
+    # ``item_dense`` columns are compiled from the schema contract; a column
+    # absent from the parquet file keeps a placeholder index and stays missing.
+    item_dense: list[DenseColumnPlan] = []
+    output_offset = 0
+    for fid, dim in layout.item_dense_cols:
+        item_dense.append(
+            DenseColumnPlan(
+                column_index=column_indices.get(f"item_dense_feats_{fid}", -1),
+                dim=dim,
+                output_offset=output_offset,
+            )
+        )
+        output_offset += dim
+
     sequences: dict[str, SequenceColumnPlan] = {}
     for domain in layout.seq_domains:
         sequence_layout = layout.sequences[domain]
@@ -244,6 +263,7 @@ def build_pcvr_column_plan(
         user_int=user_int,
         item_int=item_int,
         user_dense=tuple(user_dense),
+        item_dense=tuple(item_dense),
         sequences=sequences,
     )
 
@@ -297,6 +317,9 @@ class PCVRRecordBatchConverter:
         self.user_dense_buffer = np.zeros(
             (batch_size, layout.user_dense_schema.total_dim), dtype=np.float32
         )
+        self.item_dense_buffer = np.zeros(
+            (batch_size, layout.item_dense_schema.total_dim), dtype=np.float32
+        )
         self.user_int_missing_buffer = np.ones(
             (batch_size, layout.user_int_schema.total_dim), dtype=np.bool_
         )
@@ -305,6 +328,9 @@ class PCVRRecordBatchConverter:
         )
         self.user_dense_missing_buffer = np.ones(
             (batch_size, layout.user_dense_schema.total_dim), dtype=np.bool_
+        )
+        self.item_dense_missing_buffer = np.ones(
+            (batch_size, layout.item_dense_schema.total_dim), dtype=np.bool_
         )
         self.sequence_buffers = {
             domain: np.zeros(
@@ -320,12 +346,8 @@ class PCVRRecordBatchConverter:
         self.sequence_lengths = {
             domain: np.zeros(batch_size, dtype=np.int64) for domain in layout.seq_domains
         }
-        self.sequence_time_buckets = {
+        self.sequence_timestamp_buffers = {
             domain: np.zeros((batch_size, layout.seq_maxlen[domain]), dtype=np.int64)
-            for domain in layout.seq_domains
-        }
-        self.sequence_stats = {
-            domain: np.zeros((batch_size, SEQUENCE_STATS_DIM), dtype=np.float32)
             for domain in layout.seq_domains
         }
 
@@ -365,10 +387,9 @@ class PCVRRecordBatchConverter:
         padded[~finite] = 0.0
         return padded, missing
 
-    def convert(self, batch: pa.RecordBatch) -> dict[str, Any]:
+    def convert(self, batch: pa.RecordBatch) -> PCVRBatch:
         row_count = batch.num_rows
         timestamps = self._timestamps(batch)
-        result = self._base_result(batch, row_count, timestamps)
         self._fill_int_features(
             batch,
             row_count,
@@ -387,17 +408,30 @@ class PCVRRecordBatchConverter:
         )
         self._fill_dense_features(batch, row_count)
 
-        result["user_int_feats"] = torch.from_numpy(self.user_int_buffer[:row_count].copy())
-        result["item_int_feats"] = torch.from_numpy(self.item_int_buffer[:row_count].copy())
-        result["user_dense_feats"] = torch.from_numpy(
-            self.user_dense_buffer[:row_count].copy()
+        user = PCVREntityInput(
+            int_values=torch.from_numpy(self.user_int_buffer[:row_count].copy()),
+            int_missing_mask=torch.from_numpy(self.user_int_missing_buffer[:row_count].copy()),
+            dense_values=torch.from_numpy(self.user_dense_buffer[:row_count].copy()),
+            dense_missing_mask=torch.from_numpy(self.user_dense_missing_buffer[:row_count].copy()),
         )
-        result["user_int_missing_mask"] = torch.from_numpy(self.user_int_missing_buffer[:row_count].copy())
-        result["item_int_missing_mask"] = torch.from_numpy(self.item_int_missing_buffer[:row_count].copy())
-        result["user_dense_missing_mask"] = torch.from_numpy(self.user_dense_missing_buffer[:row_count].copy())
-        result["item_dense_missing_mask"] = torch.zeros(row_count, 0, dtype=torch.bool)
-        self._add_sequence_features(batch, row_count, timestamps, result)
-        return result
+        item = PCVREntityInput(
+            int_values=torch.from_numpy(self.item_int_buffer[:row_count].copy()),
+            int_missing_mask=torch.from_numpy(self.item_int_missing_buffer[:row_count].copy()),
+            dense_values=torch.from_numpy(self.item_dense_buffer[:row_count].copy()),
+            dense_missing_mask=torch.from_numpy(self.item_dense_missing_buffer[:row_count].copy()),
+        )
+        inputs = PCVRModelInput(
+            user=user,
+            item=item,
+            sequences=self._build_sequence_inputs(batch, row_count, timestamps),
+            request_timestamp=torch.from_numpy(timestamps),
+        )
+        user_ids = batch.column(self.column_plan.column_indices["user_id"]).to_pylist()
+        return PCVRBatch(
+            inputs=inputs,
+            label=torch.from_numpy(self._labels(batch, row_count)),
+            user_id=user_ids,
+        )
 
     def dump_oob_stats(self, path: str | None = None) -> None:
         if not self.oob_stats:
@@ -421,22 +455,6 @@ class PCVRRecordBatchConverter:
 
     def _timestamps(self, batch: pa.RecordBatch) -> NDArray[np.int64]:
         return batch.column(self.column_plan.column_indices["timestamp"]).to_numpy().astype(np.int64)
-
-    def _base_result(
-        self,
-        batch: pa.RecordBatch,
-        row_count: int,
-        timestamps: NDArray[np.int64],
-    ) -> dict[str, Any]:
-        labels = self._labels(batch, row_count)
-        user_ids = batch.column(self.column_plan.column_indices["user_id"]).to_pylist()
-        return {
-            "item_dense_feats": torch.zeros(row_count, 0, dtype=torch.float32),
-            "label": torch.from_numpy(labels),
-            "timestamp": torch.from_numpy(timestamps),
-            "user_id": user_ids,
-            "_seq_domains": self.layout.seq_domains,
-        }
 
     def _labels(self, batch: pa.RecordBatch, row_count: int) -> NDArray[np.int64]:
         if not self.is_training:
@@ -488,35 +506,51 @@ class PCVRRecordBatchConverter:
         return values, missing
 
     def _fill_dense_features(self, batch: pa.RecordBatch, row_count: int) -> None:
-        buffer = self.user_dense_buffer[:row_count]
-        missing_buffer = self.user_dense_missing_buffer[:row_count]
+        self._fill_dense_group(batch, row_count, "user")
+        self._fill_dense_group(batch, row_count, "item")
+
+    def _fill_dense_group(
+        self,
+        batch: pa.RecordBatch,
+        row_count: int,
+        group: str,
+    ) -> None:
+        if group == "user":
+            plan = self.column_plan.user_dense
+            buffer = self.user_dense_buffer[:row_count]
+            missing_buffer = self.user_dense_missing_buffer[:row_count]
+        else:
+            plan = self.column_plan.item_dense
+            buffer = self.item_dense_buffer[:row_count]
+            missing_buffer = self.item_dense_missing_buffer[:row_count]
         buffer[:] = 0
         missing_buffer[:] = True
-        for feature in self.column_plan.user_dense:
-            padded, missing = self.pad_float_column(batch.column(feature.column_index), feature.dim, row_count)
+        for feature in plan:
+            if feature.column_index < 0:
+                continue
+            padded, missing = self.pad_float_column(
+                batch.column(feature.column_index), feature.dim, row_count
+            )
             buffer[:, feature.output_offset : feature.output_offset + feature.dim] = padded
             missing_buffer[:, feature.output_offset : feature.output_offset + feature.dim] = missing
 
-    def _add_sequence_features(
+    def _build_sequence_inputs(
         self,
         batch: pa.RecordBatch,
         row_count: int,
         timestamps: NDArray[np.int64],
-        result: dict[str, Any],
-    ) -> None:
+    ) -> dict[str, PCVRSequenceInput]:
+        sequence_inputs: dict[str, PCVRSequenceInput] = {}
         for domain in self.layout.seq_domains:
             sequence_plan = self.column_plan.sequences[domain]
             tokens = self.sequence_buffers[domain][:row_count]
             lengths = self.sequence_lengths[domain][:row_count]
-            time_buckets = self.sequence_time_buckets[domain][:row_count]
-            stats = self.sequence_stats[domain][:row_count]
+            timestamps_padded = self.sequence_timestamp_buffers[domain][:row_count]
             tokens[:] = 0
             lengths[:] = 0
-            time_buckets[:] = 0
-            stats[:] = 0.0
+            timestamps_padded[:] = 0
 
             side_columns = self._sequence_side_arrays(batch, sequence_plan)
-            timestamps_padded = np.zeros((row_count, sequence_plan.max_len), dtype=np.int64)
             if self.strict_time_filter and sequence_plan.timestamp_column_index is not None:
                 self._fill_strict_sequence(
                     batch=batch,
@@ -541,14 +575,14 @@ class PCVRRecordBatchConverter:
 
             tokens[tokens <= 0] = 0
             self._clip_sequence_vocab(domain, sequence_plan, tokens)
-            self._sequence_stats_and_dedup(tokens, lengths, timestamps_padded, stats)
-            self._fill_time_buckets(timestamps, timestamps_padded, time_buckets)
-            self._fill_sequence_time_stats(lengths, time_buckets, stats)
+            self._deduplicate_sequence_events(tokens, lengths, timestamps_padded)
 
-            result[domain] = torch.from_numpy(tokens.copy())
-            result[f"{domain}_len"] = torch.from_numpy(lengths.copy())
-            result[f"{domain}_time_bucket"] = torch.from_numpy(time_buckets.copy())
-            result[f"{domain}_stats"] = torch.from_numpy(stats.copy())
+            sequence_inputs[domain] = PCVRSequenceInput(
+                values=torch.from_numpy(tokens.copy()),
+                lengths=torch.from_numpy(lengths.copy()),
+                timestamps=torch.from_numpy(timestamps_padded.copy()),
+            )
+        return sequence_inputs
 
     def _sequence_side_arrays(
         self,
@@ -666,59 +700,24 @@ class PCVRRecordBatchConverter:
             else:
                 slice_tokens[:] = 0
 
-    def _fill_time_buckets(
-        self,
-        timestamps: NDArray[np.int64],
-        timestamps_padded: NDArray[np.int64],
-        time_buckets: NDArray[np.int64],
-    ) -> None:
-        if timestamps_padded.shape[1] == 0:
-            return
-        time_diff = np.maximum(timestamps.reshape(-1, 1) - timestamps_padded, 0)
-        raw_buckets = np.clip(
-            np.searchsorted(BUCKET_BOUNDARIES, time_diff.ravel()),
-            0,
-            len(BUCKET_BOUNDARIES) - 1,
-        )
-        buckets = raw_buckets.reshape(timestamps_padded.shape) + 1
-        buckets[timestamps_padded == 0] = 0
-        time_buckets[:] = buckets
-
-    def _sequence_stats_and_dedup(
+    def _deduplicate_sequence_events(
         self,
         tokens: NDArray[np.int64],
         lengths: NDArray[np.int64],
         timestamps_padded: NDArray[np.int64],
-        stats: NDArray[np.float32],
     ) -> None:
-        """Fill raw sequence stats and deduplicate events in one grouped pass."""
+        """Drop duplicate event signatures within each row, keeping first occurrence."""
         batch_size, feature_count, max_len = tokens.shape
         raw_lengths = np.minimum(np.maximum(lengths, 0), max_len).astype(np.int64, copy=False)
         if feature_count <= 0:
-            # stats stay zeroed; zero-length event tuples are never kept, so rows longer than 1 get emptied
+            # zero-length event tuples are never kept, so rows longer than 1 get emptied
             for row_index in np.flatnonzero(raw_lengths > 1):
                 tokens[row_index].fill(0)
                 timestamps_padded[row_index].fill(0)
                 lengths[row_index] = 0
             return
         raw_lengths, active, signatures = _sequence_event_signatures(tokens, lengths)
-        row_ids, order, group_ends = _active_event_groups(active, signatures)
-
-        active_count = active.sum(axis=1)
-        has_events = active_count > 0
-        if len(order) > 0:
-            unique_count = np.bincount(row_ids[group_ends], minlength=batch_size)
-        else:
-            unique_count = np.zeros(batch_size, dtype=np.int64)
-        nonzero = (tokens > 0) & (np.arange(max_len)[None, :] < raw_lengths[:, None])[:, None, :]
-        nonzero_fraction = nonzero.sum(axis=(1, 2)) / np.maximum(raw_lengths * feature_count, 1)
-        stats[:, 0] = np.where(has_events, raw_lengths, 0)
-        stats[:, 1] = np.where(has_events, active_count, 0)
-        stats[:, 2] = np.where(has_events, unique_count, 0)
-        stats[:, 3] = np.where(
-            has_events, 1.0 - unique_count / np.maximum(active_count, 1), 0.0
-        )
-        stats[:, 4] = np.where(has_events, nonzero_fraction, 0.0)
+        _row_ids, order, group_ends = _active_event_groups(active, signatures)
 
         flat_active = active.reshape(-1)
         if not bool(flat_active.any()):
@@ -751,20 +750,6 @@ class PCVRRecordBatchConverter:
         tokens[kr[:, None], np.arange(feature_count)[None, :], segment_positions[:, None]] = values
         timestamps_padded[kr, segment_positions] = timestamp_values
         lengths[changed_rows] = new_lengths[changed_rows]
-
-    def _fill_sequence_time_stats(
-        self,
-        lengths: NDArray[np.int64],
-        time_buckets: NDArray[np.int64],
-        stats: NDArray[np.float32],
-    ) -> None:
-        max_len = time_buckets.shape[1]
-        for row_index, length_value in enumerate(lengths):
-            length = min(max(int(length_value), 0), max_len)
-            if length <= 0:
-                continue
-            stats[row_index, 1] = float(length)
-            stats[row_index, 5] = float(time_buckets[row_index, length - 1])
 
     def record_oob(
         self,

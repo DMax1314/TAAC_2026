@@ -10,10 +10,13 @@ import torch.nn as nn
 from taac2026.api import (
     DenseTokenProjector,
     EmbeddingParameterMixin,
-    ModelInput,
+    NUM_TIME_BUCKETS,
+    PCVRModelInput,
     NonSequentialTokenizer,
     RMSNorm,
     SequenceTokenizer,
+    build_pcvr_model_specs,
+    compute_sequence_stats,
     configure_rms_norm_runtime as _configure_rms_norm_runtime,
     maybe_gradient_checkpoint,
     causal_valid_attention_mask,
@@ -23,6 +26,8 @@ from taac2026.api import (
     scaled_dot_product_attention,
     sinusoidal_positions,
 )
+from taac2026.domain.config import PCVRModelConfig
+from taac2026.domain.schema import PCVRSchema
 
 
 def configure_rms_norm_runtime(*, rms_norm_backend: str, rms_norm_block_rows: int) -> None:
@@ -110,7 +115,40 @@ class OneTransBlock(nn.Module):
 
 
 class PCVROneTrans(EmbeddingParameterMixin, nn.Module):
-    def __init__(
+    def __init__(self, schema: PCVRSchema, config: PCVRModelConfig) -> None:
+        specs = build_pcvr_model_specs(schema, config.ns)
+        self._init_specs(
+            user_int_feature_specs=specs.user_int_feature_specs,
+            item_int_feature_specs=specs.item_int_feature_specs,
+            user_dense_dim=specs.user_dense_dim,
+            item_dense_dim=specs.item_dense_dim,
+            seq_vocab_sizes=specs.seq_vocab_sizes,
+            user_ns_groups=specs.user_ns_groups,
+            item_ns_groups=specs.item_ns_groups,
+            d_model=config.d_model,
+            emb_dim=config.emb_dim,
+            num_queries=config.num_queries,
+            num_blocks=config.num_blocks,
+            num_heads=config.num_heads,
+            seq_encoder_type=config.seq_encoder_type,
+            hidden_mult=config.hidden_mult,
+            dropout_rate=config.dropout_rate,
+            seq_top_k=config.seq_top_k,
+            seq_causal=config.seq_causal,
+            action_num=config.action_num,
+            num_time_buckets=NUM_TIME_BUCKETS if config.use_time_buckets else 0,
+            rank_mixer_mode=config.rank_mixer_mode,
+            use_rope=config.use_rope,
+            rope_base=config.rope_base,
+            emb_skip_threshold=config.emb_skip_threshold,
+            seq_id_threshold=config.seq_id_threshold,
+            gradient_checkpointing=config.gradient_checkpointing,
+            ns_tokenizer_type=config.ns.tokenizer_type,
+            user_ns_tokens=config.ns.user_tokens,
+            item_ns_tokens=config.ns.item_tokens,
+        )
+
+    def _init_specs(
         self,
         user_int_feature_specs: list[tuple[int, int, int]],
         item_int_feature_specs: list[tuple[int, int, int]],
@@ -206,13 +244,13 @@ class PCVROneTrans(EmbeddingParameterMixin, nn.Module):
             nn.Linear(d_model, action_num),
         )
 
-    def _encode_non_sequence(self, inputs: ModelInput) -> torch.Tensor:
-        parts = [self.user_tokenizer(inputs.user_int_feats, inputs.user_int_missing_mask)]
-        user_dense = self.user_dense(inputs.user_dense_feats, inputs.user_dense_missing_mask)
+    def _encode_non_sequence(self, inputs: PCVRModelInput) -> torch.Tensor:
+        parts = [self.user_tokenizer(inputs.user.int_values, inputs.user.int_missing_mask)]
+        user_dense = self.user_dense(inputs.user.dense_values, inputs.user.dense_missing_mask)
         if user_dense is not None:
             parts.append(user_dense)
-        parts.append(self.item_tokenizer(inputs.item_int_feats, inputs.item_int_missing_mask))
-        item_dense = self.item_dense(inputs.item_dense_feats, inputs.item_dense_missing_mask)
+        parts.append(self.item_tokenizer(inputs.item.int_values, inputs.item.int_missing_mask))
+        item_dense = self.item_dense(inputs.item.dense_values, inputs.item.dense_missing_mask)
         if item_dense is not None:
             parts.append(item_dense)
         stats_token = self._sequence_stats_token(inputs)
@@ -220,25 +258,28 @@ class PCVROneTrans(EmbeddingParameterMixin, nn.Module):
             parts.append(stats_token)
         return torch.cat(parts, dim=1)
 
-    def _sequence_stats_token(self, inputs: ModelInput) -> torch.Tensor | None:
+    def _sequence_stats_token(self, inputs: PCVRModelInput) -> torch.Tensor | None:
         if not self.use_sequence_stats_token:
             return None
-        batch_size = inputs.user_int_feats.shape[0]
-        device = inputs.user_int_feats.device
+        batch_size = inputs.user.int_values.shape[0]
+        device = inputs.user.int_values.device
         dtype = torch.float32
         vectors: list[torch.Tensor] = []
-        seq_stats = inputs.seq_stats or {}
         for domain in self.seq_domains:
-            stats = seq_stats.get(domain)
-            if stats is None:
-                continue
+            sequence_input = inputs.sequences[domain]
+            stats = compute_sequence_stats(
+                sequence_input.values,
+                sequence_input.lengths,
+                sequence_input.timestamps,
+                inputs.request_timestamp,
+            )
             stats = stats.to(dtype=dtype, device=device)
             if stats.shape[-1] < self.sequence_stats_dim:
                 pad = stats.new_zeros(stats.shape[0], self.sequence_stats_dim - stats.shape[-1])
                 stats = torch.cat([stats, pad], dim=-1)
             vectors.append(self.sequence_stats_projector(stats[:, : self.sequence_stats_dim]))
         if not vectors:
-            return inputs.user_int_feats.new_zeros(batch_size, 1, self.d_model, dtype=torch.float32)
+            return inputs.user.int_values.new_zeros(batch_size, 1, self.d_model, dtype=torch.float32)
         return torch.stack(vectors, dim=1).mean(dim=1, keepdim=True)
 
     def _tail_crop(self, tokens: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
@@ -250,14 +291,17 @@ class PCVROneTrans(EmbeddingParameterMixin, nn.Module):
         positions = (start.unsqueeze(1) + offsets).clamp_max(tokens.shape[1] - 1)
         return tokens.gather(dim=1, index=positions.unsqueeze(-1).expand(-1, -1, tokens.shape[-1]))
 
-    def _encode_sequence_stream(self, inputs: ModelInput) -> tuple[torch.Tensor, torch.Tensor]:
+    def _encode_sequence_stream(self, inputs: PCVRModelInput) -> tuple[torch.Tensor, torch.Tensor]:
         pieces: list[torch.Tensor] = []
         masks: list[torch.Tensor] = []
         sep_index = 0
         for domain_index, domain in enumerate(self.seq_domains):
-            raw_sequence = inputs.seq_data[domain]
-            seq_len = inputs.seq_lens[domain].to(raw_sequence.device).clamp_min(0).clamp_max(raw_sequence.shape[2])
-            tokens = self.sequence_tokenizers[domain](raw_sequence, inputs.seq_time_buckets.get(domain))
+            sequence_input = inputs.sequences[domain]
+            raw_sequence = sequence_input.values
+            seq_len = sequence_input.lengths.to(raw_sequence.device).clamp_min(0).clamp_max(raw_sequence.shape[2])
+            tokens = self.sequence_tokenizers[domain](
+                raw_sequence, sequence_input.timestamps, inputs.request_timestamp
+            )
             tokens = self._tail_crop(tokens, seq_len)
             seq_len = seq_len.clamp_max(tokens.shape[1])
             tokens = tokens + sinusoidal_positions(tokens.shape[1], self.d_model, tokens.device).unsqueeze(0)
@@ -270,8 +314,8 @@ class PCVROneTrans(EmbeddingParameterMixin, nn.Module):
                 masks.append(torch.zeros(raw_sequence.shape[0], 1, dtype=torch.bool, device=raw_sequence.device))
                 sep_index += 1
         if not pieces:
-            batch_size = inputs.user_int_feats.shape[0]
-            device = inputs.user_int_feats.device
+            batch_size = inputs.user.int_values.shape[0]
+            device = inputs.user.int_values.device
             return torch.zeros(batch_size, 0, self.d_model, device=device), torch.zeros(batch_size, 0, dtype=torch.bool, device=device)
         return torch.cat(pieces, dim=1), torch.cat(masks, dim=1)
 
@@ -283,7 +327,7 @@ class PCVROneTrans(EmbeddingParameterMixin, nn.Module):
         decay = (target / seq_token_count) ** (1.0 / remaining_layers)
         return max(target, min(seq_token_count, math.ceil(seq_token_count * decay)))
 
-    def _embed(self, inputs: ModelInput) -> torch.Tensor:
+    def _embed(self, inputs: PCVRModelInput) -> torch.Tensor:
         sequence_tokens, sequence_mask = self._encode_sequence_stream(inputs)
         ns_tokens = self._encode_non_sequence(inputs)
         tokens = torch.cat([sequence_tokens, ns_tokens], dim=1)
@@ -312,9 +356,9 @@ class PCVROneTrans(EmbeddingParameterMixin, nn.Module):
         ns_summary = masked_mean(tokens[:, seq_token_count:, :], padding_mask[:, seq_token_count:])
         return torch.cat([seq_summary, ns_summary], dim=-1)
 
-    def forward(self, inputs: ModelInput) -> torch.Tensor:
+    def forward(self, inputs: PCVRModelInput) -> torch.Tensor:
         return self.classifier(self._embed(inputs))
 
-    def predict(self, inputs: ModelInput) -> tuple[torch.Tensor, torch.Tensor]:
+    def predict(self, inputs: PCVRModelInput) -> tuple[torch.Tensor, torch.Tensor]:
         embeddings = self._embed(inputs)
         return self.classifier(embeddings), embeddings

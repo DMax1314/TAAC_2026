@@ -1,10 +1,16 @@
-"""Typed configuration objects for PCVR experiment packages."""
+"""Typed configuration objects for PCVR experiment packages.
+
+All configuration is modeled as nested, frozen Pydantic models derived from
+``TAACBoundaryModel`` so that CLI parsing (Tyro), checkpoint sidecars, and
+experiment defaults share one authoritative representation.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field, fields
-from typing import Any, Literal
+from typing import Literal
+
+from pydantic import ConfigDict, Field, field_validator
 
 from taac2026.domain.runtime_config import (
     DENSE_OPTIMIZER_TYPE_CHOICES,
@@ -12,6 +18,7 @@ from taac2026.domain.runtime_config import (
     PCVRLossTermConfig as PCVRLossTermConfig,
     RuntimeExecutionConfig,
 )
+from taac2026.domain.validation import TAACBoundaryModel
 
 
 SeqEncoderType = Literal["swiglu", "transformer", "longer"]
@@ -45,12 +52,9 @@ def _normalize_ns_group_map(groups: Mapping[str, Sequence[int]]) -> dict[str, li
     }
 
 
-def _dataclass_flat_dict(value: object) -> dict[str, Any]:
-    return {config_field.name: getattr(value, config_field.name) for config_field in fields(value)}
+class PCVRDataConfig(TAACBoundaryModel):
+    model_config = ConfigDict(frozen=True)
 
-
-@dataclass(frozen=True, slots=True)
-class PCVRDataConfig:
     batch_size: int = 256
     num_workers: int = 16
     buffer_batches: int = 1
@@ -62,19 +66,38 @@ class PCVRDataConfig:
     eval_every_n_steps: int = 5_000
     seq_max_lens: str = "seq_a:256,seq_b:256,seq_c:512,seq_d:512"
 
-    def __post_init__(self) -> None:
-        if self.split_strategy not in PCVR_DATA_SPLIT_STRATEGY_CHOICES:
-            raise ValueError(f"unsupported PCVR data split strategy: {self.split_strategy}")
-        if self.sampling_strategy not in PCVR_DATA_SAMPLING_STRATEGY_CHOICES:
-            raise ValueError(f"unsupported PCVR data sampling strategy: {self.sampling_strategy}")
-        if self.train_steps_per_sweep < 0:
+    @field_validator("split_strategy")
+    @classmethod
+    def _validate_split_strategy(cls, value: str) -> str:
+        if value not in PCVR_DATA_SPLIT_STRATEGY_CHOICES:
+            raise ValueError(f"unsupported PCVR data split strategy: {value}")
+        return value
+
+    @field_validator("sampling_strategy")
+    @classmethod
+    def _validate_sampling_strategy(cls, value: str) -> str:
+        if value not in PCVR_DATA_SAMPLING_STRATEGY_CHOICES:
+            raise ValueError(f"unsupported PCVR data sampling strategy: {value}")
+        return value
+
+    @field_validator("train_steps_per_sweep")
+    @classmethod
+    def _validate_train_steps_per_sweep(cls, value: int) -> int:
+        if value < 0:
             raise ValueError("train_steps_per_sweep must be non-negative")
-        if self.eval_every_n_steps < 0:
+        return value
+
+    @field_validator("eval_every_n_steps")
+    @classmethod
+    def _validate_eval_every_n_steps(cls, value: int) -> int:
+        if value < 0:
             raise ValueError("eval_every_n_steps must be non-negative")
+        return value
 
 
-@dataclass(frozen=True, slots=True)
-class PCVRSequenceCropConfig:
+class PCVRSequenceCropConfig(TAACBoundaryModel):
+    model_config = ConfigDict(frozen=True)
+
     name: Literal["sequence_crop"] = "sequence_crop"
     enabled: bool = True
     views_per_row: int = 1
@@ -82,35 +105,42 @@ class PCVRSequenceCropConfig:
     seq_window_min_len: int = 1
 
 
-@dataclass(frozen=True, slots=True)
-class PCVRFeatureMaskConfig:
+class PCVRFeatureMaskConfig(TAACBoundaryModel):
+    model_config = ConfigDict(frozen=True)
+
     name: Literal["feature_mask"] = "feature_mask"
     enabled: bool = True
     probability: float = 0.0
 
 
-@dataclass(frozen=True, slots=True)
-class PCVRDomainDropoutConfig:
+class PCVRDomainDropoutConfig(TAACBoundaryModel):
+    model_config = ConfigDict(frozen=True)
+
     name: Literal["domain_dropout"] = "domain_dropout"
     enabled: bool = True
     probability: float = 0.0
 
 
-@dataclass(frozen=True, slots=True)
-class PCVRNonSequentialSparseDropoutConfig:
+class PCVRNonSequentialSparseDropoutConfig(TAACBoundaryModel):
+    model_config = ConfigDict(frozen=True)
+
     name: Literal["nonseq_sparse_dropout"] = "nonseq_sparse_dropout"
     enabled: bool = True
     probability: float = 0.0
 
 
-@dataclass(frozen=True, slots=True)
-class PCVRDataCacheConfig:
+class PCVRDataCacheConfig(TAACBoundaryModel):
+    model_config = ConfigDict(frozen=True)
+
     mode: PCVRDataCacheMode = "none"
     max_batches: int = 0
 
-    def __post_init__(self) -> None:
-        if self.mode not in PCVR_DATA_CACHE_MODE_CHOICES:
-            raise ValueError(f"unsupported data cache mode: {self.mode}")
+    @field_validator("mode")
+    @classmethod
+    def _validate_mode(cls, value: str) -> str:
+        if value not in PCVR_DATA_CACHE_MODE_CHOICES:
+            raise ValueError(f"unsupported data cache mode: {value}")
+        return value
 
     @property
     def enabled(self) -> bool:
@@ -125,9 +155,10 @@ PCVRDataTransformConfig = (
 )
 
 
-@dataclass(frozen=True, slots=True)
-class PCVRDataPipelineConfig:
-    cache: PCVRDataCacheConfig = field(default_factory=PCVRDataCacheConfig)
+class PCVRDataPipelineConfig(TAACBoundaryModel):
+    model_config = ConfigDict(frozen=True)
+
+    cache: PCVRDataCacheConfig = Field(default_factory=PCVRDataCacheConfig)
     transforms: tuple[PCVRDataTransformConfig, ...] = ()
     seed: int | None = None
     strict_time_filter: bool = True
@@ -142,51 +173,10 @@ class PCVRDataPipelineConfig:
             transform.name for transform in self.transforms if transform.enabled
         )
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "cache": {
-                "mode": self.cache.mode,
-                "max_batches": self.cache.max_batches,
-            },
-            "seed": self.seed,
-            "strict_time_filter": self.strict_time_filter,
-            "transforms": [
-                _data_transform_config_to_dict(transform)
-                for transform in self.transforms
-            ],
-        }
 
-    def to_flat_dict(self) -> dict[str, Any]:
-        return {
-            "data_pipeline": self.to_dict(),
-        }
+class PCVROptimizerConfig(TAACBoundaryModel):
+    model_config = ConfigDict(frozen=True)
 
-
-def _data_transform_config_to_dict(
-    transform: PCVRDataTransformConfig,
-) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "name": transform.name,
-        "enabled": transform.enabled,
-    }
-    if isinstance(transform, PCVRSequenceCropConfig):
-        payload.update(
-            {
-                "views_per_row": transform.views_per_row,
-                "seq_window_mode": transform.seq_window_mode,
-                "seq_window_min_len": transform.seq_window_min_len,
-            }
-        )
-    elif isinstance(
-        transform,
-        (PCVRFeatureMaskConfig, PCVRDomainDropoutConfig, PCVRNonSequentialSparseDropoutConfig),
-    ):
-        payload["probability"] = transform.probability
-    return payload
-
-
-@dataclass(frozen=True, slots=True)
-class PCVROptimizerConfig:
     lr: float = 1e-4
     max_steps: int = 0
     patience_steps: int = 25_000
@@ -197,53 +187,102 @@ class PCVROptimizerConfig:
     warmup_steps: int = 0
     min_lr_ratio: float = 0.0
 
-    def __post_init__(self) -> None:
-        if self.dense_optimizer_type not in DENSE_OPTIMIZER_TYPE_CHOICES:
-            raise ValueError(f"unsupported dense optimizer type: {self.dense_optimizer_type}")
-        if self.scheduler_type not in DENSE_LR_SCHEDULER_TYPE_CHOICES:
-            raise ValueError(f"unsupported scheduler type: {self.scheduler_type}")
-        if self.patience_steps < 0:
+    @field_validator("dense_optimizer_type")
+    @classmethod
+    def _validate_dense_optimizer_type(cls, value: str) -> str:
+        if value not in DENSE_OPTIMIZER_TYPE_CHOICES:
+            raise ValueError(f"unsupported dense optimizer type: {value}")
+        return value
+
+    @field_validator("scheduler_type")
+    @classmethod
+    def _validate_scheduler_type(cls, value: str) -> str:
+        if value not in DENSE_LR_SCHEDULER_TYPE_CHOICES:
+            raise ValueError(f"unsupported scheduler type: {value}")
+        return value
+
+    @field_validator("patience_steps")
+    @classmethod
+    def _validate_patience_steps(cls, value: int) -> int:
+        if value < 0:
             raise ValueError("patience_steps must be non-negative")
-        if self.warmup_steps < 0:
+        return value
+
+    @field_validator("warmup_steps")
+    @classmethod
+    def _validate_warmup_steps(cls, value: int) -> int:
+        if value < 0:
             raise ValueError("warmup_steps must be non-negative")
-        if not 0.0 <= self.min_lr_ratio <= 1.0:
+        return value
+
+    @field_validator("min_lr_ratio")
+    @classmethod
+    def _validate_min_lr_ratio(cls, value: float) -> float:
+        if not 0.0 <= value <= 1.0:
             raise ValueError("min_lr_ratio must be between 0.0 and 1.0")
+        return value
 
 
-@dataclass(frozen=True, slots=True)
-class PCVREMAConfig:
+class PCVREMAConfig(TAACBoundaryModel):
+    model_config = ConfigDict(frozen=True)
+
     enabled: bool = False
     decay: float = 0.999
     start_step: int = 0
     update_every_n_steps: int = 1
 
-    def __post_init__(self) -> None:
-        if not 0.0 <= self.decay < 1.0:
+    @field_validator("decay")
+    @classmethod
+    def _validate_decay(cls, value: float) -> float:
+        if not 0.0 <= value < 1.0:
             raise ValueError("ema decay must be in [0.0, 1.0)")
-        if self.start_step < 0:
+        return value
+
+    @field_validator("start_step")
+    @classmethod
+    def _validate_start_step(cls, value: int) -> int:
+        if value < 0:
             raise ValueError("ema start_step must be non-negative")
-        if self.update_every_n_steps < 1:
+        return value
+
+    @field_validator("update_every_n_steps")
+    @classmethod
+    def _validate_update_every_n_steps(cls, value: int) -> int:
+        if value < 1:
             raise ValueError("ema update_every_n_steps must be positive")
-
-    def to_flat_dict(self) -> dict[str, Any]:
-        return {
-            "ema_enabled": self.enabled,
-            "ema_decay": self.decay,
-            "ema_start_step": self.start_step,
-            "ema_update_every_n_steps": self.update_every_n_steps,
-        }
+        return value
 
 
-@dataclass(frozen=True, slots=True)
-class PCVRSparseOptimizerConfig:
+class PCVRSparseOptimizerConfig(TAACBoundaryModel):
+    model_config = ConfigDict(frozen=True)
+
     sparse_lr: float = 0.05
     sparse_weight_decay: float = 0.0
     reinit_sparse_every_n_steps: int = 0
     reinit_cardinality_threshold: int = 0
 
 
-@dataclass(frozen=True, slots=True)
-class PCVRModelConfig:
+class PCVRNSConfig(TAACBoundaryModel):
+    """Non-sequence token grouping configuration (model-side)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    grouping_strategy: NSGroupingStrategy = "explicit"
+    user_groups: dict[str, list[int]] = Field(default_factory=dict)
+    item_groups: dict[str, list[int]] = Field(default_factory=dict)
+    tokenizer_type: NSTokenizerType = "rankmixer"
+    user_tokens: int = 0
+    item_tokens: int = 0
+
+    @field_validator("user_groups", "item_groups")
+    @classmethod
+    def _normalize_groups(cls, value: Mapping[str, Sequence[int]]) -> dict[str, list[int]]:
+        return _normalize_ns_group_map(value)
+
+
+class PCVRModelConfig(TAACBoundaryModel):
+    model_config = ConfigDict(frozen=True)
+
     d_model: int = 64
     emb_dim: int = 64
     num_queries: int = 1
@@ -265,74 +304,54 @@ class PCVRModelConfig:
     flash_attention_backend: FlashAttentionBackend = "torch"
     rms_norm_backend: RMSNormBackend = "torch"
     rms_norm_block_rows: int = 1
+    ns: PCVRNSConfig = Field(default_factory=PCVRNSConfig)
 
-    def __post_init__(self) -> None:
-        if self.flash_attention_backend not in FLASH_ATTENTION_BACKEND_CHOICES:
-            raise ValueError(f"unsupported flash attention backend: {self.flash_attention_backend}")
-        if self.rms_norm_backend not in RMS_NORM_BACKEND_CHOICES:
-            raise ValueError(f"unsupported rms_norm backend: {self.rms_norm_backend}")
-        if self.rms_norm_block_rows < 1:
+    @field_validator("flash_attention_backend")
+    @classmethod
+    def _validate_flash_attention_backend(cls, value: str) -> str:
+        if value not in FLASH_ATTENTION_BACKEND_CHOICES:
+            raise ValueError(f"unsupported flash attention backend: {value}")
+        return value
+
+    @field_validator("rms_norm_backend")
+    @classmethod
+    def _validate_rms_norm_backend(cls, value: str) -> str:
+        if value not in RMS_NORM_BACKEND_CHOICES:
+            raise ValueError(f"unsupported rms_norm backend: {value}")
+        return value
+
+    @field_validator("rms_norm_block_rows")
+    @classmethod
+    def _validate_rms_norm_block_rows(cls, value: int) -> int:
+        if value < 1:
             raise ValueError("rms_norm_block_rows must be positive")
+        return value
 
 
-@dataclass(frozen=True, slots=True)
-class PCVRNSConfig:
-    grouping_strategy: NSGroupingStrategy = "explicit"
-    user_groups: dict[str, list[int]] = field(default_factory=dict)
-    item_groups: dict[str, list[int]] = field(default_factory=dict)
-    tokenizer_type: NSTokenizerType = "rankmixer"
-    user_tokens: int = 0
-    item_tokens: int = 0
+class PCVRValidationConfig(TAACBoundaryModel):
+    model_config = ConfigDict(frozen=True)
 
-    def to_flat_dict(self) -> dict[str, Any]:
-        return {
-            "ns_grouping_strategy": self.grouping_strategy,
-            "user_ns_groups": _normalize_ns_group_map(self.user_groups),
-            "item_ns_groups": _normalize_ns_group_map(self.item_groups),
-            "ns_tokenizer_type": self.tokenizer_type,
-            "user_ns_tokens": self.user_tokens,
-            "item_ns_tokens": self.item_tokens,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class PCVRValidationConfig:
     early_stopping_metric: PCVREarlyStoppingMetric = "auc"
 
-    def __post_init__(self) -> None:
-        if self.early_stopping_metric not in PCVR_EARLY_STOPPING_METRIC_CHOICES:
-            raise ValueError(f"unsupported early stopping metric: {self.early_stopping_metric}")
-    def to_flat_dict(self) -> dict[str, Any]:
-        return {
-            "early_stopping_metric": self.early_stopping_metric,
-        }
+    @field_validator("early_stopping_metric")
+    @classmethod
+    def _validate_early_stopping_metric(cls, value: str) -> str:
+        if value not in PCVR_EARLY_STOPPING_METRIC_CHOICES:
+            raise ValueError(f"unsupported early stopping metric: {value}")
+        return value
 
 
-@dataclass(frozen=True, slots=True)
-class PCVRTrainConfig:
-    data: PCVRDataConfig = field(default_factory=PCVRDataConfig)
-    data_pipeline: PCVRDataPipelineConfig = field(
-        default_factory=PCVRDataPipelineConfig
-    )
-    optimizer: PCVROptimizerConfig = field(default_factory=PCVROptimizerConfig)
-    ema: PCVREMAConfig = field(default_factory=PCVREMAConfig)
-    runtime: RuntimeExecutionConfig = field(default_factory=RuntimeExecutionConfig)
-    loss: PCVRLossConfig = field(default_factory=PCVRLossConfig)
-    sparse_optimizer: PCVRSparseOptimizerConfig = field(
-        default_factory=PCVRSparseOptimizerConfig
-    )
-    model: PCVRModelConfig = field(default_factory=PCVRModelConfig)
-    ns: PCVRNSConfig = field(default_factory=PCVRNSConfig)
-    validation: PCVRValidationConfig = field(default_factory=PCVRValidationConfig)
+class PCVRTrainConfig(TAACBoundaryModel):
+    """Full typed training configuration shared by all PCVR experiments."""
 
-    def to_flat_dict(self) -> dict[str, Any]:
-        flat: dict[str, Any] = {}
-        for group in (self.data, self.optimizer, self.runtime, self.sparse_optimizer, self.model):
-            flat.update(_dataclass_flat_dict(group))
-        flat.update(self.ema.to_flat_dict())
-        flat.update(self.data_pipeline.to_flat_dict())
-        flat["loss_terms"] = self.loss.to_list()
-        flat.update(self.ns.to_flat_dict())
-        flat.update(self.validation.to_flat_dict())
-        return flat
-REQUIRED_PCVR_TRAIN_CONFIG_KEYS = frozenset(PCVRTrainConfig().to_flat_dict())
+    model_config = ConfigDict(frozen=True)
+
+    data: PCVRDataConfig = Field(default_factory=PCVRDataConfig)
+    data_pipeline: PCVRDataPipelineConfig = Field(default_factory=PCVRDataPipelineConfig)
+    optimizer: PCVROptimizerConfig = Field(default_factory=PCVROptimizerConfig)
+    ema: PCVREMAConfig = Field(default_factory=PCVREMAConfig)
+    runtime: RuntimeExecutionConfig = Field(default_factory=RuntimeExecutionConfig)
+    loss: PCVRLossConfig = Field(default_factory=PCVRLossConfig)
+    sparse_optimizer: PCVRSparseOptimizerConfig = Field(default_factory=PCVRSparseOptimizerConfig)
+    model: PCVRModelConfig = Field(default_factory=PCVRModelConfig)
+    validation: PCVRValidationConfig = Field(default_factory=PCVRValidationConfig)

@@ -22,8 +22,9 @@ from taac2026.domain.metrics import binary_auc, binary_score_diagnostics
 from taac2026.domain.config import (
     DENSE_LR_SCHEDULER_TYPE_CHOICES,
     PCVR_EARLY_STOPPING_METRIC_CHOICES,
+    PCVRTrainConfig,
 )
-from taac2026.infrastructure.modeling.model_contract import batch_to_model_input
+from taac2026.infrastructure.data.batches import PCVRBatch
 from taac2026.domain.runtime_config import DENSE_OPTIMIZER_TYPE_CHOICES, PCVRLossConfig, RuntimeExecutionConfig
 from taac2026.infrastructure.logging import logger
 from taac2026.infrastructure.modeling.tensors import sigmoid_probabilities_numpy
@@ -185,7 +186,6 @@ class PCVRPointwiseTrainer(PCVRTrainerSupportMixin):
     def __init__(
         self,
         model: nn.Module,
-        model_input_type: Any,
         train_loader: DataLoader,
         valid_loader: DataLoader,
         lr: float,
@@ -193,6 +193,8 @@ class PCVRPointwiseTrainer(PCVRTrainerSupportMixin):
         device: str,
         save_dir: str | Path,
         early_stopping: EarlyStopping,
+        schema_path: str | Path,
+        train_config: PCVRTrainConfig,
         dense_optimizer_type: str = "adamw",
         scheduler_type: str = "none",
         warmup_steps: int = 0,
@@ -209,19 +211,16 @@ class PCVRPointwiseTrainer(PCVRTrainerSupportMixin):
         ckpt_params: dict[str, Any] | None = None,
         writer: Any | None = None,
         reporter: Any | None = None,
-        schema_path: str | Path | None = None,
         eval_every_n_steps: int = 5_000,
         early_stopping_metric: str = "auc",
-        train_config: dict[str, Any] | None = None,
         runtime_execution: RuntimeExecutionConfig | None = None,
     ) -> None:
         self.model = model
-        self.model_input_type = model_input_type
         self.train_loader = train_loader
         self.valid_loader = valid_loader
         self.writer = writer
         self.reporter = reporter or (_ScalarWriterReporter(writer) if writer is not None else _NoopReporter())
-        self.schema_path = Path(schema_path).expanduser().resolve() if schema_path else None
+        self.schema_path = Path(schema_path).expanduser().resolve()
         self.dense_optimizer_type = str(dense_optimizer_type).strip().lower()
         if self.dense_optimizer_type not in DENSE_OPTIMIZER_TYPE_CHOICES:
             raise ValueError(f"unsupported dense optimizer type: {dense_optimizer_type}")
@@ -460,9 +459,6 @@ class PCVRPointwiseTrainer(PCVRTrainerSupportMixin):
             self._report_validation(total_step, val_auc, val_logloss)
             self._handle_validation_result(total_step, val_auc, val_logloss)
 
-    def _make_model_input(self, device_batch: dict[str, Any]) -> Any:
-        return batch_to_model_input(device_batch, self.model_input_type, torch.device(self.device))
-
     @contextmanager
     def _ema_evaluation_context(self) -> Iterator[None]:
         if self.ema is None:
@@ -480,9 +476,9 @@ class PCVRPointwiseTrainer(PCVRTrainerSupportMixin):
             self.ema.copy_from(self.model)
             logger.info("Synchronized model EMA after sparse parameter reinitialization")
 
-    def _train_step(self, batch: dict[str, Any]) -> float:
+    def _train_step(self, batch: PCVRBatch) -> float:
         device_batch = self._batch_to_device(batch)
-        label = device_batch["label"].float()
+        label = device_batch.label.float()
         self._set_dense_learning_rate(self.optim_step + 1)
 
         self.dense_optimizer.zero_grad()
@@ -491,7 +487,7 @@ class PCVRPointwiseTrainer(PCVRTrainerSupportMixin):
 
         collect_model_scalars = self._should_collect_train_model_scalars(self.optim_step + 1)
         self._set_model_training_diagnostics_enabled(collect_model_scalars)
-        model_input = self._make_model_input(device_batch)
+        model_input = device_batch.inputs
         with runtime_autocast_context(self.runtime_execution, self.device):
             logits = self.forward_model(model_input).squeeze(-1)
             loss, loss_components = compute_pcvr_loss(logits, label, self.loss_config, model=self.model)
@@ -717,11 +713,11 @@ class PCVRPointwiseTrainer(PCVRTrainerSupportMixin):
     def validation_early_stopping_score(self, val_auc: float, val_logloss: float) -> float:
         return self.validation_metric_score(self.early_stopping_metric, val_auc, val_logloss)
 
-    def _evaluate_step(self, batch: dict[str, Any]) -> tuple[torch.Tensor, torch.Tensor]:
+    def _evaluate_step(self, batch: PCVRBatch) -> tuple[torch.Tensor, torch.Tensor]:
         device_batch = self._batch_to_device(batch)
-        label = device_batch["label"]
+        label = device_batch.label
 
-        model_input = self._make_model_input(device_batch)
+        model_input = device_batch.inputs
         with runtime_autocast_context(self.runtime_execution, self.device):
             logits, _embeddings = self.predict_fn(model_input)
         logits = logits.squeeze(-1)

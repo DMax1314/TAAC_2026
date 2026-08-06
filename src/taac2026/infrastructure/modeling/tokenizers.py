@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 
 from taac2026.infrastructure.modeling.embeddings import FeatureEmbeddingBank, hash_compress_ids
+from taac2026.infrastructure.modeling.time_features import compute_sequence_time_buckets
 
 
 class NonSequentialTokenizer(nn.Module):
@@ -152,7 +153,12 @@ class SequenceTokenizer(nn.Module):
 			nn.init.xavier_normal_(self.time_embedding.weight)
 			self.time_embedding.weight.data[0].zero_()
 
-	def forward(self, sequence: torch.Tensor, time_buckets: torch.Tensor | None = None) -> torch.Tensor:
+	def forward(
+		self,
+		sequence: torch.Tensor,
+		timestamps: torch.Tensor | None = None,
+		request_timestamp: torch.Tensor | None = None,
+	) -> torch.Tensor:
 		batch_size, feature_count, seq_len = sequence.shape
 		pieces: list[torch.Tensor] = []
 		for feature_index in range(feature_count):
@@ -173,8 +179,13 @@ class SequenceTokenizer(nn.Module):
 		else:
 			token_input = sequence.new_zeros(batch_size, seq_len, 1, dtype=torch.float32)
 		tokens = self.project(token_input)
-		if self.time_embedding is not None and time_buckets is not None:
-			time_values = time_buckets.to(torch.long).clamp(min=0, max=self.time_embedding.num_embeddings - 1)
+		if (
+			self.time_embedding is not None
+			and timestamps is not None
+			and request_timestamp is not None
+		):
+			time_values = compute_sequence_time_buckets(timestamps, request_timestamp)
+			time_values = time_values.clamp(min=0, max=self.time_embedding.num_embeddings - 1)
 			tokens = tokens + self.time_embedding(time_values)
 		return tokens
 

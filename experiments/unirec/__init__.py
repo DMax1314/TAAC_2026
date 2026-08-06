@@ -21,6 +21,7 @@ from taac2026.api import (
     RuntimeExecutionConfig,
     create_pcvr_experiment,
 )
+from .model import PCVRUniRec
 
 
 TRAIN_DEFAULTS = PCVRTrainConfig(
@@ -99,38 +100,35 @@ TRAIN_DEFAULTS = PCVRTrainConfig(
         flash_attention_backend="torch",
         rms_norm_backend="torch",
         rms_norm_block_rows=1,
-    ),
-    ns=PCVRNSConfig(
-        grouping_strategy="explicit",
-        user_groups={
-            "U1": [1, 15],
-            "U2": [48, 49, 89, 90, 91],
-            "U3": [80],
-            "U4": [51, 52, 53, 54, 86],
-            "U5": [82, 92, 93],
-            "U6": [50, 60, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109],
-            "U7": [3, 4, 55, 56, 57, 58, 59, 62, 63, 64, 65, 66],
-        },
-        item_groups={
-            "I1": [11, 13],
-            "I2": [5, 6, 7, 8, 12],
-            "I3": [16, 81, 83, 84, 85],
-            "I4": [9, 10],
-        },
-        tokenizer_type="rankmixer",
-        user_tokens=5,
-        item_tokens=2,
+        ns=PCVRNSConfig(
+            grouping_strategy="explicit",
+            user_groups={
+                "U1": [1, 15],
+                "U2": [48, 49, 89, 90, 91],
+                "U3": [80],
+                "U4": [51, 52, 53, 54, 86],
+                "U5": [82, 92, 93],
+                "U6": [50, 60, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109],
+                "U7": [3, 4, 55, 56, 57, 58, 59, 62, 63, 64, 65, 66],
+            },
+            item_groups={
+                "I1": [11, 13],
+                "I2": [5, 6, 7, 8, 12],
+                "I3": [16, 81, 83, 84, 85],
+                "I4": [9, 10],
+            },
+            tokenizer_type="rankmixer",
+            user_tokens=5,
+            item_tokens=2,
+        ),
     ),
 )
 
 EXPERIMENT = create_pcvr_experiment(
     name="pcvr_unirec",
     package_dir=Path(__file__).resolve().parent,
-    model_class_name="PCVRUniRec",
+    model_type=PCVRUniRec,
     train_defaults=TRAIN_DEFAULTS,
 )
-TRAIN_HOOKS = EXPERIMENT.train_hooks
-PREDICTION_HOOKS = EXPERIMENT.prediction_hooks
-RUNTIME_HOOKS = EXPERIMENT.runtime_hooks
 
-__all__ = ["EXPERIMENT", "PREDICTION_HOOKS", "RUNTIME_HOOKS", "TRAIN_DEFAULTS", "TRAIN_HOOKS"]
+__all__ = ["EXPERIMENT", "TRAIN_DEFAULTS"]

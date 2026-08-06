@@ -103,7 +103,7 @@ def _consume_batches(iterator: Any, batch_count: int) -> int:
     rows = 0
     for _ in range(batch_count):
         batch = next(iterator)
-        rows += int(batch["label"].shape[0])
+        rows += int(batch.label.shape[0])
     return rows
 
 
@@ -125,7 +125,7 @@ def _consume_measured_batches(
                 batch = next(iterator)
             except StopIteration:
                 break
-            measured_rows += int(batch["label"].shape[0])
+            measured_rows += int(batch.label.shape[0])
             measured_batches += 1
         if measured_batches > 0:
             measured_passes = math.ceil(measured_batches / max(1, batches_per_pass))
@@ -139,7 +139,7 @@ def _consume_measured_batches(
                 batch = next(iterator)
             except StopIteration:
                 break
-            measured_rows += int(batch["label"].shape[0])
+            measured_rows += int(batch.label.shape[0])
             measured_batches += 1
             pass_batches += 1
         if pass_batches == 0:

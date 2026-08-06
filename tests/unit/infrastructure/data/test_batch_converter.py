@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pyarrow as pa
-import pytest
 
 from taac2026.infrastructure.data.batch_converter import PCVRRecordBatchConverter, build_pcvr_column_plan
 from taac2026.infrastructure.data.schema_layout import load_pcvr_schema_layout
@@ -57,7 +56,7 @@ def _record_batch() -> pa.RecordBatch:
     return pa.record_batch(arrays, names=names)
 
 
-def test_record_batch_converter_emits_missing_masks_deduped_sequences_and_stats(tmp_path: Path) -> None:
+def test_record_batch_converter_emits_missing_masks_deduped_sequences_and_timestamps(tmp_path: Path) -> None:
     layout = load_pcvr_schema_layout(_write_schema(tmp_path), {"seq_a": 4})
     column_plan = build_pcvr_column_plan(layout, _record_batch().schema.names)
     converter = PCVRRecordBatchConverter(
@@ -71,16 +70,20 @@ def test_record_batch_converter_emits_missing_masks_deduped_sequences_and_stats(
 
     batch = converter.convert(_record_batch())
 
-    assert batch["user_int_missing_mask"].tolist() == [[True, False, True], [False, True, True]]
-    assert batch["item_int_missing_mask"].tolist() == [[True], [False]]
-    assert batch["user_dense_missing_mask"].tolist() == [[False, True], [True, True]]
-    assert batch["item_dense_missing_mask"].shape == (2, 0)
+    assert batch.inputs.user.int_missing_mask.tolist() == [[True, False, True], [False, True, True]]
+    assert batch.inputs.item.int_missing_mask.tolist() == [[True], [False]]
+    assert batch.inputs.user.dense_missing_mask.tolist() == [[False, True], [True, True]]
+    assert batch.inputs.item.dense_missing_mask.shape == (2, 0)
 
-    assert batch["seq_a_len"].tolist() == [3, 1]
-    assert batch["seq_a"][0].tolist() == [[1, 2, 3, 0], [1, 2, 3, 0]]
-    assert batch["seq_a"][1].tolist() == [[4, 0, 0, 0], [5, 0, 0, 0]]
+    seq_a = batch.inputs.sequences["seq_a"]
+    assert seq_a.lengths.tolist() == [3, 1]
+    assert seq_a.values[0].tolist() == [[1, 2, 3, 0], [1, 2, 3, 0]]
+    assert seq_a.values[1].tolist() == [[4, 0, 0, 0], [5, 0, 0, 0]]
 
-    stats = batch["seq_a_stats"]
-    assert stats[0, :5].tolist() == pytest.approx([4.0, 3.0, 3.0, 0.25, 1.0])
-    assert stats[1, :5].tolist() == pytest.approx([2.0, 1.0, 1.0, 0.5, 1.0])
-    assert stats[:, 5].gt(0).all()
+    # Raw event timestamps are carried on the sequence input; time features are model-side.
+    assert seq_a.timestamps.shape == (2, 4)
+    assert seq_a.timestamps[0, :3].tolist() == [10, 30, 40]
+    assert seq_a.timestamps[1, 0].item() == 95
+    assert batch.inputs.request_timestamp.tolist() == [100, 100]
+    # label is derived from label_type == 2 during training conversion
+    assert batch.label.tolist() == [1, 0]

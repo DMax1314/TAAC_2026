@@ -11,9 +11,11 @@ import torch.nn.functional as F
 from taac2026.api import (
     EmbeddingParameterMixin,
     FeatureEmbeddingBank,
-    ModelInput,
+    NUM_TIME_BUCKETS,
+    PCVRModelInput,
     RMSNorm,
     SequenceTokenizer,
+    build_pcvr_model_specs,
     choose_num_heads,
     configure_rms_norm_runtime as _configure_rms_norm_runtime,
     make_padding_mask,
@@ -23,6 +25,8 @@ from taac2026.api import (
     safe_key_padding_mask,
     sinusoidal_positions,
 )
+from taac2026.domain.config import PCVRModelConfig
+from taac2026.domain.schema import PCVRSchema
 
 
 def configure_rms_norm_runtime(*, rms_norm_backend: str, rms_norm_block_rows: int) -> None:
@@ -305,7 +309,40 @@ class UniRecBlock(nn.Module):
 
 
 class PCVRUniRec(EmbeddingParameterMixin, nn.Module):
-    def __init__(
+    def __init__(self, schema: PCVRSchema, config: PCVRModelConfig) -> None:
+        specs = build_pcvr_model_specs(schema, config.ns)
+        self._init_specs(
+            user_int_feature_specs=specs.user_int_feature_specs,
+            item_int_feature_specs=specs.item_int_feature_specs,
+            user_dense_dim=specs.user_dense_dim,
+            item_dense_dim=specs.item_dense_dim,
+            seq_vocab_sizes=specs.seq_vocab_sizes,
+            user_ns_groups=specs.user_ns_groups,
+            item_ns_groups=specs.item_ns_groups,
+            d_model=config.d_model,
+            emb_dim=config.emb_dim,
+            num_queries=config.num_queries,
+            num_blocks=config.num_blocks,
+            num_heads=config.num_heads,
+            seq_encoder_type=config.seq_encoder_type,
+            hidden_mult=config.hidden_mult,
+            dropout_rate=config.dropout_rate,
+            seq_top_k=config.seq_top_k,
+            seq_causal=config.seq_causal,
+            action_num=config.action_num,
+            num_time_buckets=NUM_TIME_BUCKETS if config.use_time_buckets else 0,
+            rank_mixer_mode=config.rank_mixer_mode,
+            use_rope=config.use_rope,
+            rope_base=config.rope_base,
+            emb_skip_threshold=config.emb_skip_threshold,
+            seq_id_threshold=config.seq_id_threshold,
+            gradient_checkpointing=config.gradient_checkpointing,
+            ns_tokenizer_type=config.ns.tokenizer_type,
+            user_ns_tokens=config.ns.user_tokens,
+            item_ns_tokens=config.ns.item_tokens,
+        )
+
+    def _init_specs(
         self,
         user_int_feature_specs: list[tuple[int, int, int]],
         item_int_feature_specs: list[tuple[int, int, int]],
@@ -396,11 +433,11 @@ class PCVRUniRec(EmbeddingParameterMixin, nn.Module):
         source_ids = torch.full((tokens.shape[0], tokens.shape[1]), int(source_id), dtype=torch.long, device=tokens.device)
         return tokens + self.source_embedding(source_ids)
 
-    def _feature_tokens(self, inputs: ModelInput) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        user_tokens = self._add_source(self.user_fields(inputs.user_int_feats), 0)
-        user_dense = self._add_source(self.user_dense(inputs.user_dense_feats), 1)
-        item_tokens = self._add_source(self.item_fields(inputs.item_int_feats), 2)
-        item_dense = self._add_source(self.item_dense(inputs.item_dense_feats), 3)
+    def _feature_tokens(self, inputs: PCVRModelInput) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        user_tokens = self._add_source(self.user_fields(inputs.user.int_values), 0)
+        user_dense = self._add_source(self.user_dense(inputs.user.dense_values), 1)
+        item_tokens = self._add_source(self.item_fields(inputs.item.int_values), 2)
+        item_dense = self._add_source(self.item_dense(inputs.item.dense_values), 3)
         user_parts = [user_tokens, user_dense]
         item_parts = [item_tokens, item_dense]
         user_feature_tokens = torch.cat(user_parts, dim=1)
@@ -425,7 +462,7 @@ class PCVRUniRec(EmbeddingParameterMixin, nn.Module):
 
     def _sequence_tokens(
         self,
-        inputs: ModelInput,
+        inputs: PCVRModelInput,
     ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor], dict[str, torch.Tensor], torch.Tensor, torch.Tensor]:
         sequences: dict[str, torch.Tensor] = {}
         masks: dict[str, torch.Tensor] = {}
@@ -433,9 +470,12 @@ class PCVRUniRec(EmbeddingParameterMixin, nn.Module):
         pieces: list[torch.Tensor] = []
         mask_pieces: list[torch.Tensor] = []
         for domain_index, domain in enumerate(self.seq_domains):
-            raw_sequence = inputs.seq_data[domain]
-            seq_len = inputs.seq_lens[domain].to(raw_sequence.device).clamp_max(raw_sequence.shape[2])
-            tokens = self.sequence_tokenizers[domain](raw_sequence, inputs.seq_time_buckets.get(domain))
+            sequence_input = inputs.sequences[domain]
+            raw_sequence = sequence_input.values
+            seq_len = sequence_input.lengths.to(raw_sequence.device).clamp_max(raw_sequence.shape[2])
+            tokens = self.sequence_tokenizers[domain](
+                raw_sequence, sequence_input.timestamps, inputs.request_timestamp
+            )
             tokens, seq_len = self._tail_sequence(tokens, seq_len)
             positions = sinusoidal_positions(tokens.shape[1], self.d_model, tokens.device).unsqueeze(0)
             tokens = tokens + positions
@@ -449,8 +489,8 @@ class PCVRUniRec(EmbeddingParameterMixin, nn.Module):
             mask_pieces.append(mask)
         if pieces:
             return sequences, masks, lengths, torch.cat(pieces, dim=1), torch.cat(mask_pieces, dim=1)
-        batch_size = inputs.user_int_feats.shape[0]
-        device = inputs.user_int_feats.device
+        batch_size = inputs.user.int_values.shape[0]
+        device = inputs.user.int_values.device
         empty_tokens = torch.zeros(batch_size, 0, self.d_model, dtype=torch.float32, device=device)
         empty_mask = torch.zeros(batch_size, 0, dtype=torch.bool, device=device)
         return sequences, masks, lengths, empty_tokens, empty_mask
@@ -484,7 +524,7 @@ class PCVRUniRec(EmbeddingParameterMixin, nn.Module):
         key_valid = ~padding_mask
         return base_mask.unsqueeze(0).unsqueeze(0) & key_valid.unsqueeze(1).unsqueeze(2)
 
-    def _encode_tokens(self, inputs: ModelInput) -> tuple[torch.Tensor, torch.Tensor, int, int, torch.Tensor, torch.Tensor]:
+    def _encode_tokens(self, inputs: PCVRModelInput) -> tuple[torch.Tensor, torch.Tensor, int, int, torch.Tensor, torch.Tensor]:
         feature_tokens, feature_mask, user_tokens, item_tokens = self._feature_tokens(inputs)
         sequences, sequence_masks, sequence_lengths, sequence_tokens, sequence_mask = self._sequence_tokens(inputs)
         user_summary = masked_mean(user_tokens)
@@ -494,9 +534,10 @@ class PCVRUniRec(EmbeddingParameterMixin, nn.Module):
         interest_summary = self.interest(item_summary, sequence_tokens, sequence_mask)
         target_summary = self.target_fusion(torch.cat([user_summary, item_summary, user_summary * item_summary], dim=-1))
 
-        mot_token = self.mot_token.expand(inputs.user_int_feats.shape[0], -1, -1) + mot_summary.unsqueeze(1)
-        interest_token = self.interest_token.expand(inputs.user_int_feats.shape[0], -1, -1) + interest_summary.unsqueeze(1)
-        target_token = self.target_token.expand(inputs.user_int_feats.shape[0], -1, -1) + target_summary.unsqueeze(1)
+        batch_size = inputs.user.int_values.shape[0]
+        mot_token = self.mot_token.expand(batch_size, -1, -1) + mot_summary.unsqueeze(1)
+        interest_token = self.interest_token.expand(batch_size, -1, -1) + interest_summary.unsqueeze(1)
+        target_token = self.target_token.expand(batch_size, -1, -1) + target_summary.unsqueeze(1)
         special_tokens = self._add_source(torch.cat([mot_token, interest_token, target_token], dim=1), 3)
         special_mask = torch.zeros(special_tokens.shape[0], special_tokens.shape[1], dtype=torch.bool, device=special_tokens.device)
 
@@ -504,7 +545,7 @@ class PCVRUniRec(EmbeddingParameterMixin, nn.Module):
         padding_mask = torch.cat([feature_mask, sequence_mask, special_mask], dim=1)
         return tokens, padding_mask, feature_tokens.shape[1], sequence_tokens.shape[1], interest_summary, fallback
 
-    def _embed(self, inputs: ModelInput) -> torch.Tensor:
+    def _embed(self, inputs: PCVRModelInput) -> torch.Tensor:
         tokens, padding_mask, feature_token_count, sequence_token_count, interest_summary, fallback = self._encode_tokens(inputs)
         attention_mask = self._build_attention_mask(
             padding_mask,
@@ -521,9 +562,9 @@ class PCVRUniRec(EmbeddingParameterMixin, nn.Module):
         target_summary = tokens[:, -1, :]
         return torch.cat([target_summary, interest_summary, fallback], dim=-1)
 
-    def forward(self, inputs: ModelInput) -> torch.Tensor:
+    def forward(self, inputs: PCVRModelInput) -> torch.Tensor:
         return self.classifier(self._embed(inputs))
 
-    def predict(self, inputs: ModelInput) -> tuple[torch.Tensor, torch.Tensor]:
+    def predict(self, inputs: PCVRModelInput) -> tuple[torch.Tensor, torch.Tensor]:
         embeddings = self._embed(inputs)
         return self.classifier(embeddings), embeddings

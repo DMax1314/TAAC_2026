@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import importlib
 import re
-import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -10,8 +9,15 @@ import torch
 import torch.nn.functional as F
 
 from taac2026.application.experiments.registry import load_experiment_package
-from taac2026.domain.config import PCVR_DATA_CACHE_MODE_CHOICES
+from taac2026.domain.config import PCVR_DATA_CACHE_MODE_CHOICES, PCVRModelConfig, PCVRNSConfig
+from taac2026.domain.schema import PCVRSchema
 from taac2026.domain.sidecar import build_pcvr_train_config_sidecar
+from taac2026.infrastructure.data.batches import (
+    PCVREntityInput,
+    PCVRModelInput,
+    PCVRSequenceInput,
+)
+from taac2026.infrastructure.experiments.module_loader import load_experiment_submodule, load_module_from_path
 from taac2026.infrastructure.io.json import dumps
 from taac2026.infrastructure.modeling import safe_key_padding_mask
 from tests.support.experiment_matrix import discover_pcvr_experiment_cases, get_experiment_case, load_model_module
@@ -22,57 +28,26 @@ EXPERIMENT_CASES = discover_pcvr_experiment_cases()
 
 def _load_package_module(experiment_path: str):
     experiment_case = get_experiment_case(experiment_path)
-    init_path = experiment_case.package_dir / "__init__.py"
-    spec = importlib.util.spec_from_file_location(
-        experiment_case.module,
-        init_path,
-        submodule_search_locations=[str(experiment_case.package_dir)],
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+    return load_module_from_path(experiment_case.package_dir)
 
 
-def _sample_model_input(model_module):
-    return model_module.ModelInput(
-        user_int_feats=torch.tensor([[1, 2, 3], [4, 0, 1]], dtype=torch.long),
-        item_int_feats=torch.tensor([[1], [2]], dtype=torch.long),
-        user_dense_feats=torch.randn(2, 2),
-        item_dense_feats=torch.randn(2, 1),
-        seq_data={
-            "seq_a": torch.tensor(
-                [
-                    [[1, 2, 0, 0], [2, 3, 0, 0]],
-                    [[4, 1, 2, 3], [1, 2, 3, 4]],
-                ],
-                dtype=torch.long,
-            ),
-            "seq_b": torch.tensor([[[1, 0, 0]], [[2, 3, 0]]], dtype=torch.long),
-        },
-        seq_lens={
-            "seq_a": torch.tensor([2, 4], dtype=torch.long),
-            "seq_b": torch.tensor([1, 2], dtype=torch.long),
-        },
-        seq_time_buckets={
-            "seq_a": torch.zeros(2, 4, dtype=torch.long),
-            "seq_b": torch.zeros(2, 3, dtype=torch.long),
+def _make_schema() -> PCVRSchema:
+    return PCVRSchema(
+        format="raw_parquet",
+        user_int=[[8, 8, 1], [7, 7, 2]],
+        item_int=[[5, 5, 1]],
+        user_dense=[[1, 2]],
+        item_dense=[[2, 1]],
+        seq={
+            "seq_a": {"prefix": "seq_a", "ts_fid": 1, "features": [[1, 6], [2, 5], [4, 4]]},
+            "seq_b": {"prefix": "seq_b", "ts_fid": 3, "features": [[3, 4], [5, 7]]},
         },
     )
 
 
 def _make_model(experiment_case, model_module, overrides=None):
     model_class = getattr(model_module, experiment_case.model_class)
-    model_kwargs = dict(
-        user_int_feature_specs=[(8, 0, 1), (7, 1, 2)],
-        item_int_feature_specs=[(5, 0, 1)],
-        user_dense_dim=2,
-        item_dense_dim=1,
-        seq_vocab_sizes={"seq_a": [6, 5], "seq_b": [4]},
-        user_ns_groups=[[0], [1]],
-        item_ns_groups=[[0]],
+    config_kwargs = dict(
         d_model=16,
         emb_dim=8,
         num_blocks=1,
@@ -80,21 +55,73 @@ def _make_model(experiment_case, model_module, overrides=None):
         hidden_mult=2,
         dropout_rate=0.0,
         action_num=1,
-        num_time_buckets=0,
-        ns_tokenizer_type="rankmixer",
-        user_ns_tokens=2,
-        item_ns_tokens=1,
+        use_time_buckets=False,
+        gradient_checkpointing=False,
+        ns=PCVRNSConfig(
+            grouping_strategy="singleton",
+            tokenizer_type="rankmixer",
+            user_tokens=2,
+            item_tokens=1,
+        ),
     )
     if overrides:
-        model_kwargs.update(overrides)
+        config_kwargs.update(overrides)
+    if experiment_case.path == "experiments/symbiosis":
+        config_type = model_module.SymbiosisModelConfig
+    else:
+        config_type = PCVRModelConfig
+
+    def build(d_model: int):
+        return model_class(
+            schema=_make_schema(),
+            config=config_type(**{**config_kwargs, "d_model": d_model}),
+        )
+
     try:
-        return model_class(**model_kwargs)
+        return build(16)
     except ValueError as error:
         match = re.search(r"=(\d+)\. Valid T values", str(error))
         if "must be divisible by T" not in str(error) or match is None:
             raise
-        model_kwargs["d_model"] = max(int(match.group(1)) * 4, model_kwargs["d_model"])
-        return model_class(**model_kwargs)
+        return build(int(match.group(1)) * 4)
+
+
+def _sample_model_input(model_module=None) -> PCVRModelInput:
+    user = PCVREntityInput(
+        int_values=torch.tensor([[1, 2, 3], [4, 0, 1]], dtype=torch.long),
+        int_missing_mask=torch.zeros(2, 3, dtype=torch.bool),
+        dense_values=torch.randn(2, 2),
+        dense_missing_mask=torch.zeros(2, 2, dtype=torch.bool),
+    )
+    item = PCVREntityInput(
+        int_values=torch.tensor([[1], [2]], dtype=torch.long),
+        int_missing_mask=torch.zeros(2, 1, dtype=torch.bool),
+        dense_values=torch.randn(2, 1),
+        dense_missing_mask=torch.zeros(2, 1, dtype=torch.bool),
+    )
+    return PCVRModelInput(
+        user=user,
+        item=item,
+        sequences={
+            "seq_a": PCVRSequenceInput(
+                values=torch.tensor(
+                    [
+                        [[1, 2, 0, 0], [2, 3, 0, 0]],
+                        [[4, 1, 2, 3], [1, 2, 3, 4]],
+                    ],
+                    dtype=torch.long,
+                ),
+                lengths=torch.tensor([2, 4], dtype=torch.long),
+                timestamps=torch.zeros(2, 4, dtype=torch.long),
+            ),
+            "seq_b": PCVRSequenceInput(
+                values=torch.tensor([[[1, 0, 0]], [[2, 3, 0]]], dtype=torch.long),
+                lengths=torch.tensor([1, 2], dtype=torch.long),
+                timestamps=torch.zeros(2, 3, dtype=torch.long),
+            ),
+        },
+        request_timestamp=torch.tensor([1000, 1000], dtype=torch.long),
+    )
 
 
 def _assert_valid_data_pipeline_defaults(data_pipeline: dict[str, object]) -> None:
@@ -119,7 +146,7 @@ def _assert_valid_data_pipeline_defaults(data_pipeline: dict[str, object]) -> No
 @pytest.mark.parametrize("experiment_case", EXPERIMENT_CASES, ids=lambda case: case.path)
 def test_discovered_experiment_packages_load(experiment_case) -> None:
     experiment = load_experiment_package(experiment_case.path)
-    train_defaults = experiment.train_defaults.to_flat_dict()
+    train_defaults = experiment.train_defaults.model_dump(mode="json")
 
     assert experiment.name == experiment_case.name
     assert experiment.package_dir == experiment_case.package_dir
@@ -127,34 +154,16 @@ def test_discovered_experiment_packages_load(experiment_case) -> None:
     assert experiment.metadata["kind"] == "pcvr"
     assert experiment.metadata["model_class"] == experiment_case.model_class
     if experiment_case.path == "experiments/symbiosis":
-        assert experiment.metadata["train_arg_parser"] == "parse_symbiosis_train_args"
-        assert experiment.metadata["train_build_model"] == "build_symbiosis_train_model"
-        assert experiment.metadata["prediction_build_model"] == "build_symbiosis_prediction_model"
-        assert experiment.metadata["runtime_load_train_config"] == "load_symbiosis_train_config"
+        assert experiment.metadata["config_type"] == "SymbiosisTrainConfig"
     else:
-        assert experiment.metadata["train_arg_parser"] == "parse_pcvr_train_args"
-        assert experiment.metadata["train_build_model"] == "default_build_train_model"
-        assert experiment.metadata["prediction_build_model"] == "default_build_prediction_model"
-        assert experiment.metadata["runtime_load_train_config"] == "default_load_train_config"
-    assert experiment.metadata["train_build_data"] == "default_build_train_data"
-    assert experiment.metadata["train_build_trainer"] == "default_build_train_trainer"
-    assert experiment.metadata["train_run_training"] == "default_run_training"
-    assert experiment.metadata["prediction_build_data"] == "default_build_prediction_data"
-    assert experiment.metadata["prediction_prepare_predictor"] == "default_prepare_prediction_runner"
-    assert experiment.metadata["prediction_run_loop"] == "default_run_prediction_loop"
-    assert experiment.metadata["runtime_resolve_evaluation_checkpoint"] == "default_resolve_evaluation_checkpoint"
-    assert experiment.metadata["runtime_resolve_inference_checkpoint"] == "default_resolve_inference_checkpoint"
-    assert experiment.metadata["runtime_load_runtime_schema"] == "default_load_runtime_schema"
-    assert experiment.metadata["runtime_build_evaluation_data_diagnostics"] == "default_build_evaluation_data_diagnostics"
-    assert experiment.metadata["runtime_write_observed_schema_report"] == "default_write_observed_schema_report"
-    assert experiment.metadata["runtime_write_train_split_observed_schema_reports"] == "default_write_train_split_observed_schema_reports"
-    assert train_defaults["ns_grouping_strategy"] == "explicit"
-    assert train_defaults["max_steps"] > 0
+        assert experiment.metadata["config_type"] == "PCVRTrainConfig"
+    assert train_defaults["model"]["ns"]["grouping_strategy"] == "explicit"
+    assert train_defaults["optimizer"]["max_steps"] > 0
     _assert_valid_data_pipeline_defaults(train_defaults["data_pipeline"])
-    assert isinstance(train_defaults["user_ns_groups"], dict)
-    assert isinstance(train_defaults["item_ns_groups"], dict)
-    assert train_defaults["user_ns_groups"]
-    assert train_defaults["item_ns_groups"]
+    assert isinstance(train_defaults["model"]["ns"]["user_groups"], dict)
+    assert isinstance(train_defaults["model"]["ns"]["item_groups"], dict)
+    assert train_defaults["model"]["ns"]["user_groups"]
+    assert train_defaults["model"]["ns"]["item_groups"]
     assert "num_hyformer_blocks" not in train_defaults
     assert "symbiosis_use_candidate_decoder" not in train_defaults
     assert "symbiosis_use_field_tokens" not in train_defaults
@@ -190,41 +199,37 @@ def test_discovered_experiment_models_forward_and_predict(experiment_case) -> No
     assert torch.isfinite(predicted_logits).all()
 
 
-def test_symbiosis_parser_adds_package_specific_config_to_args() -> None:
+def test_symbiosis_train_config_includes_package_specific_model_config() -> None:
     symbiosis_module = _load_package_module("experiments/symbiosis")
-    symbiosis_args = symbiosis_module.parse_symbiosis_train_args(
-        [],
-        package_dir=symbiosis_module.EXPERIMENT.package_dir,
-        defaults=symbiosis_module.TRAIN_DEFAULTS,
-    )
-    base_train_defaults = symbiosis_module.TRAIN_DEFAULTS.to_flat_dict()
-    extra_config_keys = (
-        tuple(symbiosis_module.SYMBIOSIS_MODEL_CONFIG_KEYS)
-        + tuple(symbiosis_module.SYMBIOSIS_OPTIONAL_MODEL_CONFIG_KEYS)
-    )
 
-    assert extra_config_keys
-    assert not set(extra_config_keys).intersection(base_train_defaults)
-    assert all(hasattr(symbiosis_args, key) for key in extra_config_keys)
-    resolved = symbiosis_module._resolve_symbiosis_model_kwargs(vars(symbiosis_args))
-    assert set(resolved) == set(extra_config_keys)
-    expected_defaults = symbiosis_module.SYMBIOSIS_MODEL_DEFAULTS.to_flat_dict()
-    expected_defaults.update(symbiosis_module.SYMBIOSIS_OPTIONAL_MODEL_CONFIG_DEFAULTS)
-    for key, default in expected_defaults.items():
-        assert isinstance(resolved[key], type(default))
+    defaults = symbiosis_module.TRAIN_DEFAULTS
+    model = defaults.model
+
+    assert isinstance(model, symbiosis_module.SymbiosisModelConfig)
+    assert model.v2_use_dense_tokens is True
+    assert model.v2_use_missing_tokens is True
+    assert model.v3_enabled is True
+    assert model.v3_memory_selection_mode == "quality_stratified"
+    assert model.ns.grouping_strategy == "explicit"
+    assert model.ns.user_tokens == 7
+    assert model.ns.item_tokens == 4
 
 
-def test_symbiosis_runtime_config_requires_package_specific_keys(tmp_path: Path) -> None:
+def test_symbiosis_train_config_sidecar_round_trips_package_specific_keys(tmp_path: Path) -> None:
     symbiosis_module = _load_package_module("experiments/symbiosis")
     checkpoint_dir = tmp_path / "checkpoint"
     checkpoint_dir.mkdir()
     (checkpoint_dir / "train_config.json").write_text(
-        dumps(build_pcvr_train_config_sidecar(symbiosis_module.TRAIN_DEFAULTS.to_flat_dict())),
+        dumps(build_pcvr_train_config_sidecar(symbiosis_module.TRAIN_DEFAULTS)),
         encoding="utf-8",
     )
 
-    with pytest.raises(KeyError, match="symbiosis_v2_use_dense_tokens"):
-        symbiosis_module.load_symbiosis_train_config(symbiosis_module.EXPERIMENT, checkpoint_dir)
+    loaded = symbiosis_module.EXPERIMENT._load_train_config(checkpoint_dir)
+
+    assert isinstance(loaded, symbiosis_module.SymbiosisTrainConfig)
+    assert loaded.model.v2_use_dense_tokens is True
+    assert loaded.model.v3_memory_selection_mode == "quality_stratified"
+    assert loaded.model.ns.user_tokens == 7
 
 
 def test_symbiosis_v2_tokenizer_outputs_unified_metadata() -> None:
@@ -251,13 +256,27 @@ def test_symbiosis_v2_sparse_missing_changes_unified_tokens() -> None:
     model_module = load_model_module(experiment_case)
     model = _make_model(experiment_case, model_module)
     model_input = _sample_model_input(model_module)
-    no_missing_input = model_input._replace(
-        user_int_missing_mask=torch.zeros_like(model_input.user_int_feats, dtype=torch.bool),
-        item_int_missing_mask=torch.zeros_like(model_input.item_int_feats, dtype=torch.bool),
+    no_missing_input = replace(
+        model_input,
+        user=replace(
+            model_input.user,
+            int_missing_mask=torch.zeros_like(model_input.user.int_values, dtype=torch.bool),
+        ),
+        item=replace(
+            model_input.item,
+            int_missing_mask=torch.zeros_like(model_input.item.int_values, dtype=torch.bool),
+        ),
     )
-    missing_input = model_input._replace(
-        user_int_missing_mask=torch.ones_like(model_input.user_int_feats, dtype=torch.bool),
-        item_int_missing_mask=torch.ones_like(model_input.item_int_feats, dtype=torch.bool),
+    missing_input = replace(
+        model_input,
+        user=replace(
+            model_input.user,
+            int_missing_mask=torch.ones_like(model_input.user.int_values, dtype=torch.bool),
+        ),
+        item=replace(
+            model_input.item,
+            int_missing_mask=torch.ones_like(model_input.item.int_values, dtype=torch.bool),
+        ),
     )
 
     with torch.no_grad():
@@ -293,7 +312,7 @@ def test_symbiosis_v2_high_risk_dropout_masks_risk_tokens_during_training() -> N
     model = _make_model(
         experiment_case,
         model_module,
-        overrides={"symbiosis_v2_high_risk_token_dropout_rate": 1.0},
+        overrides={"v2_high_risk_token_dropout_rate": 1.0},
     )
     model_input = _sample_model_input(model_module)
 
@@ -317,22 +336,25 @@ def test_symbiosis_v2_tokenizer_uses_fixed_event_budget(
         experiment_case,
         model_module,
         overrides={
-            "symbiosis_v2_recent_event_tokens": 4,
-            "symbiosis_v2_memory_event_tokens": 2,
+            "v3_enabled": False,
+            "v2_recent_event_tokens": 4,
+            "v2_memory_event_tokens": 2,
         },
     )
-    model_input = _sample_model_input(model_module)._replace(
-        seq_data={
-            "seq_a": torch.ones(2, 2, 64, dtype=torch.long),
-            "seq_b": torch.ones(2, 1, 48, dtype=torch.long),
-        },
-        seq_lens={
-            "seq_a": torch.tensor([64, 32], dtype=torch.long),
-            "seq_b": torch.tensor([48, 24], dtype=torch.long),
-        },
-        seq_time_buckets={
-            "seq_a": torch.zeros(2, 64, dtype=torch.long),
-            "seq_b": torch.zeros(2, 48, dtype=torch.long),
+    model_input = _sample_model_input(model_module)
+    model_input = replace(
+        model_input,
+        sequences={
+            "seq_a": PCVRSequenceInput(
+                values=torch.ones(2, 2, 64, dtype=torch.long),
+                lengths=torch.tensor([64, 32], dtype=torch.long),
+                timestamps=torch.zeros(2, 64, dtype=torch.long),
+            ),
+            "seq_b": PCVRSequenceInput(
+                values=torch.ones(2, 1, 48, dtype=torch.long),
+                lengths=torch.tensor([48, 24], dtype=torch.long),
+                timestamps=torch.zeros(2, 48, dtype=torch.long),
+            ),
         },
     )
     observed_lengths: list[int] = []
@@ -340,9 +362,9 @@ def test_symbiosis_v2_tokenizer_uses_fixed_event_budget(
     for tokenizer in model.tokenizer.sequence_tokenizers.values():
         original_forward = tokenizer.forward
 
-        def recording_forward(sequence, time_buckets=None, *, _original_forward=original_forward):
+        def recording_forward(sequence, timestamps=None, request_timestamp=None, *, _original_forward=original_forward):
             observed_lengths.append(int(sequence.shape[2]))
-            return _original_forward(sequence, time_buckets)
+            return _original_forward(sequence, timestamps, request_timestamp)
 
         monkeypatch.setattr(tokenizer, "forward", recording_forward)
 
@@ -360,23 +382,25 @@ def test_symbiosis_v3_tokenizer_uses_source_aware_event_budgets(
         experiment_case,
         model_module,
         overrides={
-            "symbiosis_v3_enabled": True,
-            "symbiosis_v3_recent_event_tokens_by_domain": "seq_a:3,seq_b:5",
-            "symbiosis_v3_memory_event_tokens_by_domain": "seq_a:2,seq_b:4",
+            "v3_enabled": True,
+            "v3_recent_event_tokens_by_domain": "seq_a:3,seq_b:5",
+            "v3_memory_event_tokens_by_domain": "seq_a:2,seq_b:4",
         },
     )
-    model_input = _sample_model_input(model_module)._replace(
-        seq_data={
-            "seq_a": torch.ones(2, 2, 64, dtype=torch.long),
-            "seq_b": torch.ones(2, 1, 48, dtype=torch.long),
-        },
-        seq_lens={
-            "seq_a": torch.tensor([64, 32], dtype=torch.long),
-            "seq_b": torch.tensor([48, 24], dtype=torch.long),
-        },
-        seq_time_buckets={
-            "seq_a": torch.ones(2, 64, dtype=torch.long),
-            "seq_b": torch.ones(2, 48, dtype=torch.long),
+    model_input = _sample_model_input(model_module)
+    model_input = replace(
+        model_input,
+        sequences={
+            "seq_a": PCVRSequenceInput(
+                values=torch.ones(2, 2, 64, dtype=torch.long),
+                lengths=torch.tensor([64, 32], dtype=torch.long),
+                timestamps=torch.ones(2, 64, dtype=torch.long),
+            ),
+            "seq_b": PCVRSequenceInput(
+                values=torch.ones(2, 1, 48, dtype=torch.long),
+                lengths=torch.tensor([48, 24], dtype=torch.long),
+                timestamps=torch.ones(2, 48, dtype=torch.long),
+            ),
         },
     )
     observed_lengths: list[int] = []
@@ -384,9 +408,9 @@ def test_symbiosis_v3_tokenizer_uses_source_aware_event_budgets(
     for tokenizer in model.tokenizer.sequence_tokenizers.values():
         original_forward = tokenizer.forward
 
-        def recording_forward(sequence, time_buckets=None, *, _original_forward=original_forward):
+        def recording_forward(sequence, timestamps=None, request_timestamp=None, *, _original_forward=original_forward):
             observed_lengths.append(int(sequence.shape[2]))
-            return _original_forward(sequence, time_buckets)
+            return _original_forward(sequence, timestamps, request_timestamp)
 
         monkeypatch.setattr(tokenizer, "forward", recording_forward)
 
@@ -421,7 +445,10 @@ def test_symbiosis_attention_aligns_qk_dtype_for_amp(monkeypatch: pytest.MonkeyP
         captured_dtypes = (q.dtype, k.dtype, v.dtype)
         return torch.zeros(q.shape[0], q.shape[1], q.shape[2], dtype=v.dtype)
 
-    backbone_module = importlib.import_module("experiments.symbiosis.backbone")
+    backbone_module = load_experiment_submodule(
+        get_experiment_case("experiments/symbiosis").package_dir,
+        "backbone",
+    )
     monkeypatch.setattr(backbone_module, "scaled_dot_product_attention", fake_attention)
     attention = model_module.UnifiedSelfAttention(d_model=16, num_heads=2, dropout=0.0)
     tokens = torch.randn(2, 5, 16)
@@ -516,33 +543,43 @@ def test_symbiosis_keeps_sequence_width_stable_for_compile() -> None:
         experiment_case,
         model_module,
         overrides={
-            "symbiosis_v2_recent_event_tokens": 4,
-            "symbiosis_v2_memory_event_tokens": 2,
+            "v3_enabled": False,
+            "v2_recent_event_tokens": 4,
+            "v2_memory_event_tokens": 2,
         },
     )
-    model_input = model_module.ModelInput(
-        user_int_feats=torch.tensor([[1, 2, 3], [4, 0, 1]], dtype=torch.long),
-        item_int_feats=torch.tensor([[1], [2]], dtype=torch.long),
-        user_dense_feats=torch.randn(2, 2),
-        item_dense_feats=torch.randn(2, 1),
-        seq_data={
-            "seq_a": torch.tensor(
-                [
-                    [[1, 2, 0, 0, 0, 0], [2, 3, 0, 0, 0, 0]],
-                    [[4, 1, 2, 0, 0, 0], [1, 2, 3, 0, 0, 0]],
-                ],
-                dtype=torch.long,
+    model_input = PCVRModelInput(
+        user=PCVREntityInput(
+            int_values=torch.tensor([[1, 2, 3], [4, 0, 1]], dtype=torch.long),
+            int_missing_mask=torch.zeros(2, 3, dtype=torch.bool),
+            dense_values=torch.randn(2, 2),
+            dense_missing_mask=torch.zeros(2, 2, dtype=torch.bool),
+        ),
+        item=PCVREntityInput(
+            int_values=torch.tensor([[1], [2]], dtype=torch.long),
+            int_missing_mask=torch.zeros(2, 1, dtype=torch.bool),
+            dense_values=torch.randn(2, 1),
+            dense_missing_mask=torch.zeros(2, 1, dtype=torch.bool),
+        ),
+        sequences={
+            "seq_a": PCVRSequenceInput(
+                values=torch.tensor(
+                    [
+                        [[1, 2, 0, 0, 0, 0], [2, 3, 0, 0, 0, 0]],
+                        [[4, 1, 2, 0, 0, 0], [1, 2, 3, 0, 0, 0]],
+                    ],
+                    dtype=torch.long,
+                ),
+                lengths=torch.tensor([2, 3], dtype=torch.long),
+                timestamps=torch.zeros(2, 6, dtype=torch.long),
             ),
-            "seq_b": torch.tensor([[[1, 0, 0, 0, 0]], [[2, 3, 0, 0, 0]]], dtype=torch.long),
+            "seq_b": PCVRSequenceInput(
+                values=torch.tensor([[[1, 0, 0, 0, 0]], [[2, 3, 0, 0, 0]]], dtype=torch.long),
+                lengths=torch.tensor([1, 2], dtype=torch.long),
+                timestamps=torch.zeros(2, 5, dtype=torch.long),
+            ),
         },
-        seq_lens={
-            "seq_a": torch.tensor([2, 3], dtype=torch.long),
-            "seq_b": torch.tensor([1, 2], dtype=torch.long),
-        },
-        seq_time_buckets={
-            "seq_a": torch.zeros(2, 6, dtype=torch.long),
-            "seq_b": torch.zeros(2, 5, dtype=torch.long),
-        },
+        request_timestamp=torch.tensor([1000, 1000], dtype=torch.long),
     )
 
     batch = model.tokenizer(model_input)
@@ -580,14 +617,19 @@ def test_symbiosis_compile_handles_multiple_sequence_lengths() -> None:
     model_module = load_model_module(experiment_case)
     model = _make_model(experiment_case, model_module)
     input_a = _sample_model_input(model_module)
-    input_b = input_a._replace(
-        seq_lens={
-            "seq_a": torch.tensor([1, 2], dtype=torch.long),
-            "seq_b": torch.tensor([3, 1], dtype=torch.long),
-        },
-        seq_time_buckets={
-            "seq_a": torch.tensor([[0, 1, 2, 3], [1, 2, 3, 4]], dtype=torch.long),
-            "seq_b": torch.tensor([[0, 1, 2], [2, 1, 0]], dtype=torch.long),
+    input_b = replace(
+        input_a,
+        sequences={
+            "seq_a": PCVRSequenceInput(
+                values=input_a.sequences["seq_a"].values,
+                lengths=torch.tensor([1, 2], dtype=torch.long),
+                timestamps=torch.tensor([[0, 1, 2, 3], [1, 2, 3, 4]], dtype=torch.long),
+            ),
+            "seq_b": PCVRSequenceInput(
+                values=input_a.sequences["seq_b"].values,
+                lengths=torch.tensor([3, 1], dtype=torch.long),
+                timestamps=torch.tensor([[0, 1, 2], [2, 1, 0]], dtype=torch.long),
+            ),
         },
     )
 
@@ -637,12 +679,12 @@ def test_symbiosis_v2_flags_disable_optional_modules() -> None:
         experiment_case,
         model_module,
         overrides={
-            "symbiosis_v2_use_dense_tokens": False,
-            "symbiosis_v2_use_missing_tokens": False,
-            "symbiosis_v2_use_sequence_stats_tokens": False,
-            "symbiosis_v2_use_metadata_attention_bias": False,
-            "symbiosis_v2_use_candidate_readout": False,
-            "symbiosis_v2_compile_backbone": False,
+            "v2_use_dense_tokens": False,
+            "v2_use_missing_tokens": False,
+            "v2_use_sequence_stats_tokens": False,
+            "v2_use_metadata_attention_bias": False,
+            "v2_use_candidate_readout": False,
+            "v2_compile_backbone": False,
         },
     )
     model_input = _sample_model_input(model_module)

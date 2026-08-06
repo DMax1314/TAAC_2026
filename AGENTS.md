@@ -1,287 +1,175 @@
 # AGENTS.md
 
-This repository is the TAAC 2026 experiment workspace. It combines reusable PCVR
-training, evaluation, inference, online bundle packaging, directory-based
-experiment packages, tests, and documentation.
+This file defines repository-wide operating constraints for coding agents in
+the TAAC 2026 experiment workspace. It is not a project manual. Put workflows,
+commands, design explanations, and experiment-specific knowledge in `docs/`.
 
-Use this file as the operating guide for AI coding agents working in this repo.
+Keep this file lean. Add a rule only when every agent needs it, the rule cannot
+be enforced by code or tooling, and an existing rule cannot express it.
 
-## When To Add Rules
+## Sources Of Truth
 
-Keep this file lean. A new rule belongs here only if it passes all three checks:
+Read the relevant source and tests before changing code. Do not infer current
+behavior from filenames, comments, or stale documentation.
 
-- Every agent working in this repo needs it.
-- It is not already covered in `docs/`.
-- It cannot be expressed as a command or a reference to existing docs.
+Use these documents as routing points instead of duplicating their content
+here:
 
-Prefer folding into an existing rule over adding a new one.
+- `README.md`: project overview, setup, and entrypoints.
+- `docs/architecture.md`: layering, ownership, runtime flow, and contracts.
+- `docs/guide/testing.md`: test selection, CI, GPU validation, and smoke tests.
+- `docs/guide/online-training-bundle.md`: bundle format and platform behavior.
+- `docs/experiments/index.md` and the relevant experiment page: experiment
+  intent, defaults, and validation.
 
-## Project Shape
+When documentation and implementation disagree, establish the intended
+behavior from tests and current requirements, then update all three together.
 
-- `src/taac2026/` contains shared framework code.
-- `experiments/` contains loadable experiment packages.
-- `docs/` contains Zensical documentation source.
-- `tests/` contains unit, contract, integration, benchmark, and GPU tests.
-- `run.sh` is the local and bundle-compatible command entrypoint.
-- `pyproject.toml` and `uv.lock` define the Python environment.
+## Engineering Principles
 
-Keep experiment packages thin. Shared training, evaluation, inference, data
-pipeline, checkpoint, optimizer, accelerator, and packaging behavior belongs
-under `src/taac2026/`, not copied into `experiments/`.
+- Do not preserve backward compatibility. Replace obsolete contracts and
+  remove their implementations, callers, flags, fallbacks, and tests in the
+  same change. Do not maintain old and new paths in parallel.
+- Choose the simplest implementation that fully meets the current
+  requirements. Avoid speculative abstractions, configuration, registries,
+  extension points, and indirection.
+- Grow the system in working layers. Start with the smallest end-to-end slice,
+  verify it, and add the next capability on top. Never trade a working product
+  for unfinished complexity.
+- Make architectural boundaries for the long term, while implementing only
+  what the current change needs. Do not accept code intended to be replaced
+  later.
+- Keep components modular, with one clear responsibility and explicit inputs
+  and outputs. Prefer composition over condition-heavy shared code.
+- Use established, well-maintained libraries when they reduce total complexity
+  or improve reliability. Do not reimplement common functionality without a
+  concrete reason.
+- Inspect existing dependencies, their documentation, and their types before
+  writing new infrastructure or adding a package. Do not assume an installed
+  library lacks a capability.
+- Keep changes coherent and scoped. A narrow request does not justify unrelated
+  cleanup; a contract change does require updating every affected in-repository
+  consumer.
 
-## Read First
+## Work Method
 
-Before changing non-trivial code, read the relevant docs:
+1. Inspect the working tree, relevant implementation, tests, and documentation.
+2. State the current behavior, required behavior, ownership boundary, and the
+   smallest end-to-end change that satisfies the requirement.
+3. Implement one path. Remove the path it replaces instead of adding adapters,
+   compatibility shims, or fallback behavior.
+4. Validate the narrowest affected contract first, then broaden validation in
+   proportion to the change's blast radius.
+5. Review the final diff for duplication, dead code, accidental generated
+   files, silent fallback, and documentation drift.
+6. Report what changed, what was verified, and any remaining risk.
 
-- `README.md` for project overview and common commands.
-- `docs/architecture.md` for layering and module responsibilities.
-- `docs/guide/testing.md` for validation commands.
-- `docs/guide/online-training-bundle.md` when touching packaging or platform
-  bundle behavior.
-- `docs/experiments/index.md` and the specific experiment doc when changing an
-  experiment package.
+Do not leave architectural TODOs, placeholder branches, disabled replacement
+code, or two competing sources of truth. If the complete coherent change is too
+large for the current task, reduce the feature scope rather than landing a
+temporary architecture.
 
-## Environment
+## Architecture Boundaries
 
-This is a Linux-only project managed by `uv`.
-
-Common setup:
-
-```bash
-uv sync --locked --extra dev --extra cuda132
-```
-
-CPU-only unit work may only need:
-
-```bash
-uv sync --locked --extra dev
-```
-
-Do not hand-edit `uv.lock` unless dependency changes require it. Use `uv`
-commands to update lock state.
-
-## Common Commands
-
-"Tests To Choose By Change" below is the authoritative test mapping; use it to
-decide which tests a change needs. The commands here are not covered there:
-
-Run the full CPU-safe PR gate:
-
-```bash
-uv run pytest -m "(unit or contract or integration or benchmark_cpu) and not gpu and not benchmark_gpu" -q
-```
-
-Run lint:
-
-```bash
-uv run ruff check .
-```
-
-Run a small CPU smoke train:
-
-```bash
-bash run.sh train \
-  --experiment experiments/baseline \
-  --run-dir outputs/baseline_smoke \
-  --device cpu \
-  --num_workers 0 \
-  --batch_size 8 \
-  --max_steps 1
-```
-
-## Layering Rules
-
-Respect the dependency direction.
-
-- `domain/`: pure contracts, config, schema, requests, metrics, sidecar, and
-  model input contracts.
-- `application/`: train/eval/infer/packaging/bootstrap workflows and CLI
-  orchestration.
-- `infrastructure/`: data, IO, runtime, modeling, optimization, accelerators,
-  and platform utilities.
-- `experiments/`: experiment name, defaults, model class, experiment-private
-  layers, and experiment-private hooks.
-
-Do not put CLI parsing, environment probing, or filesystem behavior in
-`domain/`.
-
-Do not put experiment selection policy into `infrastructure/`.
-
-Do not duplicate shared runtime logic inside experiment packages.
-
-## Experiment Package Rules
-
-A normal experiment package should usually look like:
+Respect this dependency direction:
 
 ```text
-experiments/my_experiment/
-├── __init__.py
-└── model.py
+experiments -> taac2026.api
+taac2026.api -> domain/application/infrastructure
+application -> domain + infrastructure
+infrastructure -> domain
+domain -> standard library and lightweight type dependencies
 ```
 
-Optional private model code can go in `layers.py`.
+- `domain/` owns pure contracts, validated configuration, schema, requests,
+  metrics, and sidecar models. It must not perform CLI parsing, filesystem IO,
+  environment probing, or framework-specific execution.
+- `application/` owns train, evaluation, inference, packaging, and bootstrap
+  use-case orchestration. It coordinates domain contracts and infrastructure.
+- `infrastructure/` owns data access, IO, runtime, modeling primitives,
+  optimization, accelerators, bundles, and platform adapters. It must not
+  select experiments or encode experiment policy.
+- `experiments/` owns experiment identity, defaults, model composition, and
+  genuinely private model code. It must not copy shared data, training,
+  checkpoint, evaluation, inference, or packaging workflows.
 
-`__init__.py` should normally expose `EXPERIMENT` using
-`create_pcvr_experiment()`.
+Experiment packages should depend on the stable `taac2026.api` facade. Add to
+that facade only when a capability is intentionally public to experiments.
 
-`model.py` must satisfy the PCVR runtime contract:
+Keep generic data and schema code model-agnostic. It may expose canonical
+values, masks, timestamps, and structural metadata; model-specific feature
+selection, grouping, tokenization, and interpretation belong with model
+composition. Do not add experiment-specific flags or feature semantics to a
+shared data contract.
 
-- `forward(inputs)` returns logits shaped `(B,)`.
-- `predict(inputs)` returns `(logits, embeddings)`.
-- Model construction must work from checkpoint sidecar config and schema.
-- Sparse and dense parameters should be groupable by the shared optimizer logic.
+Move behavior into shared framework code only when it has a stable,
+experiment-independent contract and an actual shared consumer. Similar-looking
+code is not sufficient evidence for a shared abstraction.
 
-Prefer shared imports from `taac2026.api` and
-`taac2026.infrastructure.modeling` over local copies.
+## Contracts And Configuration
 
-## Checkpoint And Sidecar Contract
+- Treat checkpoint sidecars, schema serialization, manifests, model inputs,
+  and package metadata as explicit boundaries. Change producers and consumers
+  atomically across training, evaluation, inference, and bundles.
+- Use structured, typed configuration. Reject unknown fields at serialized or
+  plugin boundaries instead of silently ignoring them.
+- Use Pydantic models derived from `TAACBoundaryModel` for JSON, manifest,
+  sidecar, platform, and plugin payloads. Use dataclasses or dedicated tensor
+  carriers for internal immutable configuration and hot-path data.
+- Keep one authoritative representation of each setting. Do not mirror the
+  same option across flat dictionaries, constructor introspection, custom hooks,
+  and documentation.
+- Fail early on invalid schema, shape, dtype, configuration, or unsupported
+  capability. Do not silently drop arguments or synthesize fallback behavior.
+- Prefer `pathlib.Path`, structured parsers, and repository IO helpers over raw
+  path manipulation or ad hoc string parsing.
 
-A valid trained checkpoint directory must include:
+## Dependencies And Environment
 
-```text
-model.safetensors
-schema.json
-train_config.json
-```
+This is a Linux project managed by `uv`.
 
-Do not assume `model.safetensors` alone is enough. Evaluation and inference
-reconstruct schema, input contracts, NS config, model defaults, runtime
-execution settings, and hooks from sidecar files.
+- Use the dependencies already declared in `pyproject.toml` before adding new
+  ones.
+- Add a dependency only when it makes the complete implementation simpler or
+  more reliable, not merely shorter at one call site.
+- Use `uv` to change dependency and lock state. Do not hand-edit `uv.lock`.
+- Keep local development assumptions separate from platform bundle behavior.
+  Platform execution must not depend on undeclared local tools or paths.
 
-Be careful when changing:
+## Validation
 
-- `PCVRModelConfig`
-- `PCVRTrainConfig`
-- `PCVRNSConfig`
-- `ModelInput`
-- schema serialization
-- checkpoint directory naming
-- sidecar read/write behavior
+Follow `docs/guide/testing.md` for authoritative commands and test selection.
 
-## Data And Local Runs
-
-Local PCVR smoke runs use the Hugging Face sample dataset through the repository
-data path conventions. Do not add or require `--dataset-path` for normal local
-PCVR smoke tests unless the relevant docs and code explicitly support it.
-
-Online bundles receive real data paths from the platform. Keep local assumptions
-separate from platform bundle behavior.
-
-## Packaging Rules
-
-When changing bundle behavior, verify both tests and actual zip contents.
-
-Training bundle command:
-
-```bash
-uv run taac-package-train \
-  --experiment experiments/baseline \
-  --output-dir outputs/bundles/baseline_training \
-  --json
-```
-
-Inference bundle command:
-
-```bash
-uv run taac-package-infer \
-  --experiment experiments/baseline \
-  --output-dir outputs/bundles/baseline_inference \
-  --json
-```
-
-Inspect generated zip files when needed:
-
-```bash
-python -m zipfile -l outputs/bundles/baseline_training/code_package.zip | sed -n '1,120p'
-```
-
-A bundle should include the selected experiment package, required project source
-under `src/taac2026`, required package metadata, and manifest files. It should
-not include unrelated outputs, caches, tests, or unrelated experiment packages
-unless intentionally required.
-
-## Tests To Choose By Change
-
-- Experiment `__init__.py`: run experiment contract tests.
-- Experiment `model.py`: run experiment package tests and a CPU smoke train when
+- Test observable behavior and boundary contracts, not private implementation
+  details.
+- Run focused tests first. Run the full CPU-safe gate when shared behavior or a
+  cross-layer contract changes.
+- A model or training-contract change requires an end-to-end CPU smoke run when
   feasible.
-- Maintenance experiments: run maintenance experiment contract tests.
-- Training CLI/workflow: run `tests/unit/application/training`.
-- Evaluation/inference: run `tests/unit/application/evaluation`.
-- Packaging/bootstrap: run packaging and bootstrap tests.
-- Data pipeline: run `tests/unit/infrastructure/data`.
-- Checkpoint/sidecar: run checkpoint tests and runtime contract matrix.
-- Accelerators: run accelerator unit tests, then GPU tests; see "Performance
-  And GPU Notes" below.
-- Docs: run `uv run zensical build --strict`.
+- CPU results do not establish CUDA, TileLang, Triton, or accelerator behavior.
+  Verify accelerator changes on available GPU hardware and report the exact
+  environment and command.
+- Packaging changes require tests plus inspection of actual generated archive
+  contents.
+- Documentation changes require a strict site build. Edit `docs/` and
+  `zensical.toml`, never generated `site/` output.
+- Do not hide runtime warnings through global filters, environment variables,
+  pytest configuration, or blanket command-line ignores. Fix their cause or
+  leave them visible unless the task explicitly requires a narrow exception.
+- If a required validation cannot run, state why and identify the unverified
+  behavior precisely.
 
-## Documentation Rules
+## Repository Safety
 
-Docs source lives in `docs/`. Site navigation lives in `zensical.toml`.
+Assume the working tree contains user work.
 
-When adding or moving docs:
-
-- Update `zensical.toml` if the page should appear in navigation.
-- Keep relative links valid.
-- Run `uv run zensical build --strict`.
-- Do not edit generated `site/` output as source.
-
-## Coding Style
-
-- Follow existing code style and local patterns.
-- Prefer `pathlib.Path` over raw string path manipulation.
-- Prefer structured parsers and typed config objects over ad hoc string parsing.
-- Use Pydantic for payloads that cross JSON, manifest, sidecar, platform, or
-  plugin boundaries. Inherit from `TAACBoundaryModel` so unknown fields are
-  rejected consistently. Keep internal hot-path contexts, tensor carriers, and
-  simple immutable defaults as dataclasses unless a boundary validator is
-  actually needed.
-- Keep comments short and useful.
-- Do not proactively suppress runtime warnings with `warnings.filterwarnings`,
-  `warnings.simplefilter`, `PYTHONWARNINGS`, pytest warning filters, or blanket
-  command-line warning ignores. Warnings should stay visible unless a user
-  explicitly asks for a narrowly justified exception.
-- Avoid broad refactors while making narrow fixes.
-- Do not commit generated caches, `outputs/`, `.venv/`, `site/`, or
-  `__pycache__/`.
-
-## Git Safety
-
-The working tree may contain user changes. Do not revert changes you did not
-make.
-
-Avoid destructive commands such as:
-
-```bash
-git reset --hard
-git checkout -- .
-```
-
-Only use destructive git operations when explicitly requested.
-
-## Performance And GPU Notes
-
-CPU tests do not prove CUDA, TileLang, or accelerator behavior. Verify the
-environment before asserting GPU facts: `tests/gpu` auto-skips without CUDA, so
-running it once doubles as a probe; `nvidia-smi` or `experiments/host_device_info`
-is a faster explicit check. Do not assume a devcontainer lacks GPU passthrough.
-
-When touching accelerator code, validate on a CUDA machine and record:
-
-- command
-- commit
-- GPU model
-- CUDA version
-- PyTorch version
-- benchmark output path
-
-Do not put heavy benchmarks into ordinary CI paths.
-
-## Good Agent Behavior
-
-Before editing, inspect the relevant files and tests. Make the smallest coherent
-change that fits the existing architecture. After editing, run the narrowest
-meaningful validation first, then broaden if the change touches shared contracts.
-
-When unable to run a relevant validation command, state why and identify the
-remaining risk.
+- Preserve changes you did not make. Work with overlapping edits and ignore
+  unrelated ones.
+- Do not run destructive Git commands or broad delete operations unless the
+  user explicitly requests them and the exact target has been verified.
+- Do not commit generated caches, `outputs/`, `.venv/`, `site/`, coverage data,
+  benchmark artifacts, or `__pycache__/`.
+- Do not hand-edit generated artifacts when their source or generator can be
+  changed instead.
+- Keep comments short and limited to decisions or constraints the code cannot
+  express clearly.

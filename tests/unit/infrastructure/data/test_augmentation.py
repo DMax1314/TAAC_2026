@@ -17,6 +17,12 @@ from taac2026.domain.config import (
     PCVRSequenceCropConfig,
 )
 from taac2026.infrastructure.data import cache as cache_module
+from taac2026.infrastructure.data.batches import (
+    PCVRBatch,
+    PCVREntityInput,
+    PCVRModelInput,
+    PCVRSequenceInput,
+)
 from taac2026.infrastructure.data.dataset import PCVRParquetDataset
 from taac2026.infrastructure.data.pipeline import (
     PCVRDataPipeline,
@@ -32,45 +38,104 @@ from taac2026.infrastructure.data.pipeline import (
 )
 
 
-def _make_batch() -> dict[str, object]:
-    return {
-        "user_int_feats": torch.tensor([[1, 2], [3, 4]], dtype=torch.long),
-        "user_dense_feats": torch.tensor([[0.1], [0.2]], dtype=torch.float32),
-        "item_int_feats": torch.tensor([[5], [6]], dtype=torch.long),
-        "item_dense_feats": torch.zeros(2, 0, dtype=torch.float32),
-        "label": torch.tensor([1, 0], dtype=torch.long),
-        "timestamp": torch.tensor([100, 200], dtype=torch.long),
-        "user_id": ["u0", "u1"],
-        "_seq_domains": ["seq_a"],
-        "seq_a": torch.tensor(
+def _make_batch() -> PCVRBatch:
+    user = PCVREntityInput(
+        int_values=torch.tensor([[1, 2], [3, 4]], dtype=torch.long),
+        int_missing_mask=torch.zeros(2, 2, dtype=torch.bool),
+        dense_values=torch.tensor([[0.1], [0.2]], dtype=torch.float32),
+        dense_missing_mask=torch.zeros(2, 1, dtype=torch.bool),
+    )
+    item = PCVREntityInput(
+        int_values=torch.tensor([[5], [6]], dtype=torch.long),
+        int_missing_mask=torch.zeros(2, 1, dtype=torch.bool),
+        dense_values=torch.zeros(2, 0, dtype=torch.float32),
+        dense_missing_mask=torch.zeros(2, 0, dtype=torch.bool),
+    )
+    seq_a = PCVRSequenceInput(
+        values=torch.tensor(
             [
                 [[1, 2, 3, 4]],
                 [[7, 8, 9, 0]],
             ],
             dtype=torch.long,
         ),
-        "seq_a_len": torch.tensor([4, 3], dtype=torch.long),
-        "seq_a_time_bucket": torch.tensor(
+        lengths=torch.tensor([4, 3], dtype=torch.long),
+        timestamps=torch.tensor(
             [
-                [4, 3, 2, 1],
-                [3, 2, 1, 0],
+                [40, 30, 20, 10],
+                [30, 20, 10, 0],
             ],
             dtype=torch.long,
         ),
+    )
+    inputs = PCVRModelInput(
+        user=user,
+        item=item,
+        sequences={"seq_a": seq_a},
+        request_timestamp=torch.tensor([100, 200], dtype=torch.long),
+    )
+    return PCVRBatch(
+        inputs=inputs,
+        label=torch.tensor([1, 0], dtype=torch.long),
+        user_id=["u0", "u1"],
+    )
+
+
+def _shared_label_specs(batch_size: int) -> dict[str, PCVRSharedTensorSpec]:
+    """Shared cache specs with empty entities and sequences, plus label and timestamp."""
+    return {
+        "user_int_values": PCVRSharedTensorSpec(shape=(batch_size, 0), dtype=torch.long),
+        "user_int_missing_mask": PCVRSharedTensorSpec(shape=(batch_size, 0), dtype=torch.bool),
+        "user_dense_values": PCVRSharedTensorSpec(shape=(batch_size, 0), dtype=torch.float32),
+        "user_dense_missing_mask": PCVRSharedTensorSpec(shape=(batch_size, 0), dtype=torch.bool),
+        "item_int_values": PCVRSharedTensorSpec(shape=(batch_size, 0), dtype=torch.long),
+        "item_int_missing_mask": PCVRSharedTensorSpec(shape=(batch_size, 0), dtype=torch.bool),
+        "item_dense_values": PCVRSharedTensorSpec(shape=(batch_size, 0), dtype=torch.float32),
+        "item_dense_missing_mask": PCVRSharedTensorSpec(shape=(batch_size, 0), dtype=torch.bool),
+        "label": PCVRSharedTensorSpec(shape=(batch_size,), dtype=torch.long),
+        "request_timestamp": PCVRSharedTensorSpec(shape=(batch_size,), dtype=torch.long),
     }
 
 
-def _assert_tensor_dict_equal(
-    left: dict[str, object], right: dict[str, object]
-) -> None:
-    assert left.keys() == right.keys()
-    for key, left_value in left.items():
-        right_value = right[key]
-        if isinstance(left_value, torch.Tensor):
-            assert isinstance(right_value, torch.Tensor)
-            assert torch.equal(left_value, right_value), key
-        else:
-            assert left_value == right_value
+def _label_only_batch(labels: list[int]) -> PCVRBatch:
+    batch_size = len(labels)
+    empty = PCVREntityInput(
+        int_values=torch.zeros(batch_size, 0, dtype=torch.long),
+        int_missing_mask=torch.zeros(batch_size, 0, dtype=torch.bool),
+        dense_values=torch.zeros(batch_size, 0, dtype=torch.float32),
+        dense_missing_mask=torch.zeros(batch_size, 0, dtype=torch.bool),
+    )
+    inputs = PCVRModelInput(
+        user=empty,
+        item=empty,
+        sequences={},
+        request_timestamp=torch.zeros(batch_size, dtype=torch.long),
+    )
+    return PCVRBatch(
+        inputs=inputs,
+        label=torch.tensor(labels, dtype=torch.long),
+        user_id=[],
+    )
+
+
+def _assert_batch_equal(left: PCVRBatch, right: PCVRBatch) -> None:
+    assert left.label.shape == right.label.shape
+    assert left.user_id == right.user_id
+    assert torch.equal(left.label, right.label)
+    assert torch.equal(left.inputs.request_timestamp, right.inputs.request_timestamp)
+    for entity_name in ("user", "item"):
+        left_entity = getattr(left.inputs, entity_name)
+        right_entity = getattr(right.inputs, entity_name)
+        assert torch.equal(left_entity.int_values, right_entity.int_values)
+        assert torch.equal(left_entity.int_missing_mask, right_entity.int_missing_mask)
+        assert torch.equal(left_entity.dense_values, right_entity.dense_values)
+        assert torch.equal(left_entity.dense_missing_mask, right_entity.dense_missing_mask)
+    assert left.inputs.sequences.keys() == right.inputs.sequences.keys()
+    for domain, left_sequence in left.inputs.sequences.items():
+        right_sequence = right.inputs.sequences[domain]
+        assert torch.equal(left_sequence.values, right_sequence.values)
+        assert torch.equal(left_sequence.lengths, right_sequence.lengths)
+        assert torch.equal(left_sequence.timestamps, right_sequence.timestamps)
 
 
 def test_empty_pipeline_config_builds_no_transforms() -> None:
@@ -86,7 +151,7 @@ def test_disabled_transform_preserves_batch_content() -> None:
 
     augmented = transform(batch, generator=torch.Generator().manual_seed(1))
 
-    _assert_tensor_dict_equal(augmented, batch)
+    _assert_batch_equal(augmented, batch)
     assert augmented is not batch
 
 
@@ -102,84 +167,80 @@ def test_sequence_crop_expands_rows_and_keeps_metadata_aligned() -> None:
 
     augmented = transform(batch, generator=torch.Generator().manual_seed(7))
 
-    assert augmented["label"].tolist() == [1, 1, 0, 0]
-    assert augmented["timestamp"].tolist() == [100, 100, 200, 200]
-    assert augmented["user_id"] == ["u0", "u0", "u1", "u1"]
-    assert augmented["user_int_feats"].shape == (4, 2)
-    assert augmented["seq_a"].shape == (4, 1, 4)
-    assert augmented["seq_a_len"].min().item() >= 2
-    assert augmented["seq_a_len"].max().item() <= 4
-    for row_index, length in enumerate(augmented["seq_a_len"].tolist()):
+    assert augmented.label.tolist() == [1, 1, 0, 0]
+    assert augmented.inputs.request_timestamp.tolist() == [100, 100, 200, 200]
+    assert augmented.user_id == ["u0", "u0", "u1", "u1"]
+    assert augmented.inputs.user.int_values.shape == (4, 2)
+    seq_a = augmented.inputs.sequences["seq_a"]
+    assert seq_a.values.shape == (4, 1, 4)
+    assert seq_a.lengths.min().item() >= 2
+    assert seq_a.lengths.max().item() <= 4
+    for row_index, length in enumerate(seq_a.lengths.tolist()):
         assert torch.equal(
-            augmented["seq_a"][row_index, :, length:],
+            seq_a.values[row_index, :, length:],
             torch.zeros(1, 4 - length, dtype=torch.long),
         )
         assert torch.equal(
-            augmented["seq_a_time_bucket"][row_index, length:],
+            seq_a.timestamps[row_index, length:],
             torch.zeros(4 - length, dtype=torch.long),
         )
 
 
-def test_domain_dropout_clears_sequence_tokens_lengths_and_time_buckets() -> None:
+def test_domain_dropout_clears_sequence_tokens_lengths_and_timestamps() -> None:
     batch = _make_batch()
     transform = PCVRDomainDropoutTransform(PCVRDomainDropoutConfig(probability=1.0))
 
     augmented = transform(batch, generator=torch.Generator().manual_seed(3))
 
-    assert torch.equal(augmented["seq_a"], torch.zeros_like(augmented["seq_a"]))
-    assert torch.equal(augmented["seq_a_len"], torch.zeros_like(augmented["seq_a_len"]))
-    assert torch.equal(
-        augmented["seq_a_time_bucket"], torch.zeros_like(augmented["seq_a_time_bucket"])
-    )
+    seq_a = augmented.inputs.sequences["seq_a"]
+    assert torch.equal(seq_a.values, torch.zeros_like(seq_a.values))
+    assert torch.equal(seq_a.lengths, torch.zeros_like(seq_a.lengths))
+    assert torch.equal(seq_a.timestamps, torch.zeros_like(seq_a.timestamps))
 
 
 def test_feature_masking_compacts_sequence_lengths() -> None:
     batch = _make_batch()
-    batch["user_int_missing_mask"] = torch.zeros_like(batch["user_int_feats"], dtype=torch.bool)
-    batch["item_int_missing_mask"] = torch.zeros_like(batch["item_int_feats"], dtype=torch.bool)
-    batch["seq_a_stats"] = torch.ones(2, 6, dtype=torch.float32)
     transform = PCVRFeatureMaskTransform(PCVRFeatureMaskConfig(probability=1.0))
 
     augmented = transform(batch, generator=torch.Generator().manual_seed(5))
 
     assert torch.equal(
-        augmented["user_int_feats"], torch.zeros_like(augmented["user_int_feats"])
+        augmented.inputs.user.int_values, torch.zeros_like(augmented.inputs.user.int_values)
     )
     assert torch.equal(
-        augmented["item_int_feats"], torch.zeros_like(augmented["item_int_feats"])
+        augmented.inputs.item.int_values, torch.zeros_like(augmented.inputs.item.int_values)
     )
-    assert torch.equal(augmented["seq_a"], torch.zeros_like(augmented["seq_a"]))
-    assert torch.equal(augmented["seq_a_len"], torch.zeros_like(augmented["seq_a_len"]))
+    seq_a = augmented.inputs.sequences["seq_a"]
+    assert torch.equal(seq_a.values, torch.zeros_like(seq_a.values))
+    assert torch.equal(seq_a.lengths, torch.zeros_like(seq_a.lengths))
+    assert torch.equal(seq_a.timestamps, torch.zeros_like(seq_a.timestamps))
     assert torch.equal(
-        augmented["seq_a_time_bucket"], torch.zeros_like(augmented["seq_a_time_bucket"])
+        augmented.inputs.user.int_missing_mask,
+        torch.ones_like(augmented.inputs.user.int_missing_mask),
     )
     assert torch.equal(
-        augmented["user_int_missing_mask"], torch.ones_like(augmented["user_int_missing_mask"])
+        augmented.inputs.item.int_missing_mask,
+        torch.ones_like(augmented.inputs.item.int_missing_mask),
     )
-    assert torch.equal(
-        augmented["item_int_missing_mask"], torch.ones_like(augmented["item_int_missing_mask"])
-    )
-    assert torch.equal(augmented["seq_a_stats"], torch.zeros_like(augmented["seq_a_stats"]))
 
 
 def test_nonseq_sparse_dropout_masks_full_rows_without_touching_sequences() -> None:
     batch = _make_batch()
-    batch["user_int_missing_mask"] = torch.zeros_like(batch["user_int_feats"], dtype=torch.bool)
-    batch["item_int_missing_mask"] = torch.zeros_like(batch["item_int_feats"], dtype=torch.bool)
-    original_sequence = batch["seq_a"].clone()
-    original_lengths = batch["seq_a_len"].clone()
-    original_dense = batch["user_dense_feats"].clone()
+    original_sequence = batch.inputs.sequences["seq_a"].values.clone()
+    original_lengths = batch.inputs.sequences["seq_a"].lengths.clone()
+    original_dense = batch.inputs.user.dense_values.clone()
     transform = PCVRNonSequentialSparseDropoutTransform(PCVRNonSequentialSparseDropoutConfig(probability=1.0))
 
     augmented = transform(batch, generator=torch.Generator().manual_seed(11))
 
-    assert torch.equal(augmented["user_int_feats"], torch.zeros_like(augmented["user_int_feats"]))
-    assert torch.equal(augmented["item_int_feats"], torch.zeros_like(augmented["item_int_feats"]))
-    assert torch.equal(augmented["user_int_missing_mask"], torch.ones_like(augmented["user_int_missing_mask"]))
-    assert torch.equal(augmented["item_int_missing_mask"], torch.ones_like(augmented["item_int_missing_mask"]))
-    assert torch.equal(augmented["seq_a"], original_sequence)
-    assert torch.equal(augmented["seq_a_len"], original_lengths)
-    assert torch.equal(augmented["user_dense_feats"], original_dense)
+    assert torch.equal(augmented.inputs.user.int_values, torch.zeros_like(augmented.inputs.user.int_values))
+    assert torch.equal(augmented.inputs.item.int_values, torch.zeros_like(augmented.inputs.item.int_values))
+    assert torch.equal(augmented.inputs.user.int_missing_mask, torch.ones_like(augmented.inputs.user.int_missing_mask))
+    assert torch.equal(augmented.inputs.item.int_missing_mask, torch.ones_like(augmented.inputs.item.int_missing_mask))
+    seq_a = augmented.inputs.sequences["seq_a"]
+    assert torch.equal(seq_a.values, original_sequence)
+    assert torch.equal(seq_a.lengths, original_lengths)
+    assert torch.equal(augmented.inputs.user.dense_values, original_dense)
 
 
 def test_augmentation_is_reproducible_with_fixed_generator_seed() -> None:
@@ -204,7 +265,7 @@ def test_augmentation_is_reproducible_with_fixed_generator_seed() -> None:
         batch, generator=torch.Generator().manual_seed(99)
     )
 
-    _assert_tensor_dict_equal(first, second)
+    _assert_batch_equal(first, second)
 
 
 def test_lru_batch_cache_returns_isolated_clones() -> None:
@@ -215,11 +276,11 @@ def test_lru_batch_cache_returns_isolated_clones() -> None:
 
     cached = cache.get(("file", 0, 0))
     assert cached is not None
-    cached["user_int_feats"][0, 0] = 999
+    cached.inputs.user.int_values[0, 0] = 999
 
     cached_again = cache.get(("file", 0, 0))
     assert cached_again is not None
-    assert cached_again["user_int_feats"][0, 0].item() == 1
+    assert cached_again.inputs.user.int_values[0, 0].item() == 1
 
 
 def test_fifo_batch_cache_uses_configured_eviction_policy() -> None:
@@ -297,8 +358,6 @@ def test_data_pipeline_materialize_composes_cache_preprocess_and_stages() -> Non
         def __call__(self, batch, *, generator):
             del generator
             events.append("stage")
-            batch = dict(batch)
-            batch["marked"] = True
             return batch
 
     def factory():
@@ -314,20 +373,19 @@ def test_data_pipeline_materialize_composes_cache_preprocess_and_stages() -> Non
     first = pipeline.materialize(("file", 0, 0), factory, preprocess=preprocess)
     second = pipeline.materialize(("file", 0, 0), factory, preprocess=preprocess)
 
-    assert first is not None and first["marked"] is True
-    assert second is not None and second["marked"] is True
+    assert first is not None and first.label.tolist() == [1, 0]
+    assert second is not None and second.label.tolist() == [1, 0]
     assert events == ["factory", "preprocess", "stage", "preprocess", "stage"]
 
 
-def test_concat_batch_drops_optional_metadata_missing_from_cached_batches() -> None:
+def test_concat_batch_joins_rows_and_user_ids() -> None:
     batch_a = _make_batch()
     batch_b = _make_batch()
-    del batch_b["user_id"]
 
     merged = concat_pcvr_batches([batch_a, batch_b])
 
-    assert "user_id" not in merged
-    assert merged["label"].tolist() == [1, 0, 1, 0]
+    assert merged.user_id == ["u0", "u1", "u0", "u1"]
+    assert merged.label.tolist() == [1, 0, 1, 0]
 
 
 def test_opt_batch_cache_evicts_farthest_future_key() -> None:
@@ -509,9 +567,7 @@ def test_shared_opt_batch_cache_evicts_farthest_future_key() -> None:
         enabled=True,
         max_batches=2,
         policy="opt",
-        tensor_specs={
-            "label": PCVRSharedTensorSpec(shape=(2,), dtype=torch.long),
-        },
+        tensor_specs=_shared_label_specs(2),
         static_values={"_seq_domains": []},
     )
     cache.configure_access_trace(
@@ -529,16 +585,16 @@ def test_shared_opt_batch_cache_evicts_farthest_future_key() -> None:
         strict=True,
     ):
         assert cache.get(key) is None
-        cache.put(key, {"label": torch.tensor([value, value + 10], dtype=torch.long)})
+        cache.put(key, _label_only_batch([value, value + 10]))
 
     cached_0 = cache.get(("file", 0, 0))
     cached_1 = cache.get(("file", 0, 1))
     cached_2 = cache.get(("file", 0, 2))
 
     assert cached_0 is not None
-    assert cached_0["label"].tolist() == [1, 11]
+    assert cached_0.label.tolist() == [1, 11]
     assert cached_1 is not None
-    assert cached_1["label"].tolist() == [2, 12]
+    assert cached_1.label.tolist() == [2, 12]
     assert cached_2 is None
 
 
@@ -547,9 +603,7 @@ def test_shared_opt_batch_cache_window_restart_keeps_slots() -> None:
         enabled=True,
         max_batches=2,
         policy="opt",
-        tensor_specs={
-            "label": PCVRSharedTensorSpec(shape=(2,), dtype=torch.long),
-        },
+        tensor_specs=_shared_label_specs(2),
         static_values={"_seq_domains": []},
     )
     key_universe = [("file", 0, 0), ("file", 0, 1), ("file", 0, 2)]
@@ -565,7 +619,7 @@ def test_shared_opt_batch_cache_window_restart_keeps_slots() -> None:
         strict=True,
     ):
         assert cache.get(key) is None
-        cache.put(key, {"label": torch.tensor([value, value + 10], dtype=torch.long)})
+        cache.put(key, _label_only_batch([value, value + 10]))
 
     # A new trace window over the same key universe must keep shared slots.
     cache.configure_access_trace(
@@ -578,9 +632,9 @@ def test_shared_opt_batch_cache_window_restart_keeps_slots() -> None:
     cached_0 = cache.get(("file", 0, 0))
     cached_1 = cache.get(("file", 0, 1))
     assert cached_0 is not None
-    assert cached_0["label"].tolist() == [1, 11]
+    assert cached_0.label.tolist() == [1, 11]
     assert cached_1 is not None
-    assert cached_1["label"].tolist() == [2, 12]
+    assert cached_1.label.tolist() == [2, 12]
     assert cache.get(("file", 0, 2)) is None
     assert cache.stats()["trace_length"] == 3
 
@@ -590,9 +644,7 @@ def test_shared_opt_batch_cache_supports_repeated_step_trace() -> None:
         enabled=True,
         max_batches=2,
         policy="opt",
-        tensor_specs={
-            "label": PCVRSharedTensorSpec(shape=(2,), dtype=torch.long),
-        },
+        tensor_specs=_shared_label_specs(2),
         static_values={"_seq_domains": []},
     )
     cache.configure_access_trace(
@@ -608,12 +660,12 @@ def test_shared_opt_batch_cache_supports_repeated_step_trace() -> None:
     )
 
     assert cache.get(("file", 0, 0)) is None
-    cache.put(("file", 0, 0), {"label": torch.tensor([1, 11], dtype=torch.long)})
+    cache.put(("file", 0, 0), _label_only_batch([1, 11]))
     assert cache.get(("file", 0, 1)) is None
-    cache.put(("file", 0, 1), {"label": torch.tensor([2, 12], dtype=torch.long)})
+    cache.put(("file", 0, 1), _label_only_batch([2, 12]))
     assert cache.get(("file", 0, 0)) is not None
     assert cache.get(("file", 0, 2)) is None
-    cache.put(("file", 0, 2), {"label": torch.tensor([3, 13], dtype=torch.long)})
+    cache.put(("file", 0, 2), _label_only_batch([3, 13]))
 
     assert cache.get(("file", 0, 0)) is not None
     assert cache.get(("file", 0, 1)) is not None
@@ -628,9 +680,7 @@ def test_shared_opt_batch_cache_requires_trace_keys() -> None:
         enabled=True,
         max_batches=2,
         policy="opt",
-        tensor_specs={
-            "label": PCVRSharedTensorSpec(shape=(2,), dtype=torch.long),
-        },
+        tensor_specs=_shared_label_specs(2),
         static_values={"_seq_domains": []},
     )
     cache.configure_access_trace([("file", 0, 0)])
@@ -649,21 +699,19 @@ def test_shared_lru_batch_cache_reuses_slot_for_existing_key() -> None:
         enabled=True,
         max_batches=1,
         policy="lru",
-        tensor_specs={
-            "label": PCVRSharedTensorSpec(shape=(2,), dtype=torch.long),
-        },
+        tensor_specs=_shared_label_specs(2),
         static_values={"_seq_domains": []},
     )
     cache.configure_key_universe([("file", 0, 0)])
 
-    cache.put(("file", 0, 0), {"label": torch.tensor([1, 11], dtype=torch.long)})
-    cache.put(("file", 0, 0), {"label": torch.tensor([2, 12], dtype=torch.long)})
+    cache.put(("file", 0, 0), _label_only_batch([1, 11]))
+    cache.put(("file", 0, 0), _label_only_batch([2, 12]))
 
     cached = cache.get(("file", 0, 0))
 
     assert len(cache) == 1
     assert cached is not None
-    assert cached["label"].tolist() == [2, 12]
+    assert cached.label.tolist() == [2, 12]
 
 
 def test_shared_batch_cache_treats_busy_slot_as_miss() -> None:
@@ -671,13 +719,11 @@ def test_shared_batch_cache_treats_busy_slot_as_miss() -> None:
         enabled=True,
         max_batches=1,
         policy="lru",
-        tensor_specs={
-            "label": PCVRSharedTensorSpec(shape=(2,), dtype=torch.long),
-        },
+        tensor_specs=_shared_label_specs(2),
         static_values={"_seq_domains": []},
     )
     cache.configure_key_universe([("file", 0, 0)])
-    cache.put(("file", 0, 0), {"label": torch.tensor([1, 11], dtype=torch.long)})
+    cache.put(("file", 0, 0), _label_only_batch([1, 11]))
 
     cache._slot_versions[0] += 1
     cached = cache.get(("file", 0, 0))
@@ -693,13 +739,11 @@ def test_shared_batch_cache_discards_payload_when_version_changes(monkeypatch) -
         enabled=True,
         max_batches=1,
         policy="lru",
-        tensor_specs={
-            "label": PCVRSharedTensorSpec(shape=(2,), dtype=torch.long),
-        },
+        tensor_specs=_shared_label_specs(2),
         static_values={"_seq_domains": []},
     )
     cache.configure_key_universe([("file", 0, 0)])
-    cache.put(("file", 0, 0), {"label": torch.tensor([1, 11], dtype=torch.long)})
+    cache.put(("file", 0, 0), _label_only_batch([1, 11]))
     original_materialize = cache._materialize_slot
 
     def materialize_and_invalidate(slot_index: int, row_count: int):
@@ -722,19 +766,17 @@ def test_shared_fifo_batch_cache_uses_native_index() -> None:
         enabled=True,
         max_batches=2,
         policy="fifo",
-        tensor_specs={
-            "label": PCVRSharedTensorSpec(shape=(2,), dtype=torch.long),
-        },
+        tensor_specs=_shared_label_specs(2),
         static_values={"_seq_domains": []},
     )
     cache.configure_key_universe(
         [("file", 0, 0), ("file", 0, 1), ("file", 0, 2)]
     )
 
-    cache.put(("file", 0, 0), {"label": torch.tensor([1, 11], dtype=torch.long)})
-    cache.put(("file", 0, 1), {"label": torch.tensor([2, 12], dtype=torch.long)})
+    cache.put(("file", 0, 0), _label_only_batch([1, 11]))
+    cache.put(("file", 0, 1), _label_only_batch([2, 12]))
     assert cache.get(("file", 0, 0)) is not None
-    cache.put(("file", 0, 2), {"label": torch.tensor([3, 13], dtype=torch.long)})
+    cache.put(("file", 0, 2), _label_only_batch([3, 13]))
 
     assert cache.get(("file", 0, 0)) is None
     assert cache.get(("file", 0, 1)) is not None
@@ -747,20 +789,18 @@ def test_shared_lfu_batch_cache_uses_native_index() -> None:
         enabled=True,
         max_batches=2,
         policy="lfu",
-        tensor_specs={
-            "label": PCVRSharedTensorSpec(shape=(2,), dtype=torch.long),
-        },
+        tensor_specs=_shared_label_specs(2),
         static_values={"_seq_domains": []},
     )
     cache.configure_key_universe(
         [("file", 0, 0), ("file", 0, 1), ("file", 0, 2)]
     )
 
-    cache.put(("file", 0, 0), {"label": torch.tensor([1, 11], dtype=torch.long)})
-    cache.put(("file", 0, 1), {"label": torch.tensor([2, 12], dtype=torch.long)})
+    cache.put(("file", 0, 0), _label_only_batch([1, 11]))
+    cache.put(("file", 0, 1), _label_only_batch([2, 12]))
     assert cache.get(("file", 0, 0)) is not None
     assert cache.get(("file", 0, 0)) is not None
-    cache.put(("file", 0, 2), {"label": torch.tensor([3, 13], dtype=torch.long)})
+    cache.put(("file", 0, 2), _label_only_batch([3, 13]))
 
     assert cache.get(("file", 0, 0)) is not None
     assert cache.get(("file", 0, 1)) is None
@@ -773,18 +813,16 @@ def test_shared_rr_batch_cache_uses_native_index() -> None:
         enabled=True,
         max_batches=2,
         policy="rr",
-        tensor_specs={
-            "label": PCVRSharedTensorSpec(shape=(2,), dtype=torch.long),
-        },
+        tensor_specs=_shared_label_specs(2),
         static_values={"_seq_domains": []},
     )
     cache.configure_key_universe(
         [("file", 0, 0), ("file", 0, 1), ("file", 0, 2)]
     )
 
-    cache.put(("file", 0, 0), {"label": torch.tensor([1, 11], dtype=torch.long)})
-    cache.put(("file", 0, 1), {"label": torch.tensor([2, 12], dtype=torch.long)})
-    cache.put(("file", 0, 2), {"label": torch.tensor([3, 13], dtype=torch.long)})
+    cache.put(("file", 0, 0), _label_only_batch([1, 11]))
+    cache.put(("file", 0, 1), _label_only_batch([2, 12]))
+    cache.put(("file", 0, 2), _label_only_batch([3, 13]))
 
     assert len(cache) == 2
     assert cache.stats()["native_cache_active"] is True
@@ -795,9 +833,7 @@ def test_shared_lru_batch_cache_uses_key_universe_and_tracks_hits() -> None:
         enabled=True,
         max_batches=2,
         policy="lru",
-        tensor_specs={
-            "label": PCVRSharedTensorSpec(shape=(2,), dtype=torch.long),
-        },
+        tensor_specs=_shared_label_specs(2),
         static_values={"_seq_domains": []},
     )
     cache.configure_key_universe(
@@ -809,14 +845,14 @@ def test_shared_lru_batch_cache_uses_key_universe_and_tracks_hits() -> None:
     )
 
     assert cache.get(("file", 0, 0)) is None
-    cache.put(("file", 0, 0), {"label": torch.tensor([1, 11], dtype=torch.long)})
-    cache.put(("file", 0, 1), {"label": torch.tensor([2, 12], dtype=torch.long)})
+    cache.put(("file", 0, 0), _label_only_batch([1, 11]))
+    cache.put(("file", 0, 1), _label_only_batch([2, 12]))
 
     cached = cache.get(("file", 0, 0))
     assert cached is not None
-    assert cached["label"].tolist() == [1, 11]
+    assert cached.label.tolist() == [1, 11]
 
-    cache.put(("file", 0, 2), {"label": torch.tensor([3, 13], dtype=torch.long)})
+    cache.put(("file", 0, 2), _label_only_batch([3, 13]))
 
     assert cache.get(("file", 0, 0)) is not None
     assert cache.get(("file", 0, 1)) is None
@@ -834,26 +870,25 @@ def test_shared_batch_cache_overwrites_partial_slot_without_stale_rows() -> None
         enabled=True,
         max_batches=1,
         policy="lru",
-        tensor_specs={
-            "label": PCVRSharedTensorSpec(shape=(2,), dtype=torch.long),
-        },
+        tensor_specs=_shared_label_specs(2),
         static_values={"_seq_domains": []},
     )
     cache.configure_key_universe([("file", 0, 0)])
 
-    cache.put(("file", 0, 0), {"label": torch.tensor([1, 11], dtype=torch.long)})
-    cache.put(("file", 0, 0), {"label": torch.tensor([2], dtype=torch.long)})
+    cache.put(("file", 0, 0), _label_only_batch([1, 11]))
+    cache.put(("file", 0, 0), _label_only_batch([2]))
 
     cached = cache.get(("file", 0, 0))
 
     assert cached is not None
-    assert cached["label"].tolist() == [2]
+    assert cached.label.tolist() == [2]
 
 
 def test_strict_time_filter_removes_future_sequence_events(tmp_path: Path) -> None:
     schema_path = tmp_path / "schema.json"
     parquet_path = tmp_path / "demo.parquet"
     schema = {
+        "format": "raw_parquet",
         "user_int": [[1, 10, 1]],
         "item_int": [[2, 10, 1]],
         "user_dense": [[3, 2]],
@@ -894,16 +929,18 @@ def test_strict_time_filter_removes_future_sequence_events(tmp_path: Path) -> No
 
     batch = next(iter(dataset))
 
-    assert batch["seq_a_len"].tolist() == [2]
-    assert batch["seq_a"].tolist() == [[[1, 3, 0]]]
-    assert batch["seq_a_time_bucket"][0, :2].gt(0).all()
-    assert batch["seq_a_time_bucket"][0, 2].item() == 0
+    seq_a = batch.inputs.sequences["seq_a"]
+    assert seq_a.lengths.tolist() == [2]
+    assert seq_a.values.tolist() == [[[1, 3, 0]]]
+    assert seq_a.timestamps[0, :2].gt(0).all()
+    assert seq_a.timestamps[0, 2].item() == 0
 
 
 def test_dataset_logs_schema_payload_with_dataset_role(tmp_path: Path, log_capture) -> None:
     schema_path = tmp_path / "schema.json"
     parquet_path = tmp_path / "demo.parquet"
     schema = {
+        "format": "raw_parquet",
         "user_int": [[1, 10, 1]],
         "item_int": [[2, 10, 1]],
         "user_dense": [[3, 2]],
@@ -950,5 +987,5 @@ def test_dataset_logs_schema_payload_with_dataset_role(tmp_path: Path, log_captu
         if record.getMessage().startswith("PCVR train schema payload: ")
     )
     assert "\n" not in payload_message
-    assert '"user_int":[[1,10,1]]' in payload_message
+    assert '"user_int":[{"fid":1,"vocab_size":10,"dim":1}]' in payload_message
     assert '"prefix":"domain_a_seq"' in payload_message

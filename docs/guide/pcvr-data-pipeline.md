@@ -89,7 +89,7 @@ PCVRDomainDropoutConfig(
 3. base batch cache 尝试命中；命中后返回 clone，避免增强污染缓存。
 4. transform 依次作用在 batch 上；如果多视图增强产生超过一个 optimizer batch 的行数，step dataset 会重采样回单个训练 batch。
 5. PyTorch `DataLoader` 继续负责 worker / prefetch / pin memory。
-6. training workflow 把 batch 转成 `ModelInput`。
+6. training workflow 把 `PCVRBatch` 直接交给模型（`forward(model_input)` 接收 `PCVRModelInput`）。
 
 `train_steps_per_sweep=0` 时，step-random 训练 loader 的一次逻辑 sweep 使用训练数据推导出的 batch 数；如果显式设置 `--train-steps-per-sweep`，则 PyTorch sampler 会使用这个固定长度的 step 窗口。`max_steps>0` 时，训练器仍按总 optimizer step 截断。
 

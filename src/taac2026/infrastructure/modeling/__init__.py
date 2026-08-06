@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from taac2026.infrastructure.modeling.model_contract import ModelInput as ModelInput
 from taac2026.infrastructure.modeling import normalization as _normalization
 from taac2026.infrastructure.modeling import sequence as _sequence
 from taac2026.infrastructure.modeling.embeddings import EmbeddingParameterMixin, FeatureEmbeddingBank
@@ -53,7 +52,6 @@ __all__ = [
     "FeatureEmbeddingBank",
     "FlashAttentionBackend",
     "LayerNorm",
-    "ModelInput",
     "NonSequentialTokenizer",
     "RMSNorm",
     "SequenceTokenizer",

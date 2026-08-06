@@ -11,12 +11,17 @@ import torch.nn as nn
 
 from taac2026.api import (
     EmbeddingParameterMixin,
-    ModelInput,
+    NUM_TIME_BUCKETS,
+    PCVRModelInput,
     RMSNorm,
+    build_pcvr_model_specs,
     choose_num_heads,
     configure_rms_norm_runtime as _configure_rms_norm_runtime,
     maybe_gradient_checkpoint,
 )
+from taac2026.domain.schema import PCVRSchema
+
+from .config import SymbiosisModelConfig
 
 try:
     from .attention import MetadataAttentionMask
@@ -53,7 +58,64 @@ def _torch_is_compiling() -> bool:
 class PCVRSymbiosis(EmbeddingParameterMixin, nn.Module):
     """Distribution-aware unified token-stream model for PCVR."""
 
-    def __init__(
+    def __init__(self, schema: PCVRSchema, config: SymbiosisModelConfig) -> None:
+        specs = build_pcvr_model_specs(schema, config.ns)
+        self._init_specs(
+            user_int_feature_specs=specs.user_int_feature_specs,
+            item_int_feature_specs=specs.item_int_feature_specs,
+            user_dense_dim=specs.user_dense_dim,
+            item_dense_dim=specs.item_dense_dim,
+            seq_vocab_sizes=specs.seq_vocab_sizes,
+            user_ns_groups=specs.user_ns_groups,
+            item_ns_groups=specs.item_ns_groups,
+            d_model=config.d_model,
+            emb_dim=config.emb_dim,
+            num_queries=config.num_queries,
+            num_blocks=config.num_blocks,
+            num_heads=config.num_heads,
+            seq_encoder_type=config.seq_encoder_type,
+            hidden_mult=config.hidden_mult,
+            dropout_rate=config.dropout_rate,
+            seq_top_k=config.seq_top_k,
+            seq_causal=config.seq_causal,
+            action_num=config.action_num,
+            num_time_buckets=NUM_TIME_BUCKETS if config.use_time_buckets else 0,
+            rank_mixer_mode=config.rank_mixer_mode,
+            use_rope=config.use_rope,
+            rope_base=config.rope_base,
+            emb_skip_threshold=config.emb_skip_threshold,
+            seq_id_threshold=config.seq_id_threshold,
+            gradient_checkpointing=config.gradient_checkpointing,
+            ns_tokenizer_type=config.ns.tokenizer_type,
+            user_ns_tokens=config.ns.user_tokens,
+            item_ns_tokens=config.ns.item_tokens,
+            symbiosis_v2_use_dense_tokens=config.v2_use_dense_tokens,
+            symbiosis_v2_use_missing_tokens=config.v2_use_missing_tokens,
+            symbiosis_v2_use_sequence_stats_tokens=config.v2_use_sequence_stats_tokens,
+            symbiosis_v2_use_metadata_attention_bias=config.v2_use_metadata_attention_bias,
+            symbiosis_v2_use_candidate_readout=config.v2_use_candidate_readout,
+            symbiosis_v2_tokenization_mode=config.v2_tokenization_mode,
+            symbiosis_v2_sparse_seed=config.v2_sparse_seed,
+            symbiosis_v2_recent_event_tokens=config.v2_recent_event_tokens,
+            symbiosis_v2_memory_event_tokens=config.v2_memory_event_tokens,
+            symbiosis_v2_user_dense_tokens=config.v2_user_dense_tokens,
+            symbiosis_v2_item_dense_tokens=config.v2_item_dense_tokens,
+            symbiosis_v2_user_missing_tokens=config.v2_user_missing_tokens,
+            symbiosis_v2_item_missing_tokens=config.v2_item_missing_tokens,
+            symbiosis_v2_high_risk_token_dropout_rate=config.v2_high_risk_token_dropout_rate,
+            symbiosis_v2_compress_large_ids=config.v2_compress_large_ids,
+            symbiosis_v2_compile_backbone=config.v2_compile_backbone,
+            symbiosis_v3_enabled=config.v3_enabled,
+            symbiosis_v3_memory_selection_mode=config.v3_memory_selection_mode,
+            symbiosis_v3_recent_event_tokens_by_domain=config.v3_recent_event_tokens_by_domain,
+            symbiosis_v3_memory_event_tokens_by_domain=config.v3_memory_event_tokens_by_domain,
+            symbiosis_v3_memory_density_weight=config.v3_memory_density_weight,
+            symbiosis_v3_memory_time_weight=config.v3_memory_time_weight,
+            symbiosis_v3_memory_recency_weight=config.v3_memory_recency_weight,
+            symbiosis_v3_memory_duplicate_penalty=config.v3_memory_duplicate_penalty,
+        )
+
+    def _init_specs(
         self,
         user_int_feature_specs: list[tuple[int, int, int]],
         item_int_feature_specs: list[tuple[int, int, int]],
@@ -236,7 +298,7 @@ class PCVRSymbiosis(EmbeddingParameterMixin, nn.Module):
             )
         return self.final_norm(tokens)
 
-    def _embed(self, inputs: ModelInput) -> torch.Tensor:
+    def _embed(self, inputs: PCVRModelInput) -> torch.Tensor:
         batch = self._apply_high_risk_dropout(self.tokenizer(inputs))
         attention_mask = self.attention_mask(batch)
         runner = self._compiled_backbone if self._compiled_backbone is not None else self._run_backbone
@@ -248,12 +310,12 @@ class PCVRSymbiosis(EmbeddingParameterMixin, nn.Module):
         self._put_scalar("embedding/norm_mean", embedding.detach().float().norm(dim=-1).mean())
         return embedding
 
-    def forward(self, inputs: ModelInput) -> torch.Tensor:
+    def forward(self, inputs: PCVRModelInput) -> torch.Tensor:
         return self.classifier(self._embed(inputs))
 
-    def predict(self, inputs: ModelInput) -> tuple[torch.Tensor, torch.Tensor]:
+    def predict(self, inputs: PCVRModelInput) -> tuple[torch.Tensor, torch.Tensor]:
         embeddings = self._embed(inputs)
         return self.classifier(embeddings), embeddings
 
 
-__all__ = ["ModelInput", "PCVRSymbiosis", "UnifiedSelfAttention", "configure_rms_norm_runtime"]
+__all__ = ["PCVRSymbiosis", "UnifiedSelfAttention", "configure_rms_norm_runtime"]

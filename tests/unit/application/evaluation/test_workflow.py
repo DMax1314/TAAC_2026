@@ -12,31 +12,49 @@ from taac2026.application.evaluation.workflow import (
     PCVRPredictionRunner,
     default_run_prediction_loop,
 )
+from taac2026.domain.config import PCVRTrainConfig
 from taac2026.domain.runtime_config import RuntimeExecutionConfig
-from taac2026.infrastructure.modeling.model_contract import ModelInput
+from taac2026.infrastructure.data.batches import (
+    PCVRBatch,
+    PCVREntityInput,
+    PCVRModelInput,
+)
+
+
+def _make_batch(labels: list[float], user_ids: list[str]) -> PCVRBatch:
+    batch_size = len(labels)
+    empty = PCVREntityInput(
+        int_values=torch.ones(batch_size, 1, dtype=torch.long),
+        int_missing_mask=torch.zeros(batch_size, 1, dtype=torch.bool),
+        dense_values=torch.zeros(batch_size, 1),
+        dense_missing_mask=torch.zeros(batch_size, 1, dtype=torch.bool),
+    )
+    inputs = PCVRModelInput(
+        user=empty,
+        item=empty,
+        sequences={},
+        request_timestamp=torch.tensor([100, 200][:batch_size], dtype=torch.long),
+    )
+    return PCVRBatch(
+        inputs=inputs,
+        label=torch.tensor(labels, dtype=torch.float32),
+        user_id=list(user_ids),
+    )
 
 
 def test_default_prediction_loop_uses_lightweight_inference_payload(tmp_path: Path) -> None:
     observed_inference_mode: list[bool] = []
-    batch = {
-        "label": torch.tensor([0.0, 1.0]),
-        "user_id": ["u0", "u1"],
-        "timestamp": torch.tensor([100, 200]),
-        "user_int_feats": torch.ones(2, 1, dtype=torch.long),
-        "item_int_feats": torch.ones(2, 1, dtype=torch.long),
-        "user_dense_feats": torch.zeros(2, 1),
-        "item_dense_feats": torch.zeros(2, 1),
-        "_seq_domains": [],
-    }
+    batch = _make_batch(labels=[0.0, 1.0], user_ids=["u0", "u1"])
 
-    def predict_fn(model_input: ModelInput) -> tuple[torch.Tensor, torch.Tensor]:
-        assert isinstance(model_input, ModelInput)
+    def predict_fn(model_input: PCVRModelInput) -> tuple[torch.Tensor, torch.Tensor]:
+        assert isinstance(model_input, PCVRModelInput)
         observed_inference_mode.append(torch.is_inference_mode_enabled())
         return torch.tensor([[-2.0], [2.0]]), torch.empty(2, 0)
 
     context = PCVRPredictionContext(
-        model_module=SimpleNamespace(ModelInput=ModelInput),
+        model_module=SimpleNamespace(),
         model_class_name="DummyModel",
+        model_type=torch.nn.Module,
         package_dir=tmp_path,
         dataset_path=tmp_path / "eval.parquet",
         schema_path=tmp_path / "schema.json",
@@ -46,7 +64,7 @@ def test_default_prediction_loop_uses_lightweight_inference_payload(tmp_path: Pa
         device="cpu",
         is_training_data=False,
         dataset_role="inference",
-        config={},
+        config=PCVRTrainConfig(),
         runtime_execution=RuntimeExecutionConfig(compile=False),
     )
     data_bundle = PCVRPredictionDataBundle(dataset=SimpleNamespace(num_rows=2), loader=[batch])
@@ -67,24 +85,16 @@ def test_default_prediction_loop_uses_lightweight_inference_payload(tmp_path: Pa
 
 
 def test_default_prediction_loop_keeps_evaluation_records(tmp_path: Path) -> None:
-    batch = {
-        "label": torch.tensor([0.0, 1.0]),
-        "user_id": ["u0", "u1"],
-        "timestamp": torch.tensor([100, 200]),
-        "user_int_feats": torch.ones(2, 1, dtype=torch.long),
-        "item_int_feats": torch.ones(2, 1, dtype=torch.long),
-        "user_dense_feats": torch.zeros(2, 1),
-        "item_dense_feats": torch.zeros(2, 1),
-        "_seq_domains": [],
-    }
+    batch = _make_batch(labels=[0.0, 1.0], user_ids=["u0", "u1"])
 
-    def predict_fn(model_input: ModelInput) -> tuple[torch.Tensor, torch.Tensor]:
-        assert isinstance(model_input, ModelInput)
+    def predict_fn(model_input: PCVRModelInput) -> tuple[torch.Tensor, torch.Tensor]:
+        assert isinstance(model_input, PCVRModelInput)
         return torch.tensor([[-2.0], [2.0]]), torch.empty(2, 0)
 
     context = PCVRPredictionContext(
-        model_module=SimpleNamespace(ModelInput=ModelInput),
+        model_module=SimpleNamespace(),
         model_class_name="DummyModel",
+        model_type=torch.nn.Module,
         package_dir=tmp_path,
         dataset_path=tmp_path / "eval.parquet",
         schema_path=tmp_path / "schema.json",
@@ -94,7 +104,7 @@ def test_default_prediction_loop_keeps_evaluation_records(tmp_path: Path) -> Non
         device="cpu",
         is_training_data=True,
         dataset_role="evaluation",
-        config={},
+        config=PCVRTrainConfig(),
         runtime_execution=RuntimeExecutionConfig(compile=False),
     )
     data_bundle = PCVRPredictionDataBundle(dataset=SimpleNamespace(num_rows=2), loader=[batch])

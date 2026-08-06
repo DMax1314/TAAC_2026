@@ -13,7 +13,7 @@ from taac2026.domain.config import (
     PCVR_DATA_SPLIT_STRATEGY_CHOICES,
     PCVRDataPipelineConfig,
 )
-from taac2026.domain.schema import BUCKET_BOUNDARIES, NUM_TIME_BUCKETS, FeatureSchema
+from taac2026.infrastructure.modeling.time_features import BUCKET_BOUNDARIES, NUM_TIME_BUCKETS
 from taac2026.infrastructure.data.observation import (
     PCVRRowGroupSplitPlan,
     PCVRTimestampRange,
@@ -25,6 +25,7 @@ from taac2026.infrastructure.data.observation import (
     plan_pcvr_timestamp_tail_split,
 )
 from taac2026.infrastructure.data.parquet_dataset import PCVRHashSplitFilter, PCVRParquetDataset
+from taac2026.infrastructure.data.schema_layout import FeatureSchema
 from taac2026.infrastructure.logging import logger
 
 

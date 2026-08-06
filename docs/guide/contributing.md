@@ -24,7 +24,7 @@ experiments/my_experiment/
 | HyFormer + 增强 / TileLang | `experiments/baseline_plus`                                |
 | 用户-物品交互结构          | `experiments/interformer`                                  |
 | 统一 Transformer 结构      | `experiments/onetrans`                                     |
-| 多组件消融                 | `experiments/symbiosis`，但只在确实需要自定义 hooks 时使用 |
+| 多组件消融                 | `experiments/symbiosis`（V2/V3 配置扩展和消融默认值）      |
 
 ## `__init__.py` 负责什么
 
@@ -51,7 +51,7 @@ TRAIN_DEFAULTS = PCVRTrainConfig(
 EXPERIMENT = create_pcvr_experiment(
     name="pcvr_my_experiment",
     package_dir=Path(__file__).resolve().parent,
-    model_class_name="MyModel",
+    model_type=MyModel,
     train_defaults=TRAIN_DEFAULTS,
 )
 ```
@@ -59,11 +59,9 @@ EXPERIMENT = create_pcvr_experiment(
 关键点：
 
 - `name` 要唯一，通常用 `pcvr_` 前缀。
-- `model_class_name` 必须和 `model.py` 里的类名一致。
-- NS 分组现在写在 `PCVRNSConfig` 里，不需要独立 `ns_groups.json`。
-- 普通模型实验不需要手写 hooks。
-
-只有确实改变训练、预测或 runtime 行为时，才传 hook override。可以参考 `experiments/symbiosis/__init__.py`。
+- `model_type` 必须和 `model.py` 里的模型类一致。
+- NS 分组写在 `PCVRNSConfig` 里，不需要独立 `ns_groups.json`。
+- 训练、预测和 runtime 流程由框架统一编排，实验包不需要实现或覆盖 hooks。
 
 ## 实验发现机制
 
@@ -74,7 +72,7 @@ EXPERIMENT = create_pcvr_experiment(
 - 被加载模块必须导出 `EXPERIMENT`。
 - `EXPERIMENT` 可以是 `ExperimentSpec`，也可以是带 `name`、`train`、`evaluate`、`infer` 方法的对象。
 
-`create_pcvr_experiment()` 位于 `src/taac2026/application/experiments/factory.py`。它会把默认 PCVR hooks 组装成 `PCVRExperiment`，普通实验通常不需要自己实现 `train()`、`evaluate()` 或 `infer()`。
+`create_pcvr_experiment()` 位于 `src/taac2026/application/experiments/factory.py`。它用统一的训练、评估、推理流程构造 `PCVRExperiment`，普通实验不需要自己实现 `train()`、`evaluate()` 或 `infer()`。
 
 `PCVRExperiment` 的运行逻辑在 `src/taac2026/application/experiments/experiment.py`：
 
@@ -98,7 +96,6 @@ EXPERIMENT = create_pcvr_experiment(
 from taac2026.infrastructure.modeling import (
     EmbeddingParameterMixin,
     FeatureEmbeddingBank,
-    ModelInput,
     NonSequentialTokenizer,
     SequenceTokenizer,
 )
@@ -121,10 +118,11 @@ global_step*/
 
 改这些内容时要特别小心：
 
-- `PCVRModelConfig` 字段名
+- `PCVRTrainConfig` / `PCVRModelConfig` 字段名
 - `PCVRNSConfig` 的 grouping strategy 和 fid 分组
-- `ModelInput` 字段
-- 自定义 hook 写入 `train_config.json` 的额外 key
+- `PCVRBatch` / `PCVRModelInput` 结构
+- `train_config.json` 的 typed 序列化（`build_pcvr_train_config_sidecar` / `load_pcvr_train_config_sidecar`）
+- `resolve_schema_path` 的 schema 来源语义（显式路径必须存在，否则使用唯一 fallback）
 - checkpoint 目录命名和最新 checkpoint 解析规则
 
 ## 本地验证顺序

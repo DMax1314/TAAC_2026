@@ -4,20 +4,17 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import NamedTuple
 
-from taac2026.api import maybe_gradient_checkpoint
+from taac2026.api import (
+    NUM_TIME_BUCKETS,
+    PCVRModelInput,
+    build_pcvr_model_specs,
+    compute_sequence_time_buckets,
+    maybe_gradient_checkpoint,
+)
+from taac2026.domain.config import PCVRModelConfig
+from taac2026.domain.schema import PCVRSchema
 from taac2026.infrastructure.logging import logger
-
-
-class ModelInput(NamedTuple):
-    user_int_feats: torch.Tensor
-    item_int_feats: torch.Tensor
-    user_dense_feats: torch.Tensor
-    item_dense_feats: torch.Tensor
-    seq_data: dict        # {domain: tensor [B, S, L]}
-    seq_lens: dict        # {domain: tensor [B]}
-    seq_time_buckets: dict  # {domain: tensor [B, L]}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1198,7 +1195,40 @@ class PCVRHyFormer(nn.Module):
     multiple input sequences with non-sequence features.
     """
 
-    def __init__(
+    def __init__(self, schema: PCVRSchema, config: PCVRModelConfig) -> None:
+        specs = build_pcvr_model_specs(schema, config.ns)
+        self._init_specs(
+            user_int_feature_specs=specs.user_int_feature_specs,
+            item_int_feature_specs=specs.item_int_feature_specs,
+            user_dense_dim=specs.user_dense_dim,
+            item_dense_dim=specs.item_dense_dim,
+            seq_vocab_sizes=specs.seq_vocab_sizes,
+            user_ns_groups=specs.user_ns_groups,
+            item_ns_groups=specs.item_ns_groups,
+            d_model=config.d_model,
+            emb_dim=config.emb_dim,
+            num_queries=config.num_queries,
+            num_blocks=config.num_blocks,
+            num_heads=config.num_heads,
+            seq_encoder_type=config.seq_encoder_type,
+            hidden_mult=config.hidden_mult,
+            dropout_rate=config.dropout_rate,
+            seq_top_k=config.seq_top_k,
+            seq_causal=config.seq_causal,
+            action_num=config.action_num,
+            num_time_buckets=NUM_TIME_BUCKETS if config.use_time_buckets else 0,
+            rank_mixer_mode=config.rank_mixer_mode,
+            use_rope=config.use_rope,
+            rope_base=config.rope_base,
+            emb_skip_threshold=config.emb_skip_threshold,
+            seq_id_threshold=config.seq_id_threshold,
+            gradient_checkpointing=config.gradient_checkpointing,
+            ns_tokenizer_type=config.ns.tokenizer_type,
+            user_ns_tokens=config.ns.user_tokens,
+            item_ns_tokens=config.ns.item_tokens,
+        )
+
+    def _init_specs(
         self,
         # Data schema
         user_int_feature_specs: list[tuple[int, int, int]],
@@ -1637,19 +1667,19 @@ class PCVRHyFormer(nn.Module):
 
         return output
 
-    def forward(self, inputs: ModelInput) -> torch.Tensor:
+    def forward(self, inputs: PCVRModelInput) -> torch.Tensor:
         """Runs the forward pass of the PCVRHyFormer model."""
         # 1. NS tokens: grouped projection
-        user_ns = self.user_ns_tokenizer(inputs.user_int_feats)   # (B, num_user_groups, D)
-        item_ns = self.item_ns_tokenizer(inputs.item_int_feats)   # (B, num_item_groups, D)
+        user_ns = self.user_ns_tokenizer(inputs.user.int_values)   # (B, num_user_groups, D)
+        item_ns = self.item_ns_tokenizer(inputs.item.int_values)   # (B, num_item_groups, D)
 
         ns_parts = [user_ns]
         if self.has_user_dense:
-            user_dense_tok = F.silu(self.user_dense_proj(inputs.user_dense_feats)).unsqueeze(1)  # (B, 1, D)
+            user_dense_tok = F.silu(self.user_dense_proj(inputs.user.dense_values)).unsqueeze(1)  # (B, 1, D)
             ns_parts.append(user_dense_tok)
         ns_parts.append(item_ns)
         if self.has_item_dense:
-            item_dense_tok = F.silu(self.item_dense_proj(inputs.item_dense_feats)).unsqueeze(1)  # (B, 1, D)
+            item_dense_tok = F.silu(self.item_dense_proj(inputs.item.dense_values)).unsqueeze(1)  # (B, 1, D)
             ns_parts.append(item_dense_tok)
 
         ns_tokens = torch.cat(ns_parts, dim=1)  # (B, num_ns, D)
@@ -1658,13 +1688,14 @@ class PCVRHyFormer(nn.Module):
         seq_tokens_list = []
         seq_masks_list = []
         for domain in self.seq_domains:
+            sequence_input = inputs.sequences[domain]
             tokens = self._embed_seq_domain(
-                inputs.seq_data[domain],
+                sequence_input.values,
                 self._seq_embs[domain], self._seq_proj[domain],
                 self._seq_is_id[domain], self._seq_emb_index[domain],
-                inputs.seq_time_buckets[domain])
+                compute_sequence_time_buckets(sequence_input.timestamps, inputs.request_timestamp))
             seq_tokens_list.append(tokens)
-            mask = self._make_padding_mask(inputs.seq_lens[domain], inputs.seq_data[domain].shape[2])
+            mask = self._make_padding_mask(sequence_input.lengths, sequence_input.values.shape[2])
             seq_masks_list.append(mask)
 
         # 3. Generate independent Q tokens per sequence via MultiSeqQueryGenerator
@@ -1680,19 +1711,19 @@ class PCVRHyFormer(nn.Module):
         logits = self.clsfier(output)  # (B, action_num)
         return logits
 
-    def predict(self, inputs: ModelInput) -> tuple[torch.Tensor, torch.Tensor]:
+    def predict(self, inputs: PCVRModelInput) -> tuple[torch.Tensor, torch.Tensor]:
         """Runs inference without dropout, returning both logits and embeddings."""
         # Reuses forward logic but without dropout
-        user_ns = self.user_ns_tokenizer(inputs.user_int_feats)
-        item_ns = self.item_ns_tokenizer(inputs.item_int_feats)
+        user_ns = self.user_ns_tokenizer(inputs.user.int_values)
+        item_ns = self.item_ns_tokenizer(inputs.item.int_values)
 
         ns_parts = [user_ns]
         if self.has_user_dense:
-            user_dense_tok = F.silu(self.user_dense_proj(inputs.user_dense_feats)).unsqueeze(1)
+            user_dense_tok = F.silu(self.user_dense_proj(inputs.user.dense_values)).unsqueeze(1)
             ns_parts.append(user_dense_tok)
         ns_parts.append(item_ns)
         if self.has_item_dense:
-            item_dense_tok = F.silu(self.item_dense_proj(inputs.item_dense_feats)).unsqueeze(1)
+            item_dense_tok = F.silu(self.item_dense_proj(inputs.item.dense_values)).unsqueeze(1)
             ns_parts.append(item_dense_tok)
 
         ns_tokens = torch.cat(ns_parts, dim=1)
@@ -1700,13 +1731,14 @@ class PCVRHyFormer(nn.Module):
         seq_tokens_list = []
         seq_masks_list = []
         for domain in self.seq_domains:
+            sequence_input = inputs.sequences[domain]
             tokens = self._embed_seq_domain(
-                inputs.seq_data[domain],
+                sequence_input.values,
                 self._seq_embs[domain], self._seq_proj[domain],
                 self._seq_is_id[domain], self._seq_emb_index[domain],
-                inputs.seq_time_buckets[domain])
+                compute_sequence_time_buckets(sequence_input.timestamps, inputs.request_timestamp))
             seq_tokens_list.append(tokens)
-            mask = self._make_padding_mask(inputs.seq_lens[domain], inputs.seq_data[domain].shape[2])
+            mask = self._make_padding_mask(sequence_input.lengths, sequence_input.values.shape[2])
             seq_masks_list.append(mask)
 
         q_tokens_list = self.query_generator(ns_tokens, seq_tokens_list, seq_masks_list)

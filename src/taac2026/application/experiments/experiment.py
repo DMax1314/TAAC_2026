@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+import torch
 
 from taac2026.domain.requests import EvalRequest, InferRequest, TrainRequest
 from taac2026.domain.metrics import compute_classification_metrics
@@ -17,12 +18,19 @@ from taac2026.infrastructure.io.files import write_json
 from taac2026.infrastructure.io.json import dump_bytes
 from taac2026.domain.config import PCVRTrainConfig
 from taac2026.application.experiments.runtime import PCVRExperimentRuntimeMixin
-from taac2026.application.evaluation.workflow import PCVRPredictionHooks, _log_prediction_progress
-from taac2026.application.evaluation.runtime import PCVRRuntimeHooks
+from taac2026.application.evaluation.workflow import _log_prediction_progress
+from taac2026.application.evaluation.runtime import (
+    default_build_evaluation_data_diagnostics,
+    default_load_train_config,
+    default_load_runtime_schema,
+    default_resolve_evaluation_checkpoint,
+    default_resolve_inference_checkpoint,
+    default_write_observed_schema_report,
+    default_write_train_split_observed_schema_reports,
+)
 from taac2026.infrastructure.data.sample_dataset import resolve_default_pcvr_sample_paths
 from taac2026.infrastructure.logging import logger
 from taac2026.infrastructure.runtime.telemetry import RuntimeTelemetry, file_size_mb
-from taac2026.application.training.workflow import PCVRTrainHooks
 from taac2026.application.training.args import train_pcvr_model
 
 
@@ -37,12 +45,13 @@ def _callable_name(value: Any) -> str:
 class PCVRExperiment(PCVRExperimentRuntimeMixin):
     name: str
     package_dir: Path
-    model_class_name: str
+    model_type: type[torch.nn.Module]
+    config_type: type[PCVRTrainConfig]
     train_defaults: PCVRTrainConfig
-    train_arg_parser: Callable[[Sequence[str] | None], Any]
-    train_hooks: PCVRTrainHooks
-    prediction_hooks: PCVRPredictionHooks
-    runtime_hooks: PCVRRuntimeHooks
+
+    @property
+    def model_class_name(self) -> str:
+        return self.model_type.__name__
 
     @property
     def metadata(self) -> dict[str, str]:
@@ -50,22 +59,7 @@ class PCVRExperiment(PCVRExperimentRuntimeMixin):
             "kind": "pcvr",
             "model_class": self.model_class_name,
             "source": str(self.package_dir),
-            "train_arg_parser": _callable_name(self.train_arg_parser),
-            "train_build_data": _callable_name(self.train_hooks.build_data),
-            "train_build_model": _callable_name(self.train_hooks.build_model),
-            "train_build_trainer": _callable_name(self.train_hooks.build_trainer),
-            "train_run_training": _callable_name(self.train_hooks.run_training),
-            "prediction_build_data": _callable_name(self.prediction_hooks.build_data),
-            "prediction_build_model": _callable_name(self.prediction_hooks.build_model),
-            "prediction_prepare_predictor": _callable_name(self.prediction_hooks.prepare_predictor),
-            "prediction_run_loop": _callable_name(self.prediction_hooks.run_loop),
-            "runtime_resolve_evaluation_checkpoint": _callable_name(self.runtime_hooks.resolve_evaluation_checkpoint),
-            "runtime_resolve_inference_checkpoint": _callable_name(self.runtime_hooks.resolve_inference_checkpoint),
-            "runtime_load_train_config": _callable_name(self.runtime_hooks.load_train_config),
-            "runtime_load_runtime_schema": _callable_name(self.runtime_hooks.load_runtime_schema),
-            "runtime_build_evaluation_data_diagnostics": _callable_name(self.runtime_hooks.build_evaluation_data_diagnostics),
-            "runtime_write_observed_schema_report": _callable_name(self.runtime_hooks.write_observed_schema_report),
-            "runtime_write_train_split_observed_schema_reports": _callable_name(self.runtime_hooks.write_train_split_observed_schema_reports),
+            "config_type": _callable_name(self.config_type),
         }
 
     @contextmanager
@@ -80,20 +74,12 @@ class PCVRExperiment(PCVRExperimentRuntimeMixin):
         run_dir = request.run_dir.expanduser().resolve()
         train_log_dir = Path(os.environ.get("TRAIN_LOG_PATH", str(run_dir / "logs"))).expanduser().resolve()
         tensorboard_dir = Path(os.environ.get("TRAIN_TF_EVENTS_PATH", str(run_dir / "tensorboard"))).expanduser().resolve()
-
-        forwarded_args = [
-            "--data_dir",
-            str(resolved_dataset_path),
-            "--ckpt_dir",
-            str(run_dir),
-            "--log_dir",
-            str(train_log_dir),
-            "--tf_events_dir",
-            str(tensorboard_dir),
-        ]
-        if resolved_schema_override is not None:
-            forwarded_args.extend(["--schema_path", str(resolved_schema_override)])
-        forwarded_args.extend(request.extra_args)
+        dataset_path = Path(os.environ.get("TRAIN_DATA_PATH", str(resolved_dataset_path))).expanduser().resolve()
+        ckpt_dir = Path(os.environ.get("TRAIN_CKPT_PATH", str(run_dir))).expanduser().resolve()
+        schema_override = resolved_schema_override
+        env_schema_path = os.environ.get("TAAC_SCHEMA_PATH")
+        if env_schema_path:
+            schema_override = Path(env_schema_path)
 
         with self._module_context():
             model_module = self._load_model_module()
@@ -101,18 +87,23 @@ class PCVRExperiment(PCVRExperimentRuntimeMixin):
             summary = dict(train_pcvr_model(
                 model_module=model_module,
                 model_class_name=self.model_class_name,
+                model_type=self.model_type,
                 package_dir=self.package_dir,
                 defaults=self.train_defaults,
-                arg_parser=self.train_arg_parser,
-                train_hooks=self.train_hooks,
-                argv=forwarded_args,
+                config_type=self.config_type,
+                argv=request.extra_args,
+                dataset_path=dataset_path,
+                schema_path_override=schema_override,
+                ckpt_dir=ckpt_dir,
+                log_dir=train_log_dir,
+                tf_events_dir=tensorboard_dir,
             ) or {})
 
         resolved_schema_path = Path(summary["schema_path"]).expanduser().resolve()
 
-        observed_schema_payload = self.runtime_hooks.write_train_split_observed_schema_reports(
+        observed_schema_payload = default_write_train_split_observed_schema_reports(
             self,
-            dataset_path=resolved_dataset_path,
+            dataset_path=dataset_path,
             schema_path=resolved_schema_path,
             run_dir=run_dir,
             valid_ratio=float(summary["valid_ratio"]),
@@ -123,7 +114,7 @@ class PCVRExperiment(PCVRExperimentRuntimeMixin):
         payload = dict(summary)
         payload["experiment_name"] = self.name
         payload["run_dir"] = str(run_dir)
-        payload["checkpoint_root"] = str(run_dir)
+        payload["checkpoint_root"] = str(ckpt_dir)
         payload["schema_path"] = str(resolved_schema_path)
         payload.update(observed_schema_payload)
         return payload
@@ -133,11 +124,11 @@ class PCVRExperiment(PCVRExperimentRuntimeMixin):
             request.dataset_path,
             request.schema_path,
         )
-        checkpoint = self.runtime_hooks.resolve_evaluation_checkpoint(self, request)
+        checkpoint = default_resolve_evaluation_checkpoint(self, request)
         output_path = request.output_path or (request.run_dir / "evaluation.json")
         predictions_path = request.predictions_path or (request.run_dir / "validation_predictions.jsonl")
-        config = self.runtime_hooks.load_train_config(self, checkpoint.parent)
-        resolved_schema_path, resolved_schema = self.runtime_hooks.load_runtime_schema(
+        config = default_load_train_config(self, checkpoint.parent)
+        resolved_schema_path, resolved_schema = default_load_runtime_schema(
             self,
             dataset_path=resolved_dataset_path,
             schema_path=resolved_schema_override,
@@ -209,7 +200,7 @@ class PCVRExperiment(PCVRExperimentRuntimeMixin):
             "schema_path": str(resolved_schema_path),
             "schema": resolved_schema,
             "metrics": metrics,
-            "data_diagnostics": self.runtime_hooks.build_evaluation_data_diagnostics(self, resolved_dataset_path),
+            "data_diagnostics": default_build_evaluation_data_diagnostics(self, resolved_dataset_path),
             "validation_predictions_path": str(predictions_path),
             "batch_size": effective_batch_size,
             "num_workers": effective_num_workers,
@@ -222,7 +213,7 @@ class PCVRExperiment(PCVRExperimentRuntimeMixin):
         )
         payload["telemetry"] = telemetry_payload
         observed_schema_path = output_path.with_name("evaluation_observed_schema.json")
-        self.runtime_hooks.write_observed_schema_report(
+        default_write_observed_schema_report(
             self,
             dataset_path=resolved_dataset_path,
             schema_path=resolved_schema_path,
@@ -239,9 +230,9 @@ class PCVRExperiment(PCVRExperimentRuntimeMixin):
             request.dataset_path,
             request.schema_path,
         )
-        checkpoint = self.runtime_hooks.resolve_inference_checkpoint(self, request)
-        config = self.runtime_hooks.load_train_config(self, checkpoint.parent)
-        resolved_schema_path, resolved_schema = self.runtime_hooks.load_runtime_schema(
+        checkpoint = default_resolve_inference_checkpoint(self, request)
+        config = default_load_train_config(self, checkpoint.parent)
+        resolved_schema_path, resolved_schema = default_load_runtime_schema(
             self,
             dataset_path=resolved_dataset_path,
             schema_path=resolved_schema_override,

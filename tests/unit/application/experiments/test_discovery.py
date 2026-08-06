@@ -27,58 +27,8 @@ def _write_minimal_pcvr_experiment(package_dir: Path, *, experiment_name: str, m
                 PCVRTrainConfig,
             )
             from taac2026.application.experiments.experiment import PCVRExperiment
-            from taac2026.application.evaluation.workflow import (
-                PCVRPredictionHooks,
-                default_build_prediction_data,
-                default_build_prediction_model,
-                default_prepare_prediction_runner,
-                default_run_prediction_loop,
-            )
-            from taac2026.application.evaluation.runtime import (
-                PCVRRuntimeHooks,
-                default_build_evaluation_data_diagnostics,
-                default_load_runtime_schema,
-                default_load_train_config,
-                default_resolve_evaluation_checkpoint,
-                default_resolve_inference_checkpoint,
-                default_write_observed_schema_report,
-                default_write_train_split_observed_schema_reports,
-            )
-            from taac2026.application.training.workflow import (
-                PCVRTrainHooks,
-                default_build_train_data,
-                default_build_train_model,
-                default_build_train_summary,
-                default_build_train_trainer,
-                default_run_training,
-            )
-            from taac2026.application.training.args import parse_pcvr_train_args
             from taac2026.infrastructure.runtime.execution import RuntimeExecutionConfig
-
-            TRAIN_HOOKS = PCVRTrainHooks(
-                build_data=default_build_train_data,
-                build_model=default_build_train_model,
-                build_trainer=default_build_train_trainer,
-                run_training=default_run_training,
-                build_summary=default_build_train_summary,
-            )
-
-            PREDICTION_HOOKS = PCVRPredictionHooks(
-                build_data=default_build_prediction_data,
-                build_model=default_build_prediction_model,
-                prepare_predictor=default_prepare_prediction_runner,
-                run_loop=default_run_prediction_loop,
-            )
-
-            RUNTIME_HOOKS = PCVRRuntimeHooks(
-                resolve_evaluation_checkpoint=default_resolve_evaluation_checkpoint,
-                resolve_inference_checkpoint=default_resolve_inference_checkpoint,
-                load_train_config=default_load_train_config,
-                load_runtime_schema=default_load_runtime_schema,
-                build_evaluation_data_diagnostics=default_build_evaluation_data_diagnostics,
-                write_observed_schema_report=default_write_observed_schema_report,
-                write_train_split_observed_schema_reports=default_write_train_split_observed_schema_reports,
-            )
+            from .model import {model_class_name}
 
             TRAIN_DEFAULTS = PCVRTrainConfig(
                 data=PCVRDataConfig(
@@ -134,40 +84,35 @@ def _write_minimal_pcvr_experiment(package_dir: Path, *, experiment_name: str, m
                     emb_skip_threshold=1_000_000,
                     seq_id_threshold=10000,
                     gradient_checkpointing=False,
-                ),
-                ns=PCVRNSConfig(
-                    grouping_strategy="explicit",
-                    user_groups={{"U1": [0]}},
-                    item_groups={{"I1": [0]}},
-                    tokenizer_type="rankmixer",
-                    user_tokens=5,
-                    item_tokens=2,
+                    ns=PCVRNSConfig(
+                        grouping_strategy="explicit",
+                        user_groups={{"U1": [0]}},
+                        item_groups={{"I1": [0]}},
+                        tokenizer_type="rankmixer",
+                        user_tokens=5,
+                        item_tokens=2,
+                    ),
                 ),
             )
 
             EXPERIMENT = PCVRExperiment(
                 name={experiment_name!r},
                 package_dir=Path(__file__).resolve().parent,
-                model_class_name={model_class_name!r},
+                model_type={model_class_name},
+                config_type=PCVRTrainConfig,
                 train_defaults=TRAIN_DEFAULTS,
-                train_arg_parser=parse_pcvr_train_args,
-                train_hooks=TRAIN_HOOKS,
-                prediction_hooks=PREDICTION_HOOKS,
-                runtime_hooks=RUNTIME_HOOKS,
             )
 
-            __all__ = ["EXPERIMENT", "PREDICTION_HOOKS", "RUNTIME_HOOKS", "TRAIN_DEFAULTS", "TRAIN_HOOKS"]
+            __all__ = ["EXPERIMENT", "TRAIN_DEFAULTS"]
             """
         ).lstrip(),
         encoding="utf-8",
     )
     (package_dir / "model.py").write_text(
-        "from taac2026.infrastructure.modeling import ModelInput\n"
-        "\n"
         f"class {model_class_name}:\n"
         "    pass\n"
         "\n"
-        f"__all__ = [\"ModelInput\", \"{model_class_name}\"]\n",
+        f"__all__ = [\"{model_class_name}\"]\n",
         encoding="utf-8",
     )
 

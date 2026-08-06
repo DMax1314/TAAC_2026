@@ -1,22 +1,21 @@
-"""Composable PCVR runtime hooks for checkpoint, schema, and report handling."""
+"""PCVR evaluation runtime services for checkpoint, schema, and report handling."""
 
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 from taac2026.domain.requests import EvalRequest, InferRequest
 from taac2026.infrastructure.checkpoints import resolve_checkpoint_path
 from taac2026.infrastructure.io.files import read_json, write_json
 import taac2026.infrastructure.data.dataset as pcvr_data
 from taac2026.domain.config import (
-    REQUIRED_PCVR_TRAIN_CONFIG_KEYS,
+    PCVRTrainConfig,
 )
 from taac2026.infrastructure.logging import logger
 from taac2026.domain.sidecar import load_pcvr_train_config_sidecar
-from taac2026.infrastructure.modeling.model_contract import resolve_schema_path
+from taac2026.infrastructure.modeling.model_contract import resolve_checkpoint_schema_path
 
 
 def default_resolve_evaluation_checkpoint(experiment: Any, request: EvalRequest) -> Path:
@@ -35,17 +34,12 @@ def default_resolve_inference_checkpoint(experiment: Any, request: InferRequest)
     return checkpoint
 
 
-def default_load_train_config(experiment: Any, checkpoint_dir: Path) -> dict[str, Any]:
-    del experiment
+def default_load_train_config(experiment: Any, checkpoint_dir: Path) -> PCVRTrainConfig:
     config_path = checkpoint_dir / "train_config.json"
     if not config_path.exists():
         raise FileNotFoundError(f"PCVR train_config.json not found in checkpoint directory: {checkpoint_dir}")
-    config = load_pcvr_train_config_sidecar(read_json(config_path))
-    missing_keys = sorted(REQUIRED_PCVR_TRAIN_CONFIG_KEYS - set(config))
-    if missing_keys:
-        joined = ", ".join(missing_keys)
-        raise KeyError(f"PCVR train_config.json is missing required key(s): {joined}")
-    return config
+    payload = load_pcvr_train_config_sidecar(read_json(config_path), config_type=experiment.config_type)
+    return payload
 
 
 def default_load_runtime_schema(
@@ -56,8 +50,8 @@ def default_load_runtime_schema(
     checkpoint_dir: Path,
     mode: str,
 ) -> tuple[Path, Any]:
-    del experiment
-    resolved_schema_path = resolve_schema_path(dataset_path, schema_path, checkpoint_dir)
+    del experiment, dataset_path
+    resolved_schema_path = resolve_checkpoint_schema_path(checkpoint_dir, schema_path)
     logger.info("Resolved PCVR {} schema.json: {}", mode, resolved_schema_path)
     return resolved_schema_path, read_json(resolved_schema_path)
 
@@ -153,7 +147,7 @@ def default_write_train_split_observed_schema_reports(
         raise ValueError(f"unsupported split_strategy={split_strategy!r}")
     observed_schema_paths = {
         "train_split": str(
-            experiment.runtime_hooks.write_observed_schema_report(
+            default_write_observed_schema_report(
                 experiment,
                 dataset_path=dataset_path,
                 schema_path=schema_path,
@@ -164,7 +158,7 @@ def default_write_train_split_observed_schema_reports(
             )
         ),
         "valid_split": str(
-            experiment.runtime_hooks.write_observed_schema_report(
+            default_write_observed_schema_report(
                 experiment,
                 dataset_path=dataset_path,
                 schema_path=schema_path,
@@ -200,98 +194,7 @@ def default_write_train_split_observed_schema_reports(
     }
 
 
-class ResolveEvaluationCheckpointHook(Protocol):
-    def __call__(self, experiment: Any, request: EvalRequest) -> Path:
-        ...
-
-
-class ResolveInferenceCheckpointHook(Protocol):
-    def __call__(self, experiment: Any, request: InferRequest) -> Path:
-        ...
-
-
-class LoadTrainConfigHook(Protocol):
-    def __call__(self, experiment: Any, checkpoint_dir: Path) -> dict[str, Any]:
-        ...
-
-
-class LoadRuntimeSchemaHook(Protocol):
-    def __call__(
-        self,
-        experiment: Any,
-        *,
-        dataset_path: Path,
-        schema_path: Path | None,
-        checkpoint_dir: Path,
-        mode: str,
-    ) -> tuple[Path, Any]:
-        ...
-
-
-class BuildEvaluationDataDiagnosticsHook(Protocol):
-    def __call__(self, experiment: Any, dataset_path: Path) -> dict[str, Any]:
-        ...
-
-
-class WriteObservedSchemaReportHook(Protocol):
-    def __call__(
-        self,
-        experiment: Any,
-        *,
-        dataset_path: Path,
-        schema_path: Path,
-        output_path: Path,
-        dataset_role: str,
-        row_group_range: tuple[int, int] | None = None,
-        timestamp_range: pcvr_data.PCVRTimestampRange | None = None,
-    ) -> Path:
-        ...
-
-
-class WriteTrainSplitObservedSchemaReportsHook(Protocol):
-    def __call__(
-        self,
-        experiment: Any,
-        *,
-        dataset_path: Path,
-        schema_path: Path,
-        run_dir: Path,
-        valid_ratio: float,
-        train_ratio: float,
-        split_strategy: str = "row_group_tail",
-    ) -> dict[str, Any]:
-        ...
-
-
-@dataclass(frozen=True, slots=True)
-class PCVRRuntimeHooks:
-    resolve_evaluation_checkpoint: ResolveEvaluationCheckpointHook = default_resolve_evaluation_checkpoint
-    resolve_inference_checkpoint: ResolveInferenceCheckpointHook = default_resolve_inference_checkpoint
-    load_train_config: LoadTrainConfigHook = default_load_train_config
-    load_runtime_schema: LoadRuntimeSchemaHook = default_load_runtime_schema
-    build_evaluation_data_diagnostics: BuildEvaluationDataDiagnosticsHook = default_build_evaluation_data_diagnostics
-    write_observed_schema_report: WriteObservedSchemaReportHook = default_write_observed_schema_report
-    write_train_split_observed_schema_reports: WriteTrainSplitObservedSchemaReportsHook = default_write_train_split_observed_schema_reports
-
-
-DEFAULT_PCVR_RUNTIME_HOOKS = PCVRRuntimeHooks()
-
-
-def build_pcvr_runtime_hooks(**overrides: Any) -> PCVRRuntimeHooks:
-    return replace(DEFAULT_PCVR_RUNTIME_HOOKS, **overrides)
-
-
 __all__ = [
-    "DEFAULT_PCVR_RUNTIME_HOOKS",
-    "BuildEvaluationDataDiagnosticsHook",
-    "LoadRuntimeSchemaHook",
-    "LoadTrainConfigHook",
-    "PCVRRuntimeHooks",
-    "ResolveEvaluationCheckpointHook",
-    "ResolveInferenceCheckpointHook",
-    "WriteObservedSchemaReportHook",
-    "WriteTrainSplitObservedSchemaReportsHook",
-    "build_pcvr_runtime_hooks",
     "default_build_evaluation_data_diagnostics",
     "default_load_runtime_schema",
     "default_load_train_config",

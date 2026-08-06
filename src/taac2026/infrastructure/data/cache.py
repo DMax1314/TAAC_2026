@@ -13,7 +13,10 @@ from taac2026.infrastructure.data.batches import (
     PCVRBatch,
     PCVRSharedTensorSpec,
     clone_pcvr_batch,
+    get_pcvr_batch_tensor,
+    pcvr_batch_from_parts,
     pcvr_batch_row_count,
+    pcvr_tensor_paths,
 )
 from taac2026.infrastructure.data.native.cache_index import load_native_cache_index
 
@@ -334,6 +337,7 @@ class PCVRSharedBatchCache:
         self.uses_native_opt_index = self.policy == "opt"
         self.static_values = dict(static_values or {})
         self.tensor_specs = dict(tensor_specs or {})
+        self._tensor_paths = pcvr_tensor_paths(list(self.static_values.get("_seq_domains", [])))
         self._lock = mp.RLock()
         self._key_ids: dict[Hashable, int] = {}
         self._key_to_slot = torch.empty(0, dtype=torch.int64).share_memory_()
@@ -516,19 +520,22 @@ class PCVRSharedBatchCache:
     def _write_slot(self, slot_index: int, batch: PCVRBatch) -> int:
         row_count = pcvr_batch_row_count(batch)
         for tensor_key, storage in self._storage_items:
-            value = batch.get(tensor_key)
-            if not isinstance(value, torch.Tensor):
-                raise KeyError(f"shared cache tensor key missing from batch: {tensor_key}")
+            value = get_pcvr_batch_tensor(batch, self._tensor_paths[tensor_key])
             target = storage[slot_index]
             if row_count > 0:
                 target[:row_count].copy_(value)
         return row_count
 
     def _materialize_slot(self, slot_index: int, row_count: int) -> PCVRBatch:
-        batch: PCVRBatch = dict(self.static_values)
-        for tensor_key, storage in self._storage_items:
-            batch[tensor_key] = storage[slot_index][:row_count].clone()
-        return batch
+        tensors = {
+            tensor_key: storage[slot_index][:row_count].clone()
+            for tensor_key, storage in self._storage_items
+        }
+        return pcvr_batch_from_parts(
+            tensors,
+            seq_domains=list(self.static_values.get("_seq_domains", [])),
+            user_id=list(self.static_values.get("user_id", [])),
+        )
 
     def _key_id_for(self, key: Hashable) -> int:
         try:

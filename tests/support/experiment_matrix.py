@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -8,6 +7,7 @@ from pathlib import Path
 from tests.support.paths import locate_repo_root
 from taac2026.application.experiments.discovery import discover_experiment_paths
 from taac2026.application.experiments.registry import load_experiment_package
+from taac2026.infrastructure.experiments.module_loader import load_experiment_submodule
 
 
 REPO_ROOT = locate_repo_root(Path(__file__))
@@ -64,10 +64,4 @@ def get_experiment_case(experiment_path: str) -> ExperimentCase:
 
 
 def load_model_module(experiment_case: ExperimentCase):
-    model_path = experiment_case.package_dir / "model.py"
-    spec = importlib.util.spec_from_file_location(experiment_case.module + ".model", model_path)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return load_experiment_submodule(experiment_case.package_dir, "model")

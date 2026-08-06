@@ -49,8 +49,8 @@ src/taac2026/
 │   ├── metrics.py             # AUC / LogLoss / GAUC / 诊断指标
 │   ├── requests.py            # TrainRequest / EvalRequest / InferRequest
 │   ├── runtime_config.py      # AMP、compile、determinism、loss 和 optimizer 边界配置
-│   ├── schema.py              # FeatureSchema 与时间桶常量
-│   └── sidecar.py             # train_config sidecar 契约与版本
+│   ├── schema.py              # PCVRSchema（frozen Pydantic，extra=forbid）
+│   └── sidecar.py             # train_config sidecar 契约
 ├── application/
 │   ├── benchmarking/
 │   │   ├── generate_pcvr_synthetic_dataset.py
@@ -121,7 +121,7 @@ src/taac2026/
     │   └── streams.py
     ├── modeling/
     │   ├── embeddings.py
-    │   ├── model_contract.py  # ModelInput、schema -> model、batch -> input contract
+    │   ├── model_contract.py  # schema -> 模型构造 specs（build_pcvr_model_specs）
     │   ├── normalization.py
     │   ├── sequence.py
     │   ├── tensors.py
@@ -166,7 +166,7 @@ experiments/
 │   ├── layers.py
 │   └── model.py
 ├── symbiosis/
-│   ├── __init__.py            # 自定义 hooks、额外 CLI 参数和消融默认值
+│   ├── __init__.py            # V2/V3 配置扩展（SymbiosisModelConfig）与消融默认值
 │   ├── layers.py
 │   └── model.py
 ├── host_device_info/
@@ -251,7 +251,7 @@ Pydantic 在这个仓库里主要用于跨边界 payload，而不是替代所有
 
 这些模型应继承 `taac2026.domain.validation.TAACBoundaryModel`，默认拒绝未知字段，避免平台或历史文件悄悄带入未定义配置。业务版本、格式号、路径范围、枚举兼容等规则应放在模型或紧邻模型的验证函数里。
 
-内部训练上下文、张量载体、轻量不可变默认配置和热路径对象仍优先使用 dataclass 或现有专用类型。不要为了“使用 Pydantic”而整体迁移 `PCVRTrainConfig` 这类实验默认配置；更好的做法是在它们序列化到 sidecar、manifest 或平台 payload 时做边界校验。
+实验默认配置（`PCVRTrainConfig` 及其子配置）本身就是 frozen Pydantic 模型：CLI 解析（Tyro）、checkpoint sidecar 和实验包默认值共享同一份权威表示。内部训练上下文、张量载体和热路径对象仍优先使用 dataclass 或专用类型（如 `PCVRBatch`、`PCVRModelInput`）。
 
 ## 实验包是什么
 
@@ -276,7 +276,7 @@ experiments/baseline/
 - `PCVRTrainConfig`、`PCVRModelConfig`、`PCVRNSConfig`
 - `PCVRDataPipelineConfig`、cache 和 transform 配置
 - `RuntimeExecutionConfig`、`PCVRLossConfig`、`PCVRLossTermConfig`
-- `ModelInput`
+- `PCVRModelInput`、`PCVRBatch`、`PCVRSequenceInput`、`PCVREntityInput`
 - 建模 primitives，例如 tokenizer、embedding bank、RMSNorm
 - `create_pcvr_experiment`
 
@@ -290,7 +290,7 @@ experiments/baseline/
 | ------------------------------- | ------------------ | ---------------------- | --------------------------------- |
 | `model.safetensors`             | trainer            | evaluation / inference | 模型权重                          |
 | `schema.json`                   | checkpoint sidecar | model contract         | 重建 feature schema               |
-| `train_config.json`             | checkpoint sidecar | runtime hooks          | 重建模型配置、NS 分组和运行时参数 |
+| `train_config.json`             | checkpoint sidecar | evaluation runtime   | 重建模型配置、NS 分组和运行时参数 |
 | `.taac_training_manifest.json`  | package train      | bundle bootstrap       | 训练 bundle 元数据                |
 | `.taac_inference_manifest.json` | package infer      | inference bootstrap    | 推理 bundle 元数据                |
 
@@ -309,9 +309,12 @@ bash run.sh train --experiment experiments/baseline
 1. `run.sh` 分发到 `taac-train`。
 2. training CLI 解析实验包和输出目录。
 3. experiment registry 加载 `experiments/<name>/__init__.py` 的 `EXPERIMENT`。
-4. PCVR train workflow 解析默认配置、数据、schema 和 hooks。
-5. data infrastructure 读取 parquet，构造 batch，执行 cache / transforms。
-6. model contract 把 schema 和 batch 转成模型构造参数与 `ModelInput`。
+4. PCVR train workflow 解析默认配置、数据与 schema。schema 来源按场景固定：
+   - 训练：显式 CLI/环境变量路径，否则数据集目录的 `schema.json`（`resolve_training_schema_path`）；
+   - 评估/推理：显式路径，否则 checkpoint 同目录的 `schema.json`（`resolve_checkpoint_schema_path`）。
+   显式路径不存在立即失败，不做多级探测。
+5. data infrastructure 读取 parquet，构造 `PCVRBatch`，执行 cache / transforms。
+6. model contract 把 schema 编译成模型构造 specs（`build_pcvr_model_specs`），统一构造 `model_type(schema, config)`。
 7. trainer 执行训练，写 checkpoint 和 sidecar。
 
 训练产物的关键约定：
@@ -323,7 +326,7 @@ global_step*/
 └── train_config.json
 ```
 
-评估和推理会读取 checkpoint 同目录的 sidecar 来重建模型输入契约。
+评估和推理会读取 checkpoint 同目录的 sidecar 来重建模型输入契约。`schema.json` 与 `train_config.json` 都是 checkpoint 的必需 sidecar：`write_checkpoint_sidecars` 同时写出两者，缺少任何一个都会失败，避免出现"权重已保存但配置缺失"的中间产物。`train_config.json` 是 typed `PCVRTrainConfig` 的完整快照（`build_pcvr_train_config_sidecar` / `load_pcvr_train_config_sidecar`），加载时校验字段完整性，缺字段或未知字段都会报错，不会用当前默认值静默补齐。
 
 相关实现文件：
 

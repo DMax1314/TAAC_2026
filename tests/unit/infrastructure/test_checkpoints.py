@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 import torch
 
+from taac2026.domain.config import PCVRModelConfig, PCVRNSConfig, PCVRTrainConfig
 from taac2026.infrastructure.io.json import loads
 from taac2026.infrastructure.checkpoints import (
     PRIMARY_CHECKPOINT_FILENAME,
@@ -37,7 +38,7 @@ def test_build_checkpoint_dir_name_uses_validation_auc_suffix() -> None:
     assert build_checkpoint_dir_name(12, {"auc": 0.8123456, "head": 4, "hidden": 64}) == "global_step12.AUC=0.812346"
 
 
-def test_write_checkpoint_sidecars_persists_explicit_ns_group_config(tmp_path: Path) -> None:
+def test_write_checkpoint_sidecars_persists_typed_train_config(tmp_path: Path) -> None:
     checkpoint_dir = tmp_path / "global_step1"
     schema_path = tmp_path / "schema.json"
     schema_path.write_text('{"schema": true}\n', encoding="utf-8")
@@ -45,20 +46,46 @@ def test_write_checkpoint_sidecars_persists_explicit_ns_group_config(tmp_path: P
     written = write_checkpoint_sidecars(
         checkpoint_dir,
         schema_path=schema_path,
-        train_config={
-            "ns_grouping_strategy": "explicit",
-            "user_ns_groups": {"u": [10, 20]},
-            "item_ns_groups": {"i": [7]},
-            "d_model": 64,
-        },
+        train_config=PCVRTrainConfig(
+            model=PCVRModelConfig(
+                d_model=64,
+                ns=PCVRNSConfig(
+                    grouping_strategy="explicit",
+                    user_groups={"u": [10, 20]},
+                    item_groups={"i": [7]},
+                ),
+            ),
+        ),
     )
 
     assert set(written) == {"schema", "train_config"}
     assert (checkpoint_dir / "schema.json").exists()
     payload = loads((checkpoint_dir / "train_config.json").read_bytes())
-    assert payload["train_config"]["ns_grouping_strategy"] == "explicit"
-    assert payload["train_config"]["user_ns_groups"] == {"u": [10, 20]}
-    assert payload["train_config"]["item_ns_groups"] == {"i": [7]}
+    assert payload["train_config"]["model"]["ns"]["grouping_strategy"] == "explicit"
+    assert payload["train_config"]["model"]["ns"]["user_groups"] == {"u": [10, 20]}
+    assert payload["train_config"]["model"]["ns"]["item_groups"] == {"i": [7]}
+    assert payload["train_config"]["model"]["d_model"] == 64
+
+
+def test_write_checkpoint_sidecars_requires_schema(tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "global_step1"
+    missing_schema = tmp_path / "missing_schema.json"
+
+    with pytest.raises(FileNotFoundError, match="schema"):
+        write_checkpoint_sidecars(
+            checkpoint_dir,
+            schema_path=missing_schema,
+            train_config=PCVRTrainConfig(),
+        )
+
+
+def test_write_checkpoint_sidecars_requires_train_config(tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "global_step1"
+    schema_path = tmp_path / "schema.json"
+    schema_path.write_text('{"schema": true}\n', encoding="utf-8")
+
+    with pytest.raises(TypeError, match="train_config"):
+        write_checkpoint_sidecars(checkpoint_dir, schema_path=schema_path)
 
 
 def test_save_and_load_checkpoint_state_dict_round_trip(tmp_path: Path) -> None:

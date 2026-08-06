@@ -8,7 +8,7 @@ icon: lucide/zap
 
 Symbiosis 是仓库里最完整的“分布感知统一 token-stream”实验包。它把非序列字段、候选物品、行为序列、缺失状态、时间信息、序列统计和风险先验统一翻译成 token，再交给同构 backbone。
 
-当前实现以 Symbiosis V2 为主体，并在新训练默认启用 V3 的确定性 memory event selector。V3 不引入可学习路由器，也不增加 loss；它只改变长序列进入 unified token stream 前的预算分配和 memory 事件选择规则。旧 checkpoint sidecar 如果没有 V3 字段，会按 V2 路径回退，避免老权重评估/推理时行为漂移。
+当前实现以 Symbiosis V2 为主体，并在新训练默认启用 V3 的确定性 memory event selector。V3 不引入可学习路由器，也不增加 loss；它只改变长序列进入 unified token stream 前的预算分配和 memory 事件选择规则。`v3_enabled` 是当前配置的普通布尔选项，不构成历史兼容机制；checkpoint sidecar 是完整配置快照，旧 sidecar 缺少 V3 字段会直接校验失败，而不是静默回退。
 
 ## 一、为什么需要 Symbiosis
 
@@ -24,7 +24,7 @@ Symbiosis 的假设是：统一架构不能只统一数值表示，还必须统�
 | ------------------- | ------------------------------------------------------- |
 | 实验名              | `pcvr_symbiosis`                                        |
 | 模型类              | `PCVRSymbiosis`                                         |
-| 自定义 hook         | train/prediction build model，runtime load train config |
+| 配置扩展            | `SymbiosisModelConfig`（V2/V3 选项）+ 消融默认值         |
 | batch size          | `128`                                                   |
 | split / sampling    | `timestamp_auto` / `row_group_sweep`                    |
 | 序列上限            | `seq_a:256,seq_b:256,seq_c:1024,seq_d:2048`             |
@@ -92,7 +92,7 @@ Sparse 字段使用字段级 missing embedding。`user_int_missing_mask` 与 `it
 seq domain = memory event tokens + recent event tokens
 ```
 
-V2 fallback 每域使用 `8` 个 memory event 和 `16` 个 recent event。V3 新训练默认采用来源感知预算：
+V3 关闭时每域使用 `8` 个 memory event 和 `16` 个 recent event。V3 新训练默认采用来源感知预算：
 
 | 来源    | recent | memory | 直觉                                      |
 | ------- | ------ | ------ | ----------------------------------------- |

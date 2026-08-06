@@ -10,7 +10,7 @@ import tempfile
 import time
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Literal, NamedTuple
+from typing import Any, Literal
 
 import torch
 import torch.nn as nn
@@ -20,7 +20,9 @@ import tyro
 from taac2026.infrastructure.io.json import dumps
 from taac2026.infrastructure.io.rich_output import print_rich_summary
 from taac2026.infrastructure.io.streams import write_stdout_line
+from taac2026.domain.config import PCVRModelConfig, PCVRTrainConfig
 from taac2026.domain.runtime_config import DENSE_OPTIMIZER_TYPE_CHOICES, RuntimeExecutionConfig
+from taac2026.api import PCVRBatch, PCVREntityInput, PCVRModelInput
 from taac2026.infrastructure.runtime.trainer import PCVRPointwiseTrainer
 from taac2026.infrastructure.runtime.execution import (
     EarlyStopping,
@@ -57,16 +59,6 @@ class PCVROptimizerBenchmarkArgs:
     json: bool = False
 
 
-class ModelInput(NamedTuple):
-    user_int_feats: torch.Tensor
-    item_int_feats: torch.Tensor
-    user_dense_feats: torch.Tensor
-    item_dense_feats: torch.Tensor
-    seq_data: dict[str, torch.Tensor]
-    seq_lens: dict[str, torch.Tensor]
-    seq_time_buckets: dict[str, torch.Tensor]
-
-
 class SyntheticPCVRModel(nn.Module):
     def __init__(self, *, feature_dim: int, hidden_dim: int, depth: int) -> None:
         super().__init__()
@@ -77,9 +69,9 @@ class SyntheticPCVRModel(nn.Module):
         )
         self.output_layer = nn.Linear(hidden_dim, 1)
 
-    def forward(self, model_input: ModelInput) -> torch.Tensor:
+    def forward(self, model_input: PCVRModelInput) -> torch.Tensor:
         features = torch.cat(
-            [model_input.user_dense_feats, model_input.item_dense_feats],
+            [model_input.user.dense_values, model_input.item.dense_values],
             dim=-1,
         )
         hidden = F.gelu(self.input_layer(features))
@@ -87,7 +79,7 @@ class SyntheticPCVRModel(nn.Module):
             hidden = F.gelu(layer(hidden))
         return self.output_layer(hidden)
 
-    def predict(self, model_input: ModelInput) -> tuple[torch.Tensor, torch.Tensor]:
+    def predict(self, model_input: PCVRModelInput) -> tuple[torch.Tensor, torch.Tensor]:
         logits = self.forward(model_input)
         return logits, torch.empty(0, device=logits.device)
 
@@ -150,18 +142,29 @@ def _build_synthetic_batch(
     batch_size: int,
     feature_dim: int,
     seed: int,
-) -> dict[str, object]:
+) -> PCVRBatch:
     generator = torch.Generator(device="cpu")
     generator.manual_seed(seed)
-    labels = torch.randint(0, 2, (batch_size,), generator=generator, dtype=torch.int64).float()
-    return {
-        "label": labels,
-        "_seq_domains": [],
-        "user_int_feats": torch.zeros((batch_size, 1), dtype=torch.long),
-        "item_int_feats": torch.zeros((batch_size, 1), dtype=torch.long),
-        "user_dense_feats": torch.randn((batch_size, feature_dim), generator=generator),
-        "item_dense_feats": torch.randn((batch_size, feature_dim), generator=generator),
-    }
+    labels = torch.randint(0, 2, (batch_size,), generator=generator, dtype=torch.int64)
+    user = PCVREntityInput(
+        int_values=torch.zeros((batch_size, 1), dtype=torch.long),
+        int_missing_mask=torch.zeros((batch_size, 1), dtype=torch.bool),
+        dense_values=torch.randn((batch_size, feature_dim), generator=generator),
+        dense_missing_mask=torch.zeros((batch_size, feature_dim), dtype=torch.bool),
+    )
+    item = PCVREntityInput(
+        int_values=torch.zeros((batch_size, 1), dtype=torch.long),
+        int_missing_mask=torch.zeros((batch_size, 1), dtype=torch.bool),
+        dense_values=torch.randn((batch_size, feature_dim), generator=generator),
+        dense_missing_mask=torch.zeros((batch_size, feature_dim), dtype=torch.bool),
+    )
+    inputs = PCVRModelInput(
+        user=user,
+        item=item,
+        sequences={},
+        request_timestamp=torch.zeros(batch_size, dtype=torch.int64),
+    )
+    return PCVRBatch(inputs=inputs, label=labels, user_id=[])
 
 
 def _synchronize(device: torch.device) -> None:
@@ -261,7 +264,7 @@ def _benchmark_optimizer(
     args: PCVROptimizerBenchmarkArgs,
     device: torch.device,
     base_state: dict[str, Any],
-    batch: dict[str, object],
+    batch: PCVRBatch,
 ) -> OptimizerBenchmarkResult:
     model = SyntheticPCVRModel(
         feature_dim=args.feature_dim,
@@ -275,7 +278,6 @@ def _benchmark_optimizer(
         with tempfile.TemporaryDirectory(prefix="pcvr_optimizer_bench_") as tempdir:
             trainer = PCVRPointwiseTrainer(
                 model=model,
-                model_input_type=ModelInput,
                 train_loader=[],
                 valid_loader=[],
                 lr=args.lr,
@@ -283,6 +285,19 @@ def _benchmark_optimizer(
                 device=str(device),
                 save_dir=Path(tempdir),
                 early_stopping=EarlyStopping(Path(tempdir) / "best" / "model.safetensors", patience_steps=2),
+                schema_path=Path(tempdir) / "schema.json",
+                train_config=PCVRTrainConfig(
+                    model=PCVRModelConfig(
+                        d_model=args.hidden_dim,
+                        emb_dim=args.hidden_dim,
+                        num_blocks=1,
+                        num_heads=2,
+                        hidden_mult=2,
+                        dropout_rate=0.0,
+                        action_num=1,
+                        use_time_buckets=False,
+                    ),
+                ),
                 dense_optimizer_type=optimizer_name,
                 runtime_execution=RuntimeExecutionConfig(
                     amp=args.amp,

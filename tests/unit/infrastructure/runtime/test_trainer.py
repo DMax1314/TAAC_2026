@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import NamedTuple
+from pathlib import Path
 
 import pytest
 import torch
 
 import taac2026.infrastructure.runtime.trainer as trainer_module
+from taac2026.domain.config import PCVRModelConfig, PCVRNSConfig, PCVRTrainConfig
 from taac2026.infrastructure.checkpoints import load_checkpoint_state_dict
+from taac2026.infrastructure.data.batches import (
+    PCVRBatch,
+    PCVREntityInput,
+    PCVRModelInput,
+)
 from taac2026.infrastructure.runtime.checkpoint_io import PCVRTrainerSupportMixin
 from taac2026.infrastructure.runtime.trainer import PCVRPointwiseTrainer
 from taac2026.infrastructure.optimization.muon import Muon
@@ -149,7 +155,7 @@ class _SparseProbeDummyModel(torch.nn.Module):
 
     def forward(self, model_input):
         self.forward_calls += 1
-        sparse_score = model_input.user_int_feats[:, 0].float() + model_input.item_int_feats[:, 0].float()
+        sparse_score = model_input.user.int_values[:, 0].float() + model_input.item.int_values[:, 0].float()
         return (sparse_score - 0.5 + self.bias).view(-1, 1)
 
     def predict(self, model_input):
@@ -162,45 +168,81 @@ class _AuxLossDummyModel(_DummyModel):
         return {"aux": self.bias.square().sum() + self.bias.new_tensor(0.25)}
 
 
-class _DummyModelInput(NamedTuple):
-    user_int_feats: torch.Tensor
-    item_int_feats: torch.Tensor
-    user_dense_feats: torch.Tensor
-    item_dense_feats: torch.Tensor
-    seq_data: dict[str, torch.Tensor]
-    seq_lens: dict[str, torch.Tensor]
-    seq_time_buckets: dict[str, torch.Tensor]
+def _schema_fixture(tmp_path: Path) -> Path:
+    schema_path = tmp_path / "schema.json"
+    schema_path.write_text(
+        '{"format": "raw_parquet", "user_int": [[1, 10, 1]], "item_int": [[2, 10, 1]], "seq": {}}',
+        encoding="utf-8",
+    )
+    return schema_path
 
 
-def _dummy_batch(labels: list[float]) -> dict[str, object]:
+def _train_config() -> PCVRTrainConfig:
+    return PCVRTrainConfig(
+        model=PCVRModelConfig(
+            d_model=16,
+            emb_dim=8,
+            num_blocks=1,
+            num_heads=2,
+            hidden_mult=2,
+            dropout_rate=0.0,
+            action_num=1,
+            use_time_buckets=False,
+            ns=PCVRNSConfig(
+                grouping_strategy="singleton",
+                tokenizer_type="rankmixer",
+                user_tokens=2,
+                item_tokens=1,
+            ),
+        ),
+    )
+
+
+def _dummy_batch(labels: list[float]) -> PCVRBatch:
     batch_size = len(labels)
-    return {
-        "label": torch.tensor(labels, dtype=torch.float32),
-        "_seq_domains": [],
-        "user_int_feats": torch.zeros((batch_size, 1), dtype=torch.long),
-        "item_int_feats": torch.zeros((batch_size, 1), dtype=torch.long),
-        "user_dense_feats": torch.zeros((batch_size, 0), dtype=torch.float32),
-        "item_dense_feats": torch.zeros((batch_size, 0), dtype=torch.float32),
-    }
+    empty = PCVREntityInput(
+        int_values=torch.zeros((batch_size, 1), dtype=torch.long),
+        int_missing_mask=torch.zeros((batch_size, 1), dtype=torch.bool),
+        dense_values=torch.zeros((batch_size, 0), dtype=torch.float32),
+        dense_missing_mask=torch.zeros((batch_size, 0), dtype=torch.bool),
+    )
+    inputs = PCVRModelInput(
+        user=empty,
+        item=empty,
+        sequences={},
+        request_timestamp=torch.zeros(batch_size, dtype=torch.long),
+    )
+    return PCVRBatch(
+        inputs=inputs,
+        label=torch.tensor(labels, dtype=torch.float32),
+        user_id=[],
+    )
 
 
-def _sparse_probe_batch() -> dict[str, object]:
-    return {
-        "label": torch.tensor([0.0, 1.0], dtype=torch.float32),
-        "_seq_domains": [],
-        "user_int_feats": torch.tensor([[0], [1]], dtype=torch.long),
-        "item_int_feats": torch.zeros((2, 1), dtype=torch.long),
-        "user_dense_feats": torch.zeros((2, 0), dtype=torch.float32),
-        "item_dense_feats": torch.zeros((2, 0), dtype=torch.float32),
-    }
+def _sparse_probe_batch() -> PCVRBatch:
+    batch = _dummy_batch([0.0, 1.0])
+    return PCVRBatch(
+        inputs=PCVRModelInput(
+            user=PCVREntityInput(
+                int_values=torch.tensor([[0], [1]], dtype=torch.long),
+                int_missing_mask=torch.zeros(2, 1, dtype=torch.bool),
+                dense_values=torch.zeros((2, 0), dtype=torch.float32),
+                dense_missing_mask=torch.zeros((2, 0), dtype=torch.bool),
+            ),
+            item=batch.inputs.item,
+            sequences={},
+            request_timestamp=batch.inputs.request_timestamp,
+        ),
+        label=batch.label,
+        user_id=[],
+    )
 
 
 def test_train_logs_progress_when_tqdm_is_disabled(monkeypatch, tmp_path, log_capture) -> None:
-    train_loader = [{"label": torch.tensor([0.0])} for _ in range(4)]
-    valid_loader = [{"label": torch.tensor([0.0])} for _ in range(3)]
+    train_loader = [_dummy_batch([0.0]) for _ in range(4)]
+    valid_loader = [_dummy_batch([0.0]) for _ in range(3)]
     trainer = PCVRPointwiseTrainer(
         model=_DummyModel(),
-        model_input_type=object,
         train_loader=train_loader,
         valid_loader=valid_loader,
         lr=1e-3,
@@ -208,6 +250,8 @@ def test_train_logs_progress_when_tqdm_is_disabled(monkeypatch, tmp_path, log_ca
         device="cpu",
         save_dir=tmp_path / "checkpoints",
         early_stopping=EarlyStopping(tmp_path / "best" / "model.safetensors", patience_steps=2),
+        schema_path=_schema_fixture(tmp_path),
+        train_config=_train_config(),
     )
 
     losses = iter((0.5, 0.4, 0.3, 0.2))
@@ -227,11 +271,10 @@ def test_train_logs_progress_when_tqdm_is_disabled(monkeypatch, tmp_path, log_ca
 
 
 def test_train_uses_runtime_execution_progress_log_interval(monkeypatch, tmp_path, log_capture) -> None:
-    train_loader = [{"label": torch.tensor([0.0])} for _ in range(4)]
-    valid_loader = [{"label": torch.tensor([0.0])} for _ in range(1)]
+    train_loader = [_dummy_batch([0.0]) for _ in range(4)]
+    valid_loader = [_dummy_batch([0.0]) for _ in range(1)]
     trainer = PCVRPointwiseTrainer(
         model=_DummyModel(),
-        model_input_type=object,
         train_loader=train_loader,
         valid_loader=valid_loader,
         lr=1e-3,
@@ -239,6 +282,8 @@ def test_train_uses_runtime_execution_progress_log_interval(monkeypatch, tmp_pat
         device="cpu",
         save_dir=tmp_path / "checkpoints",
         early_stopping=EarlyStopping(tmp_path / "best" / "model.safetensors", patience_steps=2),
+        schema_path=_schema_fixture(tmp_path),
+        train_config=_train_config(),
         runtime_execution=RuntimeExecutionConfig(progress_log_interval_steps=2),
     )
 
@@ -305,7 +350,6 @@ def test_trainer_skips_whole_model_compile_when_model_handles_internal_compile(
 
     trainer = PCVRPointwiseTrainer(
         model=model,
-        model_input_type=_DummyModelInput,
         train_loader=[],
         valid_loader=[],
         lr=1e-3,
@@ -313,6 +357,8 @@ def test_trainer_skips_whole_model_compile_when_model_handles_internal_compile(
         device="cpu",
         save_dir=tmp_path / "checkpoints",
         early_stopping=EarlyStopping(tmp_path / "best" / "model.safetensors", patience_steps=2),
+        schema_path=_schema_fixture(tmp_path),
+        train_config=_train_config(),
         runtime_execution=RuntimeExecutionConfig(compile=True),
     )
 
@@ -350,7 +396,7 @@ def test_infinite_train_batches_advances_step_window_sampler() -> None:
         sampler = StepWindowSampler()
 
         def __iter__(self):
-            return iter([{"label": torch.tensor([float(len(self.sampler.start_steps))])}])
+            return iter([_dummy_batch([float(len(self.sampler.start_steps))])])
 
     class TrainerSupport(PCVRTrainerSupportMixin):
         train_loader = OneBatchLoader()
@@ -361,14 +407,13 @@ def test_infinite_train_batches_advances_step_window_sampler() -> None:
     second = next(iterator)
 
     assert TrainerSupport.train_loader.sampler.start_steps == [0, 1]
-    assert first["label"].tolist() == [1.0]
-    assert second["label"].tolist() == [2.0]
+    assert first.label.tolist() == [1.0]
+    assert second.label.tolist() == [2.0]
 
 
 def test_trainer_runtime_execution_runs_train_and_predict_on_cpu(tmp_path) -> None:
     trainer = PCVRPointwiseTrainer(
         model=_DummyModel(),
-        model_input_type=_DummyModelInput,
         train_loader=[],
         valid_loader=[],
         lr=1e-3,
@@ -376,6 +421,8 @@ def test_trainer_runtime_execution_runs_train_and_predict_on_cpu(tmp_path) -> No
         device="cpu",
         save_dir=tmp_path / "checkpoints",
         early_stopping=EarlyStopping(tmp_path / "best" / "model.safetensors", patience_steps=2),
+        schema_path=_schema_fixture(tmp_path),
+        train_config=_train_config(),
         runtime_execution=RuntimeExecutionConfig(amp=True, amp_dtype="float16", compile=False),
     )
 
@@ -393,7 +440,6 @@ def test_trainer_writes_model_training_scalars(tmp_path) -> None:
     reporter = _RecordingReporter()
     trainer = PCVRPointwiseTrainer(
         model=_TrainingScalarDummyModel(),
-        model_input_type=_DummyModelInput,
         train_loader=[_dummy_batch([1.0])],
         valid_loader=[_dummy_batch([0.0]), _dummy_batch([1.0])],
         lr=1e-3,
@@ -402,6 +448,8 @@ def test_trainer_writes_model_training_scalars(tmp_path) -> None:
         save_dir=tmp_path / "checkpoints",
         early_stopping=EarlyStopping(tmp_path / "best" / "model.safetensors", patience_steps=2),
         reporter=reporter,
+        schema_path=_schema_fixture(tmp_path),
+        train_config=_train_config(),
         runtime_execution=RuntimeExecutionConfig(compile=False, progress_log_interval_steps=2),
     )
 
@@ -436,7 +484,6 @@ def test_trainer_train_step_matches_shared_focal_loss(tmp_path) -> None:
     )
     trainer = PCVRPointwiseTrainer(
         model=_DummyModel(),
-        model_input_type=_DummyModelInput,
         train_loader=[],
         valid_loader=[],
         lr=1e-3,
@@ -445,6 +492,8 @@ def test_trainer_train_step_matches_shared_focal_loss(tmp_path) -> None:
         save_dir=tmp_path / "checkpoints",
         early_stopping=EarlyStopping(tmp_path / "best" / "model.safetensors", patience_steps=2),
         loss_terms=expected_loss_config.to_list(),
+        schema_path=_schema_fixture(tmp_path),
+        train_config=_train_config(),
     )
     expected_loss, _components = compute_pcvr_loss(
         torch.zeros(1),
@@ -482,7 +531,6 @@ def test_trainer_combines_multiple_weighted_loss_terms(tmp_path) -> None:
     )
     trainer = PCVRPointwiseTrainer(
         model=_AuxLossDummyModel(),
-        model_input_type=_DummyModelInput,
         train_loader=[],
         valid_loader=[],
         lr=1e-3,
@@ -491,6 +539,8 @@ def test_trainer_combines_multiple_weighted_loss_terms(tmp_path) -> None:
         save_dir=tmp_path / "checkpoints",
         early_stopping=EarlyStopping(tmp_path / "best" / "model.safetensors", patience_steps=2),
         loss_terms=loss_config.to_list(),
+        schema_path=_schema_fixture(tmp_path),
+        train_config=_train_config(),
     )
     expected_loss, expected_components = compute_pcvr_loss(
         torch.zeros(1),
@@ -511,7 +561,6 @@ def test_trainer_combines_multiple_weighted_loss_terms(tmp_path) -> None:
 def test_trainer_accepts_supported_dense_optimizers(tmp_path, dense_optimizer_type: str) -> None:
     trainer = PCVRPointwiseTrainer(
         model=_DummyModel(),
-        model_input_type=object,
         train_loader=[],
         valid_loader=[],
         lr=1e-3,
@@ -520,6 +569,8 @@ def test_trainer_accepts_supported_dense_optimizers(tmp_path, dense_optimizer_ty
         save_dir=tmp_path / "checkpoints",
         early_stopping=EarlyStopping(tmp_path / "best" / "model.safetensors", patience_steps=2),
         dense_optimizer_type=dense_optimizer_type,
+        schema_path=_schema_fixture(tmp_path),
+        train_config=_train_config(),
     )
 
     assert trainer.dense_optimizer_type == dense_optimizer_type
@@ -528,7 +579,6 @@ def test_trainer_accepts_supported_dense_optimizers(tmp_path, dense_optimizer_ty
 def test_trainer_builds_fused_adamw_optimizer(tmp_path) -> None:
     trainer = PCVRPointwiseTrainer(
         model=_DummyModel(),
-        model_input_type=object,
         train_loader=[],
         valid_loader=[],
         lr=1e-3,
@@ -537,6 +587,8 @@ def test_trainer_builds_fused_adamw_optimizer(tmp_path) -> None:
         save_dir=tmp_path / "checkpoints",
         early_stopping=EarlyStopping(tmp_path / "best" / "model.safetensors", patience_steps=2),
         dense_optimizer_type="fused_adamw",
+        schema_path=_schema_fixture(tmp_path),
+        train_config=_train_config(),
     )
 
     assert isinstance(trainer.dense_optimizer, torch.optim.AdamW)
@@ -547,7 +599,6 @@ def test_trainer_muon_updates_matrix_parameters(tmp_path) -> None:
     model = _MatrixDummyModel()
     trainer = PCVRPointwiseTrainer(
         model=model,
-        model_input_type=_DummyModelInput,
         train_loader=[],
         valid_loader=[],
         lr=1e-3,
@@ -556,6 +607,8 @@ def test_trainer_muon_updates_matrix_parameters(tmp_path) -> None:
         save_dir=tmp_path / "checkpoints",
         early_stopping=EarlyStopping(tmp_path / "best" / "model.safetensors", patience_steps=2),
         dense_optimizer_type="muon",
+        schema_path=_schema_fixture(tmp_path),
+        train_config=_train_config(),
     )
     initial_weight = model.weight.detach().clone()
     initial_bias = model.bias.detach().clone()
@@ -571,7 +624,6 @@ def test_trainer_muon_updates_matrix_parameters(tmp_path) -> None:
 def test_trainer_applies_dense_warmup_and_cosine_decay(tmp_path) -> None:
     trainer = PCVRPointwiseTrainer(
         model=_DummyModel(),
-        model_input_type=_DummyModelInput,
         train_loader=[],
         valid_loader=[],
         lr=1e-3,
@@ -582,6 +634,8 @@ def test_trainer_applies_dense_warmup_and_cosine_decay(tmp_path) -> None:
         scheduler_type="cosine",
         warmup_steps=2,
         min_lr_ratio=0.2,
+        schema_path=_schema_fixture(tmp_path),
+        train_config=_train_config(),
     )
 
     observed_lrs = []
@@ -619,8 +673,7 @@ def test_trainer_uses_step_based_early_stopping_without_interval_scaling(monkeyp
     )
     trainer = PCVRPointwiseTrainer(
         model=_DummyModel(),
-        model_input_type=object,
-        train_loader=[{"label": torch.tensor([0.0])}],
+        train_loader=[_dummy_batch([0.0])],
         valid_loader=[],
         lr=1e-3,
         max_steps=10,
@@ -628,6 +681,8 @@ def test_trainer_uses_step_based_early_stopping_without_interval_scaling(monkeyp
         save_dir=tmp_path / "checkpoints",
         early_stopping=early_stopping,
         eval_every_n_steps=2,
+        schema_path=_schema_fixture(tmp_path),
+        train_config=_train_config(),
     )
 
     train_step_count = 0
@@ -653,14 +708,15 @@ def test_trainer_uses_step_based_early_stopping_without_interval_scaling(monkeyp
 def test_evaluate_accepts_bfloat16_logits(tmp_path) -> None:
     trainer = PCVRPointwiseTrainer(
         model=_DummyModel(),
-        model_input_type=object,
         train_loader=[],
-        valid_loader=[{"label": torch.tensor([0.0])}, {"label": torch.tensor([1.0])}],
+        valid_loader=[_dummy_batch([0.0]), _dummy_batch([1.0])],
         lr=1e-3,
         max_steps=1,
         device="cpu",
         save_dir=tmp_path / "checkpoints",
         early_stopping=EarlyStopping(tmp_path / "best" / "model.safetensors", patience_steps=2),
+        schema_path=_schema_fixture(tmp_path),
+        train_config=_train_config(),
     )
     logits = iter(
         (
@@ -668,7 +724,7 @@ def test_evaluate_accepts_bfloat16_logits(tmp_path) -> None:
             torch.tensor([1.0], dtype=torch.bfloat16),
         )
     )
-    trainer._evaluate_step = lambda batch: (next(logits), batch["label"])
+    trainer._evaluate_step = lambda batch: (next(logits), batch.label)
 
     auc, logloss = trainer.evaluate(step=1)
 
@@ -679,17 +735,18 @@ def test_evaluate_accepts_bfloat16_logits(tmp_path) -> None:
 def test_evaluate_uses_domain_auc_for_single_class(tmp_path) -> None:
     trainer = PCVRPointwiseTrainer(
         model=_DummyModel(),
-        model_input_type=object,
         train_loader=[],
-        valid_loader=[{"label": torch.tensor([1.0])}, {"label": torch.tensor([1.0])}],
+        valid_loader=[_dummy_batch([1.0]), _dummy_batch([1.0])],
         lr=1e-3,
         max_steps=1,
         device="cpu",
         save_dir=tmp_path / "checkpoints",
         early_stopping=EarlyStopping(tmp_path / "best" / "model.safetensors", patience_steps=2),
+        schema_path=_schema_fixture(tmp_path),
+        train_config=_train_config(),
     )
     logits = iter((torch.tensor([0.0]), torch.tensor([1.0])))
-    trainer._evaluate_step = lambda batch: (next(logits), batch["label"])
+    trainer._evaluate_step = lambda batch: (next(logits), batch.label)
 
     auc, logloss = trainer.evaluate(step=1)
 
@@ -700,17 +757,18 @@ def test_evaluate_uses_domain_auc_for_single_class(tmp_path) -> None:
 def test_evaluate_records_score_diagnostics(tmp_path, log_capture) -> None:
     trainer = PCVRPointwiseTrainer(
         model=_DummyModel(),
-        model_input_type=object,
         train_loader=[],
         valid_loader=[
-            {"label": torch.tensor([0.0, 1.0])},
-            {"label": torch.tensor([1.0, 0.0])},
+            _dummy_batch([0.0, 1.0]),
+            _dummy_batch([1.0, 0.0]),
         ],
         lr=1e-3,
         max_steps=1,
         device="cpu",
         save_dir=tmp_path / "checkpoints",
         early_stopping=EarlyStopping(tmp_path / "best" / "model.safetensors", patience_steps=2),
+        schema_path=_schema_fixture(tmp_path),
+        train_config=_train_config(),
     )
     logits = iter(
         (
@@ -718,7 +776,7 @@ def test_evaluate_records_score_diagnostics(tmp_path, log_capture) -> None:
             torch.tensor([1.0, -1.0]),
         )
     )
-    trainer._evaluate_step = lambda batch: (next(logits), batch["label"])
+    trainer._evaluate_step = lambda batch: (next(logits), batch.label)
 
     with log_capture.at_level(logging.INFO):
         auc, logloss = trainer.evaluate(step=1)
@@ -735,7 +793,6 @@ def test_trainer_rejects_probe_early_stopping_metric(tmp_path) -> None:
     with pytest.raises(ValueError, match="unsupported early stopping metric"):
         PCVRPointwiseTrainer(
             model=_SparseProbeDummyModel(),
-            model_input_type=_DummyModelInput,
             train_loader=[],
             valid_loader=[_sparse_probe_batch()],
             lr=1e-3,
@@ -744,14 +801,14 @@ def test_trainer_rejects_probe_early_stopping_metric(tmp_path) -> None:
             save_dir=tmp_path / "checkpoints",
             early_stopping=EarlyStopping(tmp_path / "best" / "model.safetensors", patience_steps=2),
             early_stopping_metric="probe_auc",
+            schema_path=_schema_fixture(tmp_path),
+            train_config=_train_config(),
         )
-
 
 def test_validation_result_saves_current_step_checkpoint(tmp_path) -> None:
     early_stopping = EarlyStopping(tmp_path / "best" / "model.safetensors", patience_steps=4)
     trainer = PCVRPointwiseTrainer(
         model=_SparseProbeDummyModel(),
-        model_input_type=_DummyModelInput,
         train_loader=[],
         valid_loader=[],
         lr=1e-3,
@@ -759,6 +816,8 @@ def test_validation_result_saves_current_step_checkpoint(tmp_path) -> None:
         device="cpu",
         save_dir=tmp_path / "checkpoints",
         early_stopping=early_stopping,
+        schema_path=_schema_fixture(tmp_path),
+        train_config=_train_config(),
     )
     trainer.last_eval_diagnostics = {"sample_count": 2}
 
@@ -775,7 +834,6 @@ def test_validation_result_saves_ema_checkpoint_when_enabled(tmp_path) -> None:
     early_stopping = EarlyStopping(tmp_path / "best" / "model.safetensors", patience_steps=4)
     trainer = PCVRPointwiseTrainer(
         model=_DummyModel(),
-        model_input_type=_DummyModelInput,
         train_loader=[],
         valid_loader=[],
         lr=1e-3,
@@ -784,6 +842,8 @@ def test_validation_result_saves_ema_checkpoint_when_enabled(tmp_path) -> None:
         save_dir=tmp_path / "checkpoints",
         early_stopping=early_stopping,
         ema_enabled=True,
+        schema_path=_schema_fixture(tmp_path),
+        train_config=_train_config(),
     )
     assert trainer.ema is not None
     with torch.no_grad():
@@ -804,7 +864,6 @@ def test_validation_result_saves_ema_checkpoint_when_enabled(tmp_path) -> None:
 def test_evaluate_uses_ema_weights_and_restores_raw_model(tmp_path) -> None:
     trainer = PCVRPointwiseTrainer(
         model=_DummyModel(),
-        model_input_type=_DummyModelInput,
         train_loader=[],
         valid_loader=[_dummy_batch([0.0])],
         lr=1e-3,
@@ -813,6 +872,8 @@ def test_evaluate_uses_ema_weights_and_restores_raw_model(tmp_path) -> None:
         save_dir=tmp_path / "checkpoints",
         early_stopping=EarlyStopping(tmp_path / "best" / "model.safetensors", patience_steps=2),
         ema_enabled=True,
+        schema_path=_schema_fixture(tmp_path),
+        train_config=_train_config(),
     )
     assert trainer.ema is not None
     with torch.no_grad():
@@ -845,7 +906,6 @@ class _NaNProducingModel(torch.nn.Module):
 def test_train_step_skips_backward_when_loss_is_nan(tmp_path, log_capture) -> None:
     trainer = PCVRPointwiseTrainer(
         model=_NaNProducingModel(),
-        model_input_type=_DummyModelInput,
         train_loader=[],
         valid_loader=[],
         lr=1e-3,
@@ -853,6 +913,8 @@ def test_train_step_skips_backward_when_loss_is_nan(tmp_path, log_capture) -> No
         device="cpu",
         save_dir=tmp_path / "checkpoints",
         early_stopping=EarlyStopping(tmp_path / "best" / "model.safetensors", patience_steps=2),
+        schema_path=_schema_fixture(tmp_path),
+        train_config=_train_config(),
     )
     initial_bias = trainer.model.bias.detach().clone()
 
@@ -889,7 +951,6 @@ def test_train_step_skips_backward_when_loss_is_inf(tmp_path, log_capture) -> No
     """BCEWithLogitsLoss(inf) produces nan loss, which triggers the non-finite guard."""
     trainer = PCVRPointwiseTrainer(
         model=_InfProducingModel(),
-        model_input_type=_DummyModelInput,
         train_loader=[],
         valid_loader=[],
         lr=1e-3,
@@ -897,6 +958,8 @@ def test_train_step_skips_backward_when_loss_is_inf(tmp_path, log_capture) -> No
         device="cpu",
         save_dir=tmp_path / "checkpoints",
         early_stopping=EarlyStopping(tmp_path / "best" / "model.safetensors", patience_steps=2),
+        schema_path=_schema_fixture(tmp_path),
+        train_config=_train_config(),
     )
     initial_bias = trainer.model.bias.detach().clone()
 
@@ -913,7 +976,6 @@ def test_train_step_skips_backward_when_loss_is_inf(tmp_path, log_capture) -> No
 def test_train_step_proceeds_normally_with_finite_loss(tmp_path) -> None:
     trainer = PCVRPointwiseTrainer(
         model=_DummyModel(),
-        model_input_type=_DummyModelInput,
         train_loader=[],
         valid_loader=[],
         lr=1e-3,
@@ -921,6 +983,8 @@ def test_train_step_proceeds_normally_with_finite_loss(tmp_path) -> None:
         device="cpu",
         save_dir=tmp_path / "checkpoints",
         early_stopping=EarlyStopping(tmp_path / "best" / "model.safetensors", patience_steps=2),
+        schema_path=_schema_fixture(tmp_path),
+        train_config=_train_config(),
     )
     initial_bias = trainer.model.bias.detach().clone()
 
@@ -935,7 +999,6 @@ def test_train_step_proceeds_normally_with_finite_loss(tmp_path) -> None:
 def test_train_step_updates_ema_after_successful_optimizer_step(tmp_path) -> None:
     trainer = PCVRPointwiseTrainer(
         model=_DummyModel(),
-        model_input_type=_DummyModelInput,
         train_loader=[],
         valid_loader=[],
         lr=1e-3,
@@ -945,6 +1008,8 @@ def test_train_step_updates_ema_after_successful_optimizer_step(tmp_path) -> Non
         early_stopping=EarlyStopping(tmp_path / "best" / "model.safetensors", patience_steps=2),
         ema_enabled=True,
         ema_decay=0.0,
+        schema_path=_schema_fixture(tmp_path),
+        train_config=_train_config(),
     )
 
     loss = trainer._train_step(_dummy_batch([1.0]))
@@ -958,7 +1023,6 @@ def test_train_step_updates_ema_after_successful_optimizer_step(tmp_path) -> Non
 def test_train_step_does_not_update_ema_when_loss_is_nan(tmp_path) -> None:
     trainer = PCVRPointwiseTrainer(
         model=_NaNProducingModel(),
-        model_input_type=_DummyModelInput,
         train_loader=[],
         valid_loader=[],
         lr=1e-3,
@@ -968,6 +1032,8 @@ def test_train_step_does_not_update_ema_when_loss_is_nan(tmp_path) -> None:
         early_stopping=EarlyStopping(tmp_path / "best" / "model.safetensors", patience_steps=2),
         ema_enabled=True,
         ema_decay=0.0,
+        schema_path=_schema_fixture(tmp_path),
+        train_config=_train_config(),
     )
     assert trainer.ema is not None
     initial_ema = trainer.ema.state_dict()["bias"].clone()

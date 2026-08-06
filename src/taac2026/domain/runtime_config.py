@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 import json
 import math
 from typing import Any
+
+from pydantic import ConfigDict, field_validator, model_validator
+
+from taac2026.domain.validation import TAACBoundaryModel
 
 
 AMP_DTYPE_CHOICES: tuple[str, ...] = ("bfloat16", "float16")
@@ -37,28 +40,40 @@ def normalize_amp_dtype(value: str | None) -> str:
         raise ValueError(f"unsupported amp dtype: {value}") from error
 
 
-@dataclass(frozen=True, slots=True)
-class RuntimeExecutionConfig:
+class RuntimeExecutionConfig(TAACBoundaryModel):
+    model_config = ConfigDict(frozen=True)
+
     amp: bool = False
     amp_dtype: str = "bfloat16"
     compile: bool = False
     progress_log_interval_steps: int = DEFAULT_PROGRESS_LOG_INTERVAL_STEPS
     deterministic: bool = True
 
-    def __post_init__(self) -> None:
-        interval = int(self.progress_log_interval_steps)
+    @field_validator("progress_log_interval_steps")
+    @classmethod
+    def _validate_progress_log_interval_steps(cls, value: int) -> int:
+        interval = int(value)
         if interval <= 0:
             raise ValueError("progress_log_interval_steps must be positive")
-        object.__setattr__(self, "progress_log_interval_steps", interval)
-        object.__setattr__(self, "amp_dtype", normalize_amp_dtype(self.amp_dtype))
-        object.__setattr__(self, "deterministic", bool(self.deterministic))
+        return interval
+
+    @field_validator("amp_dtype")
+    @classmethod
+    def _normalize_amp_dtype(cls, value: str) -> str:
+        return normalize_amp_dtype(value)
+
+    @field_validator("deterministic")
+    @classmethod
+    def _coerce_deterministic(cls, value: Any) -> bool:
+        return bool(value)
 
     def normalized_amp_dtype(self) -> str:
         return normalize_amp_dtype(self.amp_dtype)
 
 
-@dataclass(frozen=True, slots=True)
-class PCVRLossTermConfig:
+class PCVRLossTermConfig(TAACBoundaryModel):
+    model_config = ConfigDict(frozen=True)
+
     name: str
     kind: str = "bce"
     weight: float = 1.0
@@ -66,37 +81,53 @@ class PCVRLossTermConfig:
     focal_gamma: float = 2.0
     temperature: float = 1.0
 
-    def __post_init__(self) -> None:
-        name = str(self.name).strip()
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        name = str(value).strip()
         if not name:
             raise ValueError("loss term name must be non-empty")
+        return name
 
-        kind = str(self.kind).strip().lower()
+    @field_validator("kind")
+    @classmethod
+    def _validate_kind(cls, value: str) -> str:
+        kind = str(value).strip().lower()
         if kind not in PCVR_LOSS_TERM_KIND_CHOICES:
-            raise ValueError(f"unsupported PCVR loss term kind: {self.kind}")
+            raise ValueError(f"unsupported PCVR loss term kind: {value}")
+        return kind
 
-        weight = float(self.weight)
+    @field_validator("weight")
+    @classmethod
+    def _validate_weight(cls, value: float) -> float:
+        weight = float(value)
         if not math.isfinite(weight) or weight < 0.0:
-            raise ValueError(f"loss term weight must be finite and >= 0, got {self.weight}")
+            raise ValueError(f"loss term weight must be finite and >= 0, got {value}")
+        return weight
 
-        focal_alpha = float(self.focal_alpha)
+    @field_validator("focal_alpha")
+    @classmethod
+    def _validate_focal_alpha(cls, value: float) -> float:
+        focal_alpha = float(value)
         if not 0.0 <= focal_alpha <= 1.0:
-            raise ValueError(f"focal_alpha must be between 0 and 1, got {self.focal_alpha}")
+            raise ValueError(f"focal_alpha must be between 0 and 1, got {value}")
+        return focal_alpha
 
-        focal_gamma = float(self.focal_gamma)
+    @field_validator("focal_gamma")
+    @classmethod
+    def _validate_focal_gamma(cls, value: float) -> float:
+        focal_gamma = float(value)
         if focal_gamma < 0.0:
-            raise ValueError(f"focal_gamma must be >= 0, got {self.focal_gamma}")
+            raise ValueError(f"focal_gamma must be >= 0, got {value}")
+        return focal_gamma
 
-        temperature = float(self.temperature)
+    @field_validator("temperature")
+    @classmethod
+    def _validate_temperature(cls, value: float) -> float:
+        temperature = float(value)
         if temperature <= 0.0:
-            raise ValueError(f"loss term temperature must be > 0, got {self.temperature}")
-
-        object.__setattr__(self, "name", name)
-        object.__setattr__(self, "kind", kind)
-        object.__setattr__(self, "weight", weight)
-        object.__setattr__(self, "focal_alpha", focal_alpha)
-        object.__setattr__(self, "focal_gamma", focal_gamma)
-        object.__setattr__(self, "temperature", temperature)
+            raise ValueError(f"loss term temperature must be > 0, got {value}")
+        return temperature
 
     @classmethod
     def from_value(cls, value: PCVRLossTermConfig | Mapping[str, Any]) -> PCVRLossTermConfig:
@@ -128,20 +159,21 @@ def _default_pcvr_loss_terms() -> tuple[PCVRLossTermConfig, ...]:
     return (PCVRLossTermConfig(name="bce", kind="bce", weight=1.0),)
 
 
-@dataclass(frozen=True, slots=True)
-class PCVRLossConfig:
+class PCVRLossConfig(TAACBoundaryModel):
+    model_config = ConfigDict(frozen=True)
+
     terms: tuple[PCVRLossTermConfig, ...] = _default_pcvr_loss_terms()
 
-    def __post_init__(self) -> None:
-        terms = tuple(PCVRLossTermConfig.from_value(term) for term in self.terms)
-        if not terms:
+    @model_validator(mode="after")
+    def _validate_terms(self) -> PCVRLossConfig:
+        if not self.terms:
             raise ValueError("PCVR loss config must define at least one loss term")
-        names = [term.name for term in terms]
+        names = [term.name for term in self.terms]
         duplicate_names = sorted({name for name in names if names.count(name) > 1})
         if duplicate_names:
             joined = ", ".join(duplicate_names)
             raise ValueError(f"PCVR loss term names must be unique; duplicates: {joined}")
-        object.__setattr__(self, "terms", terms)
+        return self
 
     @classmethod
     def from_value(cls, value: PCVRLossConfig | Mapping[str, Any] | Sequence[Any] | str | None) -> PCVRLossConfig:

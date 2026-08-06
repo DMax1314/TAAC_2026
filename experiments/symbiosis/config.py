@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any
+from pydantic import ConfigDict, Field
+
+from taac2026.domain.config import PCVRModelConfig, PCVRTrainConfig
 
 
-@dataclass(frozen=True, slots=True)
-class SymbiosisModelDefaults:
+class SymbiosisModelConfig(PCVRModelConfig):
+    """PCVR model config extended with Symbiosis V2/V3 options."""
+
+    model_config = ConfigDict(frozen=True)
+
     v2_use_dense_tokens: bool = True
     v2_use_missing_tokens: bool = True
     v2_use_sequence_stats_tokens: bool = True
@@ -24,51 +28,23 @@ class SymbiosisModelDefaults:
     v2_high_risk_token_dropout_rate: float = 0.08
     v2_compress_large_ids: bool = True
     v2_compile_backbone: bool = True
-
-    def to_flat_dict(self) -> dict[str, Any]:
-        return {
-            "symbiosis_v2_use_dense_tokens": self.v2_use_dense_tokens,
-            "symbiosis_v2_use_missing_tokens": self.v2_use_missing_tokens,
-            "symbiosis_v2_use_sequence_stats_tokens": self.v2_use_sequence_stats_tokens,
-            "symbiosis_v2_use_metadata_attention_bias": self.v2_use_metadata_attention_bias,
-            "symbiosis_v2_use_candidate_readout": self.v2_use_candidate_readout,
-            "symbiosis_v2_tokenization_mode": self.v2_tokenization_mode,
-            "symbiosis_v2_sparse_seed": self.v2_sparse_seed,
-            "symbiosis_v2_recent_event_tokens": self.v2_recent_event_tokens,
-            "symbiosis_v2_memory_event_tokens": self.v2_memory_event_tokens,
-            "symbiosis_v2_user_dense_tokens": self.v2_user_dense_tokens,
-            "symbiosis_v2_item_dense_tokens": self.v2_item_dense_tokens,
-            "symbiosis_v2_user_missing_tokens": self.v2_user_missing_tokens,
-            "symbiosis_v2_item_missing_tokens": self.v2_item_missing_tokens,
-            "symbiosis_v2_high_risk_token_dropout_rate": self.v2_high_risk_token_dropout_rate,
-            "symbiosis_v2_compress_large_ids": self.v2_compress_large_ids,
-            "symbiosis_v2_compile_backbone": self.v2_compile_backbone,
-        }
+    v3_enabled: bool = True
+    v3_memory_selection_mode: str = "quality_stratified"
+    v3_recent_event_tokens_by_domain: str = "seq_a:8,seq_b:8,seq_c:20,seq_d:24"
+    v3_memory_event_tokens_by_domain: str = "seq_a:4,seq_b:4,seq_c:10,seq_d:12"
+    v3_memory_density_weight: float = 1.0
+    v3_memory_time_weight: float = 0.30
+    v3_memory_recency_weight: float = 0.20
+    v3_memory_duplicate_penalty: float = 0.50
 
 
-SYMBIOSIS_MODEL_DEFAULTS = SymbiosisModelDefaults()
-SYMBIOSIS_MODEL_CONFIG_KEYS = tuple(SYMBIOSIS_MODEL_DEFAULTS.to_flat_dict())
-SYMBIOSIS_OPTIONAL_MODEL_CONFIG_DEFAULTS: dict[str, Any] = {
-    "symbiosis_v3_enabled": False,
-    "symbiosis_v3_memory_selection_mode": "quality_stratified",
-    "symbiosis_v3_recent_event_tokens_by_domain": "seq_a:8,seq_b:8,seq_c:20,seq_d:24",
-    "symbiosis_v3_memory_event_tokens_by_domain": "seq_a:4,seq_b:4,seq_c:10,seq_d:12",
-    "symbiosis_v3_memory_density_weight": 1.0,
-    "symbiosis_v3_memory_time_weight": 0.30,
-    "symbiosis_v3_memory_recency_weight": 0.20,
-    "symbiosis_v3_memory_duplicate_penalty": 0.50,
-}
-SYMBIOSIS_OPTIONAL_MODEL_CLI_DEFAULT_OVERRIDES: dict[str, Any] = {
-    "symbiosis_v3_enabled": True,
-}
-SYMBIOSIS_OPTIONAL_MODEL_CONFIG_KEYS = tuple(SYMBIOSIS_OPTIONAL_MODEL_CONFIG_DEFAULTS)
+class SymbiosisTrainConfig(PCVRTrainConfig):
+    """Full typed training configuration with the Symbiosis model config."""
+
+    model: SymbiosisModelConfig = Field(default_factory=SymbiosisModelConfig)
 
 
 __all__ = [
-    "SYMBIOSIS_MODEL_CONFIG_KEYS",
-    "SYMBIOSIS_MODEL_DEFAULTS",
-    "SYMBIOSIS_OPTIONAL_MODEL_CLI_DEFAULT_OVERRIDES",
-    "SYMBIOSIS_OPTIONAL_MODEL_CONFIG_DEFAULTS",
-    "SYMBIOSIS_OPTIONAL_MODEL_CONFIG_KEYS",
-    "SymbiosisModelDefaults",
+    "SymbiosisModelConfig",
+    "SymbiosisTrainConfig",
 ]

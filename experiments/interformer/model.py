@@ -13,9 +13,11 @@ import torch.nn as nn
 from taac2026.api import (
     DenseTokenProjector,
     EmbeddingParameterMixin,
-    ModelInput,
+    NUM_TIME_BUCKETS,
     NonSequentialTokenizer,
+    PCVRModelInput,
     SequenceTokenizer,
+    build_pcvr_model_specs,
     configure_rms_norm_runtime as _configure_rms_norm_runtime,
     maybe_gradient_checkpoint,
     choose_num_heads,
@@ -25,6 +27,8 @@ from taac2026.api import (
     safe_key_padding_mask,
     sinusoidal_positions,
 )
+from taac2026.domain.config import PCVRModelConfig
+from taac2026.domain.schema import PCVRSchema
 
 
 def configure_rms_norm_runtime(*, rms_norm_backend: str, rms_norm_block_rows: int) -> None:
@@ -157,7 +161,40 @@ class InterFormerBlock(nn.Module):
 
 
 class PCVRInterFormer(EmbeddingParameterMixin, nn.Module):
-    def __init__(
+    def __init__(self, schema: PCVRSchema, config: PCVRModelConfig) -> None:
+        specs = build_pcvr_model_specs(schema, config.ns)
+        self._init_specs(
+            user_int_feature_specs=specs.user_int_feature_specs,
+            item_int_feature_specs=specs.item_int_feature_specs,
+            user_dense_dim=specs.user_dense_dim,
+            item_dense_dim=specs.item_dense_dim,
+            seq_vocab_sizes=specs.seq_vocab_sizes,
+            user_ns_groups=specs.user_ns_groups,
+            item_ns_groups=specs.item_ns_groups,
+            d_model=config.d_model,
+            emb_dim=config.emb_dim,
+            num_queries=config.num_queries,
+            num_blocks=config.num_blocks,
+            num_heads=config.num_heads,
+            seq_encoder_type=config.seq_encoder_type,
+            hidden_mult=config.hidden_mult,
+            dropout_rate=config.dropout_rate,
+            seq_top_k=config.seq_top_k,
+            seq_causal=config.seq_causal,
+            action_num=config.action_num,
+            num_time_buckets=NUM_TIME_BUCKETS if config.use_time_buckets else 0,
+            rank_mixer_mode=config.rank_mixer_mode,
+            use_rope=config.use_rope,
+            rope_base=config.rope_base,
+            emb_skip_threshold=config.emb_skip_threshold,
+            seq_id_threshold=config.seq_id_threshold,
+            gradient_checkpointing=config.gradient_checkpointing,
+            ns_tokenizer_type=config.ns.tokenizer_type,
+            user_ns_tokens=config.ns.user_tokens,
+            item_ns_tokens=config.ns.item_tokens,
+        )
+
+    def _init_specs(
         self,
         user_int_feature_specs: list[tuple[int, int, int]],
         item_int_feature_specs: list[tuple[int, int, int]],
@@ -240,32 +277,35 @@ class PCVRInterFormer(EmbeddingParameterMixin, nn.Module):
             nn.Linear(d_model * hidden_mult, action_num),
         )
 
-    def _encode_non_sequence(self, inputs: ModelInput) -> torch.Tensor:
-        parts = [self.user_tokenizer(inputs.user_int_feats)]
-        user_dense = self.user_dense(inputs.user_dense_feats)
+    def _encode_non_sequence(self, inputs: PCVRModelInput) -> torch.Tensor:
+        parts = [self.user_tokenizer(inputs.user.int_values)]
+        user_dense = self.user_dense(inputs.user.dense_values)
         if user_dense is not None:
             parts.append(user_dense)
-        parts.append(self.item_tokenizer(inputs.item_int_feats))
-        item_dense = self.item_dense(inputs.item_dense_feats)
+        parts.append(self.item_tokenizer(inputs.item.int_values))
+        item_dense = self.item_dense(inputs.item.dense_values)
         if item_dense is not None:
             parts.append(item_dense)
         return torch.cat(parts, dim=1)
 
-    def _encode_sequences(self, inputs: ModelInput) -> tuple[list[torch.Tensor], list[torch.Tensor], list[torch.Tensor]]:
+    def _encode_sequences(self, inputs: PCVRModelInput) -> tuple[list[torch.Tensor], list[torch.Tensor], list[torch.Tensor]]:
         sequences: list[torch.Tensor] = []
         masks: list[torch.Tensor] = []
         lengths: list[torch.Tensor] = []
         for domain in self.seq_domains:
-            raw_sequence = inputs.seq_data[domain]
-            seq_len = inputs.seq_lens[domain].to(raw_sequence.device)
-            tokens = self.sequence_tokenizers[domain](raw_sequence, inputs.seq_time_buckets.get(domain))
+            sequence_input = inputs.sequences[domain]
+            raw_sequence = sequence_input.values
+            seq_len = sequence_input.lengths.to(raw_sequence.device)
+            tokens = self.sequence_tokenizers[domain](
+                raw_sequence, sequence_input.timestamps, inputs.request_timestamp
+            )
             tokens = tokens + sinusoidal_positions(tokens.shape[1], self.d_model, tokens.device).unsqueeze(0)
             sequences.append(tokens)
             masks.append(make_padding_mask(seq_len, raw_sequence.shape[2]))
             lengths.append(seq_len)
         return sequences, masks, lengths
 
-    def _embed(self, inputs: ModelInput) -> torch.Tensor:
+    def _embed(self, inputs: PCVRModelInput) -> torch.Tensor:
         ns_tokens = self._encode_non_sequence(inputs)
         sequences, masks, lengths = self._encode_sequences(inputs)
         for block in self.blocks:
@@ -282,9 +322,9 @@ class PCVRInterFormer(EmbeddingParameterMixin, nn.Module):
         gate = self.final_gate(torch.cat([ns_summary, seq_summary], dim=-1))
         return gate * ns_summary + (1.0 - gate) * seq_summary
 
-    def forward(self, inputs: ModelInput) -> torch.Tensor:
+    def forward(self, inputs: PCVRModelInput) -> torch.Tensor:
         return self.classifier(self._embed(inputs))
 
-    def predict(self, inputs: ModelInput) -> tuple[torch.Tensor, torch.Tensor]:
+    def predict(self, inputs: PCVRModelInput) -> tuple[torch.Tensor, torch.Tensor]:
         embeddings = self._embed(inputs)
         return self.classifier(embeddings), embeddings

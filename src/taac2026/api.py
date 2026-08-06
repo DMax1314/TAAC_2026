@@ -20,7 +20,16 @@ from taac2026.domain.config import (
     PCVRTrainConfig,
     PCVRValidationConfig,
 )
-from taac2026.infrastructure.modeling.model_contract import ModelInput
+from taac2026.infrastructure.data.batches import (
+    PCVRBatch,
+    PCVREntityInput,
+    PCVRModelInput,
+    PCVRSequenceInput,
+)
+from taac2026.infrastructure.modeling.model_contract import (
+    PCVRModelSpecs,
+    build_pcvr_model_specs,
+)
 from taac2026.domain.runtime_config import PCVRLossConfig, PCVRLossTermConfig, RuntimeExecutionConfig
 from taac2026.infrastructure import modeling as _modeling
 from taac2026.infrastructure.modeling import (
@@ -43,6 +52,11 @@ from taac2026.infrastructure.modeling import (
     scaled_dot_product_attention,
     sinusoidal_positions,
 )
+from taac2026.infrastructure.modeling.time_features import (
+    NUM_TIME_BUCKETS,
+    compute_sequence_stats,
+    compute_sequence_time_buckets,
+)
 
 
 def configure_flash_attention_runtime(*, backend: str) -> None:
@@ -64,27 +78,32 @@ def __getattr__(name: str):
 
 
 __all__ = [
+    "NUM_TIME_BUCKETS",
     "DenseTokenProjector",
     "EmbeddingParameterMixin",
     "FeatureEmbeddingBank",
     "FlashAttentionBackend",
     "LayerNorm",
-    "ModelInput",
     "NonSequentialTokenizer",
     "NoopTrainReporter",
+    "PCVRBatch",
     "PCVRDataCacheConfig",
     "PCVRDataConfig",
     "PCVRDataPipelineConfig",
     "PCVRDomainDropoutConfig",
     "PCVREMAConfig",
+    "PCVREntityInput",
     "PCVRFeatureMaskConfig",
     "PCVRLossConfig",
     "PCVRLossTermConfig",
     "PCVRModelConfig",
+    "PCVRModelInput",
+    "PCVRModelSpecs",
     "PCVRNSConfig",
     "PCVRNonSequentialSparseDropoutConfig",
     "PCVROptimizerConfig",
     "PCVRSequenceCropConfig",
+    "PCVRSequenceInput",
     "PCVRSparseOptimizerConfig",
     "PCVRTrainConfig",
     "PCVRValidationConfig",
@@ -93,8 +112,11 @@ __all__ = [
     "SequenceTokenizer",
     "TensorBoardTrainReporter",
     "TrainReporter",
+    "build_pcvr_model_specs",
     "causal_valid_attention_mask",
     "choose_num_heads",
+    "compute_sequence_stats",
+    "compute_sequence_time_buckets",
     "configure_flash_attention_runtime",
     "configure_rms_norm_runtime",
     "create_pcvr_experiment",

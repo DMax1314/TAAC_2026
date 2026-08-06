@@ -6,8 +6,21 @@ from pathlib import Path
 from typing import Any
 
 from taac2026.domain.requests import EvalRequest, InferRequest
+from taac2026.domain.config import PCVRTrainConfig
 from taac2026.domain.runtime_config import RuntimeExecutionConfig, normalize_amp_dtype
-from taac2026.application.evaluation.workflow import PCVRPredictionContext
+from taac2026.application.evaluation.workflow import (
+    PCVRPredictionContext,
+    default_build_prediction_data,
+    default_build_prediction_model,
+    default_prepare_prediction_runner,
+    default_run_prediction_loop,
+)
+from taac2026.application.evaluation.runtime import (
+    default_load_train_config,
+    default_load_runtime_schema,
+    default_write_observed_schema_report,
+    default_write_train_split_observed_schema_reports,
+)
 from taac2026.infrastructure.experiments.module_loader import load_experiment_submodule
 
 
@@ -24,33 +37,26 @@ def _coerce_optional_int(value: Any) -> int | None:
         return None
 
 
-def _required_config_value(config: dict[str, Any], config_key: str) -> Any:
-    try:
-        return config[config_key]
-    except KeyError as error:
-        raise KeyError(f"PCVR train_config is missing required key: {config_key}") from error
-
-
 class PCVRExperimentRuntimeMixin:
     def _load_model_module(self) -> Any:
         return load_experiment_submodule(self.package_dir, "model")
 
     def _configured_infer_runtime_value(
         self,
-        config: dict[str, Any],
+        config: PCVRTrainConfig,
         *,
         config_key: str,
         minimum: int,
     ) -> tuple[int, str]:
-        configured_value = _coerce_optional_int(_required_config_value(config, config_key))
+        configured_value = getattr(config.data, config_key)
         if configured_value is None or configured_value < minimum:
-            raise ValueError(f"PCVR train_config key {config_key!r} must be >= {minimum}, got {config.get(config_key)!r}")
+            raise ValueError(f"PCVR train_config key {config_key!r} must be >= {minimum}, got {configured_value!r}")
         return configured_value, "train_config"
 
     def _resolve_prediction_runtime_settings(
         self,
         request: EvalRequest | InferRequest,
-        config: dict[str, Any],
+        config: PCVRTrainConfig,
     ) -> tuple[int, str, int, str]:
         batch_size = int(request.batch_size)
         batch_size_source = "request" if request.batch_size != _INFER_REQUEST_DEFAULT_BATCH_SIZE else "cli_default"
@@ -76,65 +82,24 @@ class PCVRExperimentRuntimeMixin:
 
         return batch_size, batch_size_source, num_workers, num_workers_source
 
-    def _configured_runtime_bool(
-        self,
-        request_value: bool | None,
-        config: dict[str, Any],
-        *,
-        config_key: str,
-    ) -> tuple[bool, str]:
-        if request_value is not None:
-            return bool(request_value), "request"
-
-        configured_value = _required_config_value(config, config_key)
-        if not isinstance(configured_value, bool):
-            raise TypeError(f"PCVR train_config key {config_key!r} must be bool, got {type(configured_value).__name__}")
-        return configured_value, "train_config"
-
-    def _configured_runtime_string(
-        self,
-        request_value: str | None,
-        config: dict[str, Any],
-        *,
-        config_key: str,
-    ) -> tuple[str, str]:
-        if request_value not in (None, ""):
-            return normalize_amp_dtype(request_value), "request"
-
-        configured_value = _required_config_value(config, config_key)
-        if not isinstance(configured_value, str) or not configured_value.strip():
-            raise TypeError(f"PCVR train_config key {config_key!r} must be a non-empty string")
-        return normalize_amp_dtype(configured_value), "train_config"
-
     def _resolve_prediction_runtime_execution(
         self,
         request: EvalRequest | InferRequest,
-        config: dict[str, Any],
+        config: PCVRTrainConfig,
     ) -> tuple[RuntimeExecutionConfig, str, str, str]:
-        amp, amp_source = self._configured_runtime_bool(
-            getattr(request, "amp", None),
-            config,
-            config_key="amp",
-        )
-        amp_dtype, amp_dtype_source = self._configured_runtime_string(
-            getattr(request, "amp_dtype", None),
-            config,
-            config_key="amp_dtype",
-        )
-        compile_enabled, compile_source = self._configured_runtime_bool(
-            getattr(request, "compile", None),
-            config,
-            config_key="compile",
-        )
-        deterministic = config.get("deterministic", True)
-        if not isinstance(deterministic, bool):
-            raise TypeError(f"PCVR train_config key 'deterministic' must be bool, got {type(deterministic).__name__}")
+        runtime = config.runtime
+        amp = runtime.amp if getattr(request, "amp", None) is None else bool(request.amp)
+        amp_source = "train_config" if getattr(request, "amp", None) is None else "request"
+        amp_dtype = runtime.amp_dtype if getattr(request, "amp_dtype", None) in (None, "") else normalize_amp_dtype(request.amp_dtype)
+        amp_dtype_source = "train_config" if getattr(request, "amp_dtype", None) in (None, "") else "request"
+        compile_enabled = runtime.compile if getattr(request, "compile", None) is None else bool(request.compile)
+        compile_source = "train_config" if getattr(request, "compile", None) is None else "request"
         return (
             RuntimeExecutionConfig(
                 amp=amp,
                 amp_dtype=amp_dtype,
                 compile=compile_enabled,
-                deterministic=deterministic,
+                deterministic=runtime.deterministic,
             ),
             amp_source,
             amp_dtype_source,
@@ -152,26 +117,24 @@ class PCVRExperimentRuntimeMixin:
         device: str,
         is_training_data: bool,
         dataset_role: str,
-        config: dict[str, Any] | None = None,
+        config: PCVRTrainConfig | None = None,
         runtime_execution: RuntimeExecutionConfig | None = None,
     ) -> dict[str, Any]:
         model_module = self._load_model_module()
 
-        if schema_path is None:
-            resolved_schema_path, _resolved_schema = self.runtime_hooks.load_runtime_schema(
-                self,
-                dataset_path=dataset_path,
-                schema_path=None,
-                checkpoint_dir=checkpoint_path.parent,
-                mode="evaluation" if is_training_data else "inference",
-            )
-        else:
-            resolved_schema_path = schema_path.expanduser().resolve()
-        resolved_config = config if config is not None else self.runtime_hooks.load_train_config(self, checkpoint_path.parent)
+        resolved_schema_path, _resolved_schema = default_load_runtime_schema(
+            self,
+            dataset_path=dataset_path,
+            schema_path=schema_path,
+            checkpoint_dir=checkpoint_path.parent,
+            mode="evaluation" if is_training_data else "inference",
+        )
+        resolved_config = config if config is not None else default_load_train_config(self, checkpoint_path.parent)
         resolved_runtime_execution = runtime_execution or RuntimeExecutionConfig()
         context = PCVRPredictionContext(
             model_module=model_module,
             model_class_name=self.model_class_name,
+            model_type=self.model_type,
             package_dir=self.package_dir,
             dataset_path=dataset_path,
             schema_path=resolved_schema_path,
@@ -184,13 +147,13 @@ class PCVRExperimentRuntimeMixin:
             config=resolved_config,
             runtime_execution=resolved_runtime_execution,
         )
-        data_bundle = self.prediction_hooks.build_data(context)
-        model = self.prediction_hooks.build_model(context, data_bundle)
-        runner = self.prediction_hooks.prepare_predictor(context, data_bundle, model)
-        return self.prediction_hooks.run_loop(context, data_bundle, runner)
+        data_bundle = default_build_prediction_data(context)
+        model = default_build_prediction_model(context, data_bundle)
+        runner = default_prepare_prediction_runner(context, data_bundle, model)
+        return default_run_prediction_loop(context, data_bundle, runner)
 
-    def _load_train_config(self, checkpoint_dir: Path) -> dict[str, Any]:
-        return self.runtime_hooks.load_train_config(self, checkpoint_dir)
+    def _load_train_config(self, checkpoint_dir: Path) -> PCVRTrainConfig:
+        return default_load_train_config(self, checkpoint_dir)
 
     def _load_resolved_schema(
         self,
@@ -200,7 +163,7 @@ class PCVRExperimentRuntimeMixin:
         checkpoint_dir: Path,
         mode: str,
     ) -> tuple[Path, Any]:
-        return self.runtime_hooks.load_runtime_schema(
+        return default_load_runtime_schema(
             self,
             dataset_path=dataset_path,
             schema_path=schema_path,
@@ -218,7 +181,7 @@ class PCVRExperimentRuntimeMixin:
         row_group_range: tuple[int, int] | None = None,
         timestamp_range: Any = None,
     ) -> Path:
-        return self.runtime_hooks.write_observed_schema_report(
+        return default_write_observed_schema_report(
             self,
             dataset_path=dataset_path,
             schema_path=schema_path,
@@ -238,7 +201,7 @@ class PCVRExperimentRuntimeMixin:
         train_ratio: float,
         split_strategy: str = "row_group_tail",
     ) -> dict[str, Any]:
-        return self.runtime_hooks.write_train_split_observed_schema_reports(
+        return default_write_train_split_observed_schema_reports(
             self,
             dataset_path=dataset_path,
             schema_path=schema_path,
@@ -249,7 +212,7 @@ class PCVRExperimentRuntimeMixin:
         )
 
     def _resolve_schema_path(self, dataset_path: Path, schema_path: Path | None, checkpoint_dir: Path) -> Path:
-        resolved_schema_path, _schema_payload = self.runtime_hooks.load_runtime_schema(
+        resolved_schema_path, _schema_payload = default_load_runtime_schema(
             self,
             dataset_path=dataset_path,
             schema_path=schema_path,

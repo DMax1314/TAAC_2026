@@ -11,6 +11,7 @@ from typing import Any
 from safetensors.torch import load_file as load_safetensors_file, save_file as save_safetensors_file
 import torch
 
+from taac2026.domain.config import PCVRTrainConfig
 from taac2026.domain.sidecar import build_pcvr_train_config_sidecar
 from taac2026.infrastructure.io.json import write_path
 
@@ -148,20 +149,21 @@ def build_checkpoint_dir_name(
 def write_checkpoint_sidecars(
     checkpoint_dir: Path,
     *,
-    schema_path: Path | None = None,
-    train_config: dict[str, Any] | None = None,
+    schema_path: Path,
+    train_config: PCVRTrainConfig,
 ) -> dict[str, Path]:
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     written: dict[str, Path] = {}
 
-    if schema_path is not None and schema_path.exists():
-        target = checkpoint_dir / "schema.json"
-        shutil.copy2(schema_path, target)
-        written["schema"] = target
+    resolved_schema_path = schema_path.expanduser().resolve()
+    if not resolved_schema_path.exists():
+        raise FileNotFoundError(f"schema.json not found for checkpoint sidecar: {resolved_schema_path}")
+    target = checkpoint_dir / "schema.json"
+    shutil.copy2(resolved_schema_path, target)
+    written["schema"] = target
 
-    if train_config is not None:
-        target = checkpoint_dir / "train_config.json"
-        write_path(target, build_pcvr_train_config_sidecar(train_config), indent=2, trailing_newline=True)
-        written["train_config"] = target
+    target = checkpoint_dir / "train_config.json"
+    write_path(target, build_pcvr_train_config_sidecar(train_config), indent=2, trailing_newline=True)
+    written["train_config"] = target
 
     return written

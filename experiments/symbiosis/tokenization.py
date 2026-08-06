@@ -7,7 +7,14 @@ from typing import NamedTuple
 import torch
 import torch.nn as nn
 
-from taac2026.api import FeatureEmbeddingBank, ModelInput, RMSNorm, SequenceTokenizer, sinusoidal_positions
+from taac2026.api import (
+    FeatureEmbeddingBank,
+    PCVRModelInput,
+    RMSNorm,
+    SequenceTokenizer,
+    compute_sequence_stats,
+    sinusoidal_positions,
+)
 
 
 SEQUENCE_STATS_DIM = 6
@@ -364,19 +371,19 @@ class UnifiedSymbiosisTokenizer(nn.Module):
             return self.memory_event_tokens
         return int(self.v3_memory_event_tokens_by_domain.get(domain, self.v3_memory_event_tokens_by_domain["*"]))
 
-    def forward(self, inputs: ModelInput) -> UnifiedTokenBatch:
-        batch_size = inputs.user_int_feats.shape[0]
-        user_int_missing = self._missing_mask_or_default(inputs.user_int_missing_mask, inputs.user_int_feats, dense=False)
-        item_int_missing = self._missing_mask_or_default(inputs.item_int_missing_mask, inputs.item_int_feats, dense=False)
-        user_dense_missing = self._missing_mask_or_default(inputs.user_dense_missing_mask, inputs.user_dense_feats, dense=True)
-        item_dense_missing = self._missing_mask_or_default(inputs.item_dense_missing_mask, inputs.item_dense_feats, dense=True)
+    def forward(self, inputs: PCVRModelInput) -> UnifiedTokenBatch:
+        batch_size = inputs.user.int_values.shape[0]
+        user_int_missing = self._missing_mask_or_default(inputs.user.int_missing_mask, inputs.user.int_values, dense=False)
+        item_int_missing = self._missing_mask_or_default(inputs.item.int_missing_mask, inputs.item.int_values, dense=False)
+        user_dense_missing = self._missing_mask_or_default(inputs.user.dense_missing_mask, inputs.user.dense_values, dense=True)
+        item_dense_missing = self._missing_mask_or_default(inputs.item.dense_missing_mask, inputs.item.dense_values, dense=True)
 
-        user_sparse = self.user_sparse(inputs.user_int_feats, user_int_missing)
-        item_sparse = self.item_sparse(inputs.item_int_feats, item_int_missing)
-        user_dense = self.user_dense(inputs.user_dense_feats, user_dense_missing) if self.user_dense is not None else None
-        item_dense = self.item_dense(inputs.item_dense_feats, item_dense_missing) if self.item_dense is not None else None
-        user_missing = self._missing_tokens(user_int_missing, user_dense_missing, inputs.user_int_feats, self.user_missing)
-        item_missing = self._missing_tokens(item_int_missing, item_dense_missing, inputs.item_int_feats, self.item_missing)
+        user_sparse = self.user_sparse(inputs.user.int_values, user_int_missing)
+        item_sparse = self.item_sparse(inputs.item.int_values, item_int_missing)
+        user_dense = self.user_dense(inputs.user.dense_values, user_dense_missing) if self.user_dense is not None else None
+        item_dense = self.item_dense(inputs.item.dense_values, item_dense_missing) if self.item_dense is not None else None
+        user_missing = self._missing_tokens(user_int_missing, user_dense_missing, inputs.user.int_values, self.user_missing)
+        item_missing = self._missing_tokens(item_int_missing, item_dense_missing, inputs.item.int_values, self.item_missing)
 
         item_context_parts = [item_sparse]
         if item_dense is not None:
@@ -384,7 +391,7 @@ class UnifiedSymbiosisTokenizer(nn.Module):
         if item_missing is not None:
             item_context_parts.append(item_missing)
         item_context = torch.cat(item_context_parts, dim=1)
-        item_summary = item_context.mean(dim=1) if item_context.shape[1] > 0 else inputs.user_int_feats.new_zeros(batch_size, self.d_model, dtype=torch.float32)
+        item_summary = item_context.mean(dim=1) if item_context.shape[1] > 0 else inputs.user.int_values.new_zeros(batch_size, self.d_model, dtype=torch.float32)
 
         pieces: list[torch.Tensor] = []
         masks: list[torch.Tensor] = []
@@ -430,7 +437,16 @@ class UnifiedSymbiosisTokenizer(nn.Module):
             sequence_tokens, sequence_mask = self._sequence_event_tokens(domain, inputs)
             append(sequence_tokens, ROLE_SEQUENCE, domain_id=domain_index, mask=sequence_mask)
         if self.sequence_stats is not None:
-            append(self.sequence_stats(inputs.seq_stats, self.seq_domains, inputs.user_int_feats), ROLE_STATS)
+            stats_by_domain = {
+                domain: compute_sequence_stats(
+                    inputs.sequences[domain].values,
+                    inputs.sequences[domain].lengths,
+                    inputs.sequences[domain].timestamps,
+                    inputs.request_timestamp,
+                )
+                for domain in self.seq_domains
+            }
+            append(self.sequence_stats(stats_by_domain, self.seq_domains, inputs.user.int_values), ROLE_STATS)
 
         tokens = torch.cat(pieces, dim=1)
         padding_mask = torch.cat(masks, dim=1)
@@ -465,16 +481,17 @@ class UnifiedSymbiosisTokenizer(nn.Module):
             return reference.new_zeros(reference.shape[0], 0, self.d_model, dtype=torch.float32)
         return tokenizer(features)
 
-    def _sequence_event_tokens(self, domain: str, inputs: ModelInput) -> tuple[torch.Tensor, torch.Tensor]:
-        sequence = inputs.seq_data[domain]
-        time_buckets = inputs.seq_time_buckets.get(domain)
-        lengths = inputs.seq_lens[domain].to(sequence.device)
-        compact_sequence, compact_time_buckets, compact_mask = self._compact_sequence(domain, sequence, time_buckets, lengths)
+    def _sequence_event_tokens(self, domain: str, inputs: PCVRModelInput) -> tuple[torch.Tensor, torch.Tensor]:
+        sequence_input = inputs.sequences[domain]
+        sequence = sequence_input.values
+        timestamps = sequence_input.timestamps
+        lengths = sequence_input.lengths.to(sequence.device)
+        compact_sequence, compact_timestamps, compact_mask = self._compact_sequence(domain, sequence, timestamps, lengths)
         if compact_sequence.shape[2] <= 0:
             tokens = sequence.new_zeros(sequence.shape[0], 0, self.d_model, dtype=torch.float32)
             return tokens, compact_mask
         with torch.autocast(device_type=sequence.device.type, enabled=False):
-            tokens = self.sequence_tokenizers[domain](compact_sequence, compact_time_buckets)
+            tokens = self.sequence_tokenizers[domain](compact_sequence, compact_timestamps, inputs.request_timestamp)
         if tokens.shape[1] > 0:
             positions = sinusoidal_positions(tokens.shape[1], self.d_model, tokens.device).unsqueeze(0).to(tokens.dtype)
             tokens = tokens + positions
@@ -485,7 +502,7 @@ class UnifiedSymbiosisTokenizer(nn.Module):
         self,
         domain: str,
         sequence: torch.Tensor,
-        time_buckets: torch.Tensor | None,
+        timestamps: torch.Tensor | None,
         lengths: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor]:
         batch_size, feature_count, max_len = sequence.shape
@@ -507,7 +524,7 @@ class UnifiedSymbiosisTokenizer(nn.Module):
             prefix_lengths = (clamped_lengths - recent_count).clamp_min(0)
             memory_positions, memory_mask = self._memory_positions(
                 sequence,
-                time_buckets,
+                timestamps,
                 prefix_lengths,
                 memory_count,
             )
@@ -523,18 +540,18 @@ class UnifiedSymbiosisTokenizer(nn.Module):
         padding_mask = torch.cat(masks, dim=1)
         gather_index = gather_positions.unsqueeze(1).expand(-1, feature_count, -1)
         compact_sequence = sequence.gather(2, gather_index)
-        compact_time_buckets = None
-        if time_buckets is not None:
-            if time_buckets.shape[1] <= 0:
-                compact_time_buckets = torch.zeros_like(gather_positions)
+        compact_timestamps = None
+        if timestamps is not None:
+            if timestamps.shape[1] <= 0:
+                compact_timestamps = torch.zeros_like(gather_positions)
             else:
-                compact_time_buckets = time_buckets.gather(1, gather_positions.clamp_max(time_buckets.shape[1] - 1))
-        return compact_sequence, compact_time_buckets, padding_mask
+                compact_timestamps = timestamps.gather(1, gather_positions.clamp_max(timestamps.shape[1] - 1))
+        return compact_sequence, compact_timestamps, padding_mask
 
     def _memory_positions(
         self,
         sequence: torch.Tensor,
-        time_buckets: torch.Tensor | None,
+        timestamps: torch.Tensor | None,
         prefix_lengths: torch.Tensor,
         memory_count: int,
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -542,7 +559,7 @@ class UnifiedSymbiosisTokenizer(nn.Module):
             return self._uniform_memory_positions(prefix_lengths, memory_count, sequence.shape[2])
         if self.v3_memory_selection_mode == "stratified":
             return self._stratified_memory_positions(prefix_lengths, memory_count, sequence.shape[2])
-        return self._quality_stratified_memory_positions(sequence, time_buckets, prefix_lengths, memory_count)
+        return self._quality_stratified_memory_positions(sequence, timestamps, prefix_lengths, memory_count)
 
     def _uniform_memory_positions(
         self,
@@ -571,12 +588,12 @@ class UnifiedSymbiosisTokenizer(nn.Module):
     def _quality_stratified_memory_positions(
         self,
         sequence: torch.Tensor,
-        time_buckets: torch.Tensor | None,
+        timestamps: torch.Tensor | None,
         prefix_lengths: torch.Tensor,
         memory_count: int,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         max_len = int(sequence.shape[2])
-        scores = self._memory_event_scores(sequence, time_buckets, prefix_lengths)
+        scores = self._memory_event_scores(sequence, timestamps, prefix_lengths)
         positions = torch.arange(max_len, device=sequence.device).unsqueeze(0)
         selected_positions: list[torch.Tensor] = []
         selected_masks: list[torch.Tensor] = []
@@ -594,7 +611,7 @@ class UnifiedSymbiosisTokenizer(nn.Module):
     def _memory_event_scores(
         self,
         sequence: torch.Tensor,
-        time_buckets: torch.Tensor | None,
+        timestamps: torch.Tensor | None,
         prefix_lengths: torch.Tensor,
     ) -> torch.Tensor:
         batch_size, _feature_count, max_len = sequence.shape
@@ -607,9 +624,9 @@ class UnifiedSymbiosisTokenizer(nn.Module):
         recency = positions.float().unsqueeze(0) / prefix_lengths.clamp_min(1).float().unsqueeze(1)
 
         time_valid = sequence.new_zeros((batch_size, max_len), dtype=torch.float32)
-        if time_buckets is not None and time_buckets.shape[1] > 0:
-            used_width = min(max_len, int(time_buckets.shape[1]))
-            time_valid[:, :used_width] = time_buckets[:, :used_width].to(sequence.device).gt(0).float()
+        if timestamps is not None and timestamps.shape[1] > 0:
+            used_width = min(max_len, int(timestamps.shape[1]))
+            time_valid[:, :used_width] = timestamps[:, :used_width].to(sequence.device).gt(0).float()
 
         duplicate = sequence.new_zeros((batch_size, max_len), dtype=torch.float32)
         if max_len > 1:

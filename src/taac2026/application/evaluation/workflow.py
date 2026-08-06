@@ -1,21 +1,21 @@
-"""Composable PCVR prediction stack hooks."""
+"""PCVR prediction workflow: data, model, and runner preparation."""
 
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
-import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
 import taac2026.infrastructure.data.dataset as pcvr_data
+from taac2026.domain.config import PCVRTrainConfig
 from taac2026.domain.runtime_config import RuntimeExecutionConfig
 from taac2026.infrastructure.logging import logger
 from taac2026.infrastructure.checkpoints import load_checkpoint_state_dict
-from taac2026.infrastructure.modeling.model_contract import batch_to_model_input, build_pcvr_model, parse_seq_max_lens
+from taac2026.infrastructure.modeling.model_contract import parse_seq_max_lens
 from taac2026.infrastructure.modeling.sequence import configure_flash_attention_runtime as configure_shared_flash_attention_runtime
 from taac2026.infrastructure.modeling.tensors import sigmoid_probabilities_numpy
 from taac2026.infrastructure.runtime.execution import (
@@ -24,6 +24,7 @@ from taac2026.infrastructure.runtime.execution import (
     runtime_autocast_context,
     runtime_execution_summary,
 )
+from taac2026.infrastructure import modeling as shared_modeling
 
 
 _PREDICTION_PROGRESS_LOG_EVERY_ROWS = 50_000
@@ -55,6 +56,7 @@ def _log_prediction_progress(
 class PCVRPredictionContext:
     model_module: Any
     model_class_name: str
+    model_type: type[torch.nn.Module]
     package_dir: Path
     dataset_path: Path
     schema_path: Path
@@ -64,7 +66,7 @@ class PCVRPredictionContext:
     device: str
     is_training_data: bool
     dataset_role: str
-    config: dict[str, Any]
+    config: PCVRTrainConfig
     runtime_execution: RuntimeExecutionConfig
 
     @property
@@ -93,7 +95,7 @@ def default_build_prediction_data(
     context: PCVRPredictionContext,
 ) -> PCVRPredictionDataBundle:
     pcvr_data.ensure_torch_file_system_sharing_strategy()
-    seq_max_lens = parse_seq_max_lens(str(context.config["seq_max_lens"]))
+    seq_max_lens = parse_seq_max_lens(context.config.data.seq_max_lens)
     dataset = pcvr_data.PCVRParquetDataset(
         parquet_path=str(context.dataset_path.expanduser().resolve()),
         schema_path=str(context.schema_path),
@@ -119,17 +121,15 @@ def default_build_prediction_model(
     context: PCVRPredictionContext,
     data_bundle: PCVRPredictionDataBundle,
 ) -> Any:
-    configure_shared_flash_attention_runtime(
-        backend=str(context.config.get("flash_attention_backend", "torch")),
+    model_config = context.config.model
+    configure_shared_flash_attention_runtime(backend=model_config.flash_attention_backend)
+    shared_modeling.configure_rms_norm_runtime(
+        backend=model_config.rms_norm_backend,
+        block_rows=model_config.rms_norm_block_rows,
     )
-    return build_pcvr_model(
-        model_module=context.model_module,
-        model_class_name=context.model_class_name,
-        data_module=data_bundle.data_module,
-        dataset=data_bundle.dataset,
-        config=context.config,
-        package_dir=context.package_dir,
-        checkpoint_dir=context.checkpoint_path.parent,
+    return context.model_type(
+        schema=data_bundle.dataset.layout.schema,
+        config=model_config,
     )
 
 
@@ -197,17 +197,13 @@ def default_run_prediction_loop(
     started_at = time.perf_counter()
     with torch.inference_mode():
         for batch_count, batch in enumerate(data_bundle.loader, start=1):
-            model_input = batch_to_model_input(batch, context.model_module.ModelInput, context.runtime_device)
+            model_input = batch.inputs.to(context.runtime_device)
             with runtime_autocast_context(context.runtime_execution, context.runtime_device):
                 logits, _embeddings = runner.predict_fn(model_input)
             batch_probabilities = sigmoid_probabilities_numpy(logits.squeeze(-1))
-            batch_labels = batch["label"].detach().cpu().numpy() if "label" in batch else np.zeros_like(batch_probabilities)
-            batch_user_ids = batch.get("user_id", list(range(len(batch_probabilities))))
-            batch_timestamps = batch.get("timestamp")
-            if isinstance(batch_timestamps, torch.Tensor):
-                timestamp_values = batch_timestamps.detach().cpu().numpy().tolist()
-            else:
-                timestamp_values = [None] * len(batch_probabilities)
+            batch_labels = batch.label.detach().cpu().numpy()
+            batch_user_ids = batch.user_id
+            timestamp_values = batch.inputs.request_timestamp.detach().cpu().numpy().tolist()
             for row_index, probability in enumerate(batch_probabilities.tolist()):
                 label = float(batch_labels[row_index])
                 user_id = batch_user_ids[row_index]
@@ -267,11 +263,11 @@ def _run_inference_prediction_loop(
     started_at = time.perf_counter()
     with torch.inference_mode():
         for batch_count, batch in enumerate(data_bundle.loader, start=1):
-            model_input = batch_to_model_input(batch, context.model_module.ModelInput, context.runtime_device)
+            model_input = batch.inputs.to(context.runtime_device)
             with runtime_autocast_context(context.runtime_execution, context.runtime_device):
                 logits, _embeddings = runner.predict_fn(model_input)
             batch_probabilities = sigmoid_probabilities_numpy(logits.squeeze(-1))
-            batch_user_ids = batch.get("user_id", list(range(len(batch_probabilities))))
+            batch_user_ids = batch.user_id or list(range(len(batch_probabilities)))
             for user_id, probability in zip(batch_user_ids, batch_probabilities.tolist(), strict=False):
                 predictions[str(user_id)] = float(probability)
             processed_rows += len(batch_probabilities)
@@ -301,63 +297,11 @@ def _run_inference_prediction_loop(
     }
 
 
-class BuildPredictionDataHook(Protocol):
-    def __call__(self, context: PCVRPredictionContext) -> PCVRPredictionDataBundle:
-        ...
-
-
-class BuildPredictionModelHook(Protocol):
-    def __call__(self, context: PCVRPredictionContext, data_bundle: PCVRPredictionDataBundle) -> Any:
-        ...
-
-
-class PreparePredictionRunnerHook(Protocol):
-    def __call__(
-        self,
-        context: PCVRPredictionContext,
-        data_bundle: PCVRPredictionDataBundle,
-        model: Any,
-    ) -> PCVRPredictionRunner:
-        ...
-
-
-class RunPredictionLoopHook(Protocol):
-    def __call__(
-        self,
-        context: PCVRPredictionContext,
-        data_bundle: PCVRPredictionDataBundle,
-        runner: PCVRPredictionRunner,
-    ) -> dict[str, Any]:
-        ...
-
-
-@dataclass(frozen=True, slots=True)
-class PCVRPredictionHooks:
-    build_data: BuildPredictionDataHook = default_build_prediction_data
-    build_model: BuildPredictionModelHook = default_build_prediction_model
-    prepare_predictor: PreparePredictionRunnerHook = default_prepare_prediction_runner
-    run_loop: RunPredictionLoopHook = default_run_prediction_loop
-
-
-DEFAULT_PCVR_PREDICTION_HOOKS = PCVRPredictionHooks()
-
-
-def build_pcvr_prediction_hooks(**overrides: Any) -> PCVRPredictionHooks:
-    return replace(DEFAULT_PCVR_PREDICTION_HOOKS, **overrides)
-
-
 __all__ = [
-    "DEFAULT_PCVR_PREDICTION_HOOKS",
-    "BuildPredictionDataHook",
-    "BuildPredictionModelHook",
     "PCVRPredictionContext",
     "PCVRPredictionDataBundle",
-    "PCVRPredictionHooks",
     "PCVRPredictionRunner",
-    "PreparePredictionRunnerHook",
-    "RunPredictionLoopHook",
     "_log_prediction_progress",
-    "build_pcvr_prediction_hooks",
     "default_build_prediction_data",
     "default_build_prediction_model",
     "default_prepare_prediction_runner",

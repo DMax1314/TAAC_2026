@@ -4,7 +4,7 @@ icon: lucide/folder-open
 
 # 实验包总览
 
-本目录记录仓库中所有可运行的实验包。它们共享同一套 PCVR 训练、评估、推理、checkpoint sidecar 和 bundle 打包流程；差异集中在输入 tokenization、交互主干、默认训练策略和少量实验私有 hook 上。
+本目录记录仓库中所有可运行的实验包。它们共享同一套 PCVR 训练、评估、推理、checkpoint sidecar 和 bundle 打包流程；差异集中在输入 tokenization、交互主干和默认训练策略上。
 
 如果把仓库看成一个统一推荐系统实验台，那么 `src/taac2026` 是稳定运行时，`experiments/` 是可替换的研究假设。每个实验包都应回答四个问题：
 
@@ -86,7 +86,7 @@ experiments/<name>/
 └── model.py
 ```
 
-`__init__.py` 声明 `EXPERIMENT`、实验名、模型类、默认训练配置和必要 hooks。`model.py` 实现模型类，至少满足：
+`__init__.py` 声明 `EXPERIMENT`、实验名、模型类和默认训练配置。`model.py` 实现模型类，至少满足：
 
 - `forward(inputs)` 返回 `(B,)` 或 `(B, action_num)` logits。
 - `predict(inputs)` 返回 `(logits, embeddings)`。
@@ -102,7 +102,7 @@ experiments/<tool>/
 └── runner.py
 ```
 
-它们导出 `ExperimentSpec`，可以没有模型类、checkpoint sidecar 或预测 hooks。
+它们导出 `ExperimentSpec`，可以没有模型类和 checkpoint sidecar；训练、评估和推理流程由框架统一编排，实验包不需要也不提供 hooks。
 
 ## 五、改实验时先看哪里
 

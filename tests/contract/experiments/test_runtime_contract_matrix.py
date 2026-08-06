@@ -3,10 +3,8 @@ from __future__ import annotations
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
-from typing import NamedTuple
 
 import pytest
-import torch
 
 from taac2026.application.packaging.cli import build_training_bundle
 from taac2026.infrastructure.checkpoints import (
@@ -17,60 +15,39 @@ from taac2026.infrastructure.checkpoints import (
     write_checkpoint_sidecars,
 )
 from taac2026.application.experiments.registry import load_experiment_package
-from taac2026.domain.config import PCVRTrainConfig
+from taac2026.domain.config import PCVRModelConfig, PCVRNSConfig, PCVRTrainConfig
+from taac2026.domain.schema import PCVRSchema
 from taac2026.domain.sidecar import (
     PCVR_TRAIN_CONFIG_FORMAT,
     build_pcvr_train_config_sidecar,
 )
 from taac2026.infrastructure.modeling.model_contract import (
-    batch_to_model_input,
     build_feature_specs,
-    build_pcvr_model,
+    build_pcvr_model_specs,
+    dataset_schema_path,
     load_ns_groups,
-    num_time_buckets,
     parse_seq_max_lens,
     resolve_schema_path,
 )
 from taac2026.application.evaluation.runtime import default_load_train_config
 from taac2026.infrastructure.io.json import dumps, loads
-from taac2026.infrastructure.modeling import configure_flash_attention_runtime, flash_attention_runtime_state
 from tests.support.experiment_matrix import ExperimentCase, REPO_ROOT, discover_pcvr_experiment_cases, load_model_module
 
 
 EXPERIMENT_CASES = discover_pcvr_experiment_cases()
 
 
-class _ModelInput(NamedTuple):
-    user_int_feats: torch.Tensor
-    item_int_feats: torch.Tensor
-    user_dense_feats: torch.Tensor
-    item_dense_feats: torch.Tensor
-    seq_data: dict[str, torch.Tensor]
-    seq_lens: dict[str, torch.Tensor]
-    seq_time_buckets: dict[str, torch.Tensor]
-
-
-class _RecordingModel(torch.nn.Module):
-    def __init__(self, **kwargs) -> None:
-        super().__init__()
-        self.kwargs = kwargs
-
-
 def _schema(entries: list[tuple[int, int, int]]) -> SimpleNamespace:
     return SimpleNamespace(entries=entries)
 
 
-def _dataset(user_count: int, item_count: int) -> SimpleNamespace:
-    user_entries = [(100 + index, index, 1) for index in range(user_count)]
-    item_entries = [(200 + index, index, 1) for index in range(item_count)]
-    return SimpleNamespace(
-        user_int_schema=_schema(user_entries),
-        item_int_schema=_schema(item_entries),
-        user_int_vocab_sizes=[10 + index for index in range(user_count)],
-        item_int_vocab_sizes=[20 + index for index in range(item_count)],
-        user_dense_schema=SimpleNamespace(total_dim=3),
-        item_dense_schema=SimpleNamespace(total_dim=2),
-        seq_domain_vocab_sizes={"seq_a": [7, 9], "seq_b": [5]},
+def _make_schema(user_fids: list[int], item_fids: list[int]) -> PCVRSchema:
+    return PCVRSchema(
+        format="raw_parquet",
+        user_int=tuple([fid, 10, 1] for fid in user_fids),
+        item_int=tuple([fid, 10, 1] for fid in item_fids),
+        user_dense=[[4, 4]],
+        seq={},
     )
 
 def _code_package_names(code_package_path: Path) -> set[str]:
@@ -149,11 +126,9 @@ def test_build_feature_specs_cases(
     "scenario",
     [
         "explicit",
-        "checkpoint",
-        "dataset_dir",
-        "dataset_parent",
-        "explicit_missing_falls_back_to_checkpoint",
-        "missing",
+        "explicit_missing",
+        "fallback",
+        "fallback_missing",
     ],
 )
 def test_resolve_schema_path_cases(tmp_path: Path, scenario: str) -> None:
@@ -167,58 +142,49 @@ def test_resolve_schema_path_cases(tmp_path: Path, scenario: str) -> None:
 
     if scenario == "explicit":
         explicit_path.write_text("{}", encoding="utf-8")
-        actual = resolve_schema_path(dataset_dir, explicit_path, checkpoint_dir)
+        actual = resolve_schema_path(explicit_path, fallback=dataset_dir / "schema.json")
         assert actual == explicit_path.resolve()
         return
 
-    if scenario == "checkpoint":
-        checkpoint_schema = checkpoint_dir / "schema.json"
+    if scenario == "explicit_missing":
+        with pytest.raises(FileNotFoundError, match=r"explicit path"):
+            resolve_schema_path(explicit_path, fallback=dataset_dir / "schema.json")
+        return
+
+    checkpoint_schema = checkpoint_dir / "schema.json"
+    if scenario == "fallback":
         checkpoint_schema.write_text("{}", encoding="utf-8")
-        actual = resolve_schema_path(dataset_dir, None, checkpoint_dir)
+        actual = resolve_schema_path(None, fallback=checkpoint_schema)
         assert actual == checkpoint_schema.resolve()
         return
 
-    if scenario == "dataset_dir":
-        dataset_schema = dataset_dir / "schema.json"
-        dataset_schema.write_text("{}", encoding="utf-8")
-        actual = resolve_schema_path(dataset_dir, None, checkpoint_dir)
-        assert actual == dataset_schema.resolve()
-        return
+    with pytest.raises(FileNotFoundError, match=r"fallback path"):
+        resolve_schema_path(None, fallback=checkpoint_schema)
 
-    if scenario == "dataset_parent":
-        dataset_schema = dataset_dir / "schema.json"
-        dataset_schema.write_text("{}", encoding="utf-8")
-        actual = resolve_schema_path(dataset_file, None, checkpoint_dir)
-        assert actual == dataset_schema.resolve()
-        return
 
-    if scenario == "explicit_missing_falls_back_to_checkpoint":
-        checkpoint_schema = checkpoint_dir / "schema.json"
-        checkpoint_schema.write_text("{}", encoding="utf-8")
-        actual = resolve_schema_path(dataset_dir, explicit_path, checkpoint_dir)
-        assert actual == checkpoint_schema.resolve()
-        return
+def test_dataset_schema_path_uses_dataset_dir_or_parent(tmp_path: Path) -> None:
+    dataset_dir = tmp_path / "data_dir"
+    dataset_dir.mkdir()
+    dataset_file = dataset_dir / "train.parquet"
+    dataset_file.write_text("", encoding="utf-8")
 
-    with pytest.raises(FileNotFoundError, match=r"schema\.json"):
-        resolve_schema_path(dataset_dir, None, checkpoint_dir)
+    assert dataset_schema_path(dataset_dir) == (dataset_dir / "schema.json").resolve()
+    assert dataset_schema_path(dataset_file) == (dataset_dir / "schema.json").resolve()
 
 
 @pytest.mark.parametrize(
     ("user_count", "item_count"),
-    [(0, 0), (1, 0), (0, 1), (2, 3), (4, 2)],
+    [(1, 1), (2, 3), (4, 2)],
 )
-def test_load_ns_groups_defaults_to_singletons_when_disabled(user_count: int, item_count: int, tmp_path: Path) -> None:
-    dataset = _dataset(user_count, item_count)
+def test_load_ns_groups_defaults_to_singletons_when_disabled(user_count: int, item_count: int) -> None:
+    schema = _make_schema(
+        user_fids=[100 + index for index in range(user_count)],
+        item_fids=[200 + index for index in range(item_count)],
+    )
 
     user_groups, item_groups = load_ns_groups(
-        dataset,
-        {
-            "ns_grouping_strategy": "singleton",
-            "user_ns_groups": {},
-            "item_ns_groups": {},
-        },
-        tmp_path,
-        tmp_path,
+        schema,
+        PCVRNSConfig(grouping_strategy="singleton", user_groups={}, item_groups={}),
     )
 
     assert user_groups == [[index] for index in range(user_count)]
@@ -229,36 +195,27 @@ def test_load_ns_groups_defaults_to_singletons_when_disabled(user_count: int, it
     ("payload", "expected_user", "expected_item"),
     [
         (
-            {"user_ns_groups": {"u": [20, 10]}, "item_ns_groups": {"i": [7]}},
+            {"user_groups": {"u": [20, 10]}, "item_groups": {"i": [7]}},
             [[1, 0]],
             [[0]],
         ),
         (
-            {"user_ns_groups": {"u1": [30], "u2": [20, 10]}, "item_ns_groups": {"i1": [8], "i2": [7]}},
+            {"user_groups": {"u1": [30], "u2": [20, 10]}, "item_groups": {"i1": [8], "i2": [7]}},
             [[2], [1, 0]],
             [[1], [0]],
         ),
     ],
 )
 def test_load_ns_groups_maps_feature_ids_preserves_declared_order(
-    tmp_path: Path,
     payload: dict[str, dict[str, list[int]]],
     expected_user: list[list[int]],
     expected_item: list[list[int]],
 ) -> None:
-    dataset = SimpleNamespace(
-        user_int_schema=_schema([(10, 0, 1), (20, 1, 1), (30, 2, 1)]),
-        item_int_schema=_schema([(7, 0, 1), (8, 1, 1)]),
-    )
+    schema = _make_schema(user_fids=[10, 20, 30], item_fids=[7, 8])
 
     user_groups, item_groups = load_ns_groups(
-        dataset,
-        {
-            "ns_grouping_strategy": "explicit",
-            **payload,
-        },
-        tmp_path,
-        tmp_path,
+        schema,
+        PCVRNSConfig(grouping_strategy="explicit", **payload),
     )
 
     assert user_groups == expected_user
@@ -268,244 +225,41 @@ def test_load_ns_groups_maps_feature_ids_preserves_declared_order(
 @pytest.mark.parametrize(
     ("payload", "missing_name"),
     [
-        ({"user_ns_groups": {"u": [999]}, "item_ns_groups": {"i": [7]}}, "999"),
-        ({"user_ns_groups": {"u": [10]}, "item_ns_groups": {"i": [999]}}, "999"),
+        ({"user_groups": {"u": [999]}, "item_groups": {"i": [7]}}, "999"),
+        ({"user_groups": {"u": [10]}, "item_groups": {"i": [999]}}, "999"),
     ],
 )
 def test_load_ns_groups_raises_for_unknown_feature_ids(
-    tmp_path: Path,
     payload: dict[str, dict[str, list[int]]],
     missing_name: str,
 ) -> None:
-    dataset = SimpleNamespace(
-        user_int_schema=_schema([(10, 0, 1)]),
-        item_int_schema=_schema([(7, 0, 1)]),
-    )
+    schema = _make_schema(user_fids=[10], item_fids=[7])
 
     with pytest.raises(KeyError, match=missing_name):
         load_ns_groups(
-            dataset,
-            {
-                "ns_grouping_strategy": "explicit",
-                **payload,
-            },
-            tmp_path,
-            tmp_path,
+            schema,
+            PCVRNSConfig(grouping_strategy="explicit", **payload),
         )
 
 
-@pytest.mark.parametrize(
-    ("config", "bucket_count", "expected"),
-    [
-        ({"use_time_buckets": True}, 7, 7),
-        ({"use_time_buckets": False}, 9, 0),
-        ({"use_time_buckets": 0}, 11, 0),
-    ],
-)
-def test_num_time_buckets_cases(config: dict[str, object], bucket_count: int, expected: int) -> None:
-    data_module = SimpleNamespace(NUM_TIME_BUCKETS=bucket_count)
-
-    assert num_time_buckets(config, data_module) == expected
-
-
-def test_num_time_buckets_requires_explicit_config() -> None:
-    with pytest.raises(KeyError, match="use_time_buckets"):
-        num_time_buckets({}, SimpleNamespace(NUM_TIME_BUCKETS=65))
-
-
-@pytest.mark.parametrize(
-    ("domains", "explicit_domains"),
-    [
-        ([], set()),
-        (["seq_a"], set()),
-        (["seq_a"], {"seq_a"}),
-        (["seq_a", "seq_b"], set()),
-        (["seq_a", "seq_b"], {"seq_a"}),
-        (["seq_a", "seq_b", "seq_c"], {"seq_a", "seq_b", "seq_c"}),
-    ],
-)
-def test_batch_to_model_input_cases(domains: list[str], explicit_domains: set[str]) -> None:
-    batch: dict[str, object] = {
-        "user_int_feats": torch.ones(2, 1, dtype=torch.long),
-        "item_int_feats": torch.ones(2, 1, dtype=torch.long),
-        "user_dense_feats": torch.ones(2, 2),
-        "item_dense_feats": torch.zeros(2, 0),
-        "_seq_domains": domains,
-    }
-    for index, domain in enumerate(domains, start=1):
-        length = index + 2
-        batch[domain] = torch.ones(2, 1, length, dtype=torch.long)
-        batch[f"{domain}_len"] = torch.tensor([length, max(1, length - 1)], dtype=torch.long)
-        if domain in explicit_domains:
-            batch[f"{domain}_time_bucket"] = torch.full((2, length), index, dtype=torch.long)
-
-    model_input = batch_to_model_input(batch, _ModelInput, torch.device("cpu"))
-
-    assert set(model_input.seq_data) == set(domains)
-    for index, domain in enumerate(domains, start=1):
-        max_length = index + 2
-        assert model_input.seq_data[domain].shape == (2, 1, max_length)
-        assert model_input.seq_lens[domain].shape == (2,)
-        assert model_input.seq_time_buckets[domain].shape == (2, max_length)
-        if domain in explicit_domains:
-            assert torch.equal(model_input.seq_time_buckets[domain], torch.full((2, max_length), index, dtype=torch.long))
-        else:
-            assert torch.equal(model_input.seq_time_buckets[domain], torch.zeros(2, max_length, dtype=torch.long))
-
-
-@pytest.mark.parametrize(
-    ("config", "use_explicit_groups", "expected_user_groups", "expected_item_groups", "expected_time_buckets"),
-    [
-        ({"use_time_buckets": True}, False, [[0], [1]], [[0]], 13),
-        ({"use_time_buckets": False}, False, [[0], [1]], [[0]], 0),
-        ({"use_time_buckets": True}, True, [[1, 0]], [[0]], 13),
-        ({"use_time_buckets": 0}, True, [[1, 0]], [[0]], 0),
-    ],
-)
-def test_build_pcvr_model_forwards_constructor_contract(
-    tmp_path: Path,
-    config: dict[str, object],
-    use_explicit_groups: bool,
-    expected_user_groups: list[list[int]],
-    expected_item_groups: list[list[int]],
-    expected_time_buckets: int,
-) -> None:
-    runtime_config: dict[str, object] = {}
-
-    def configure_flash_attention_runtime(*, flash_attention_backend: str) -> None:
-        runtime_config["flash_backend"] = flash_attention_backend
-
-    def configure_rms_norm_runtime(*, rms_norm_backend: str, rms_norm_block_rows: int) -> None:
-        runtime_config["backend"] = rms_norm_backend
-        runtime_config["block_rows"] = rms_norm_block_rows
-
-    dataset = SimpleNamespace(
-        user_int_schema=_schema([(10, 0, 1), (20, 1, 1)]),
-        item_int_schema=_schema([(7, 0, 1)]),
-        user_int_vocab_sizes=[11, 17],
-        item_int_vocab_sizes=[19],
-        user_dense_schema=SimpleNamespace(total_dim=3),
-        item_dense_schema=SimpleNamespace(total_dim=2),
-        seq_domain_vocab_sizes={"seq_a": [5, 6], "seq_b": [7]},
-    )
-    package_dir = tmp_path / "package"
-    checkpoint_dir = tmp_path / "checkpoint"
-    package_dir.mkdir()
-    checkpoint_dir.mkdir()
-    resolved_config = {
-        "d_model": "16",
-        "emb_dim": "8",
-        "num_queries": "2",
-        "num_blocks": "3",
-        "num_heads": "4",
-        "seq_encoder_type": "transformer",
-        "hidden_mult": "2",
-        "dropout_rate": "0.0",
-        "seq_top_k": "50",
-        "seq_causal": False,
-        "action_num": "1",
-        "rank_mixer_mode": "full",
-        "use_rope": False,
-        "rope_base": "10000.0",
-        "emb_skip_threshold": "1000000",
-        "seq_id_threshold": "10000",
-        "gradient_checkpointing": False,
-        "flash_attention_backend": "tilelang",
-        "rms_norm_backend": "tilelang",
-        "rms_norm_block_rows": "8",
-        "ns_tokenizer_type": "rankmixer",
-        "user_ns_tokens": "2",
-        "item_ns_tokens": "1",
-        "ns_grouping_strategy": "singleton",
-        "user_ns_groups": {},
-        "item_ns_groups": {},
-        **config,
-    }
-    if use_explicit_groups:
-        resolved_config["ns_grouping_strategy"] = "explicit"
-        resolved_config["user_ns_groups"] = {"u": [20, 10]}
-        resolved_config["item_ns_groups"] = {"i": [7]}
-
-    model = build_pcvr_model(
-        model_module=SimpleNamespace(
-            RecordedModel=_RecordingModel,
-            configure_flash_attention_runtime=configure_flash_attention_runtime,
-            configure_rms_norm_runtime=configure_rms_norm_runtime,
+def test_build_pcvr_model_specs_compiles_schema_derived_inputs() -> None:
+    schema = _make_schema(user_fids=[10, 20], item_fids=[7])
+    specs = build_pcvr_model_specs(
+        schema,
+        PCVRNSConfig(
+            grouping_strategy="explicit",
+            user_groups={"u": [20, 10]},
+            item_groups={"i": [7]},
         ),
-        model_class_name="RecordedModel",
-        data_module=SimpleNamespace(NUM_TIME_BUCKETS=13),
-        dataset=dataset,
-        config=resolved_config,
-        package_dir=package_dir,
-        checkpoint_dir=checkpoint_dir,
     )
 
-    assert isinstance(model, _RecordingModel)
-    assert model.kwargs["user_int_feature_specs"] == [(11, 0, 1), (17, 1, 1)]
-    assert model.kwargs["item_int_feature_specs"] == [(19, 0, 1)]
-    assert model.kwargs["user_dense_dim"] == 3
-    assert model.kwargs["item_dense_dim"] == 2
-    assert model.kwargs["seq_vocab_sizes"] == {"seq_a": [5, 6], "seq_b": [7]}
-    assert model.kwargs["user_ns_groups"] == expected_user_groups
-    assert model.kwargs["item_ns_groups"] == expected_item_groups
-    assert model.kwargs["num_time_buckets"] == expected_time_buckets
-    assert model.kwargs["d_model"] == 16
-    assert model.kwargs["emb_dim"] == 8
-    assert model.kwargs["num_blocks"] == 3
-    assert model.kwargs["num_heads"] == 4
-    assert runtime_config == {"flash_backend": "tilelang", "backend": "tilelang", "block_rows": 8}
-
-
-def test_build_pcvr_model_leaves_shared_flash_attention_runtime_to_application(tmp_path: Path) -> None:
-    configure_flash_attention_runtime(backend="tilelang")
-    dataset = _dataset(user_count=2, item_count=1)
-    package_dir = tmp_path / "package"
-    checkpoint_dir = tmp_path / "checkpoint"
-    package_dir.mkdir()
-    checkpoint_dir.mkdir()
-
-    config = {
-        "d_model": "16",
-        "emb_dim": "8",
-        "num_queries": "2",
-        "num_blocks": "3",
-        "num_heads": "4",
-        "seq_encoder_type": "transformer",
-        "hidden_mult": "2",
-        "dropout_rate": "0.0",
-        "seq_top_k": "50",
-        "seq_causal": False,
-        "action_num": "1",
-        "rank_mixer_mode": "full",
-        "use_rope": False,
-        "rope_base": "10000.0",
-        "emb_skip_threshold": "1000000",
-        "seq_id_threshold": "10000",
-        "gradient_checkpointing": False,
-        "rms_norm_backend": "torch",
-        "rms_norm_block_rows": "1",
-        "ns_tokenizer_type": "rankmixer",
-        "user_ns_tokens": "2",
-        "item_ns_tokens": "1",
-        "ns_grouping_strategy": "singleton",
-        "user_ns_groups": {},
-        "item_ns_groups": {},
-        "use_time_buckets": False,
-    }
-    try:
-        build_pcvr_model(
-            model_module=SimpleNamespace(RecordedModel=_RecordingModel),
-            model_class_name="RecordedModel",
-            data_module=SimpleNamespace(NUM_TIME_BUCKETS=13),
-            dataset=dataset,
-            config=config,
-            package_dir=package_dir,
-            checkpoint_dir=checkpoint_dir,
-        )
-
-        assert flash_attention_runtime_state() == "tilelang"
-    finally:
-        configure_flash_attention_runtime(backend="torch")
+    assert specs.user_int_feature_specs == [(10, 0, 1), (10, 1, 1)]
+    assert specs.item_int_feature_specs == [(10, 0, 1)]
+    assert specs.user_dense_dim == 4
+    assert specs.item_dense_dim == 0
+    assert specs.seq_vocab_sizes == {}
+    assert specs.user_ns_groups == [[1, 0]]
+    assert specs.item_ns_groups == [[0]]
 
 
 @pytest.mark.parametrize(
@@ -614,86 +368,84 @@ def test_resolve_checkpoint_path_cases(tmp_path: Path, scenario: str) -> None:
         resolve_checkpoint_path(run_dir)
 
 
-@pytest.mark.parametrize(
-    ("include_schema", "include_train_config", "expected_keys"),
-    [
-        (False, False, set()),
-        (True, False, {"schema"}),
-        (False, True, {"train_config"}),
-        (True, True, {"schema", "train_config"}),
-    ],
-)
-def test_write_checkpoint_sidecars_cases(
-    tmp_path: Path,
-    include_schema: bool,
-    include_train_config: bool,
-    expected_keys: set[str],
-) -> None:
+def test_write_checkpoint_sidecars_writes_both_sidecars(tmp_path: Path) -> None:
     checkpoint_dir = tmp_path / "global_step1"
     schema_path = tmp_path / "schema.json"
-    if include_schema:
-        schema_path.write_text('{"schema": true}\n', encoding="utf-8")
+    schema_path.write_text('{"schema": true}\n', encoding="utf-8")
 
-    train_config = (
-        {
-            "ns_grouping_strategy": "explicit",
-            "user_ns_groups": {"u": [10, 20]},
-            "item_ns_groups": {"i": [7]},
-            "d_model": 64,
-        }
-        if include_train_config
-        else None
-    )
     written = write_checkpoint_sidecars(
         checkpoint_dir,
-        schema_path=schema_path if include_schema else None,
-        train_config=train_config,
+        schema_path=schema_path,
+        train_config=PCVRTrainConfig(
+            model=PCVRModelConfig(
+                d_model=64,
+                ns=PCVRNSConfig(
+                    grouping_strategy="explicit",
+                    user_groups={"u": [10, 20]},
+                    item_groups={"i": [7]},
+                ),
+            ),
+        ),
     )
 
-    assert set(written) == expected_keys
-    if "schema" in expected_keys:
-        assert (checkpoint_dir / "schema.json").exists()
-    if "train_config" in expected_keys:
-        payload = loads((checkpoint_dir / "train_config.json").read_bytes())
-        assert payload["train_config_format"] == PCVR_TRAIN_CONFIG_FORMAT
-        assert payload["train_config"]["ns_grouping_strategy"] == "explicit"
-        assert payload["train_config"]["user_ns_groups"] == {"u": [10, 20]}
-        assert payload["train_config"]["item_ns_groups"] == {"i": [7]}
+    assert set(written) == {"schema", "train_config"}
+    assert (checkpoint_dir / "schema.json").exists()
+    payload = loads((checkpoint_dir / "train_config.json").read_bytes())
+    assert payload["train_config_format"] == PCVR_TRAIN_CONFIG_FORMAT
+    assert payload["train_config"]["model"]["ns"]["grouping_strategy"] == "explicit"
+    assert payload["train_config"]["model"]["ns"]["user_groups"] == {"u": [10, 20]}
+    assert payload["train_config"]["model"]["ns"]["item_groups"] == {"i": [7]}
+
+
+def test_write_checkpoint_sidecars_requires_existing_schema(tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "global_step1"
+    missing_schema = tmp_path / "missing_schema.json"
+
+    with pytest.raises(FileNotFoundError, match="schema"):
+        write_checkpoint_sidecars(
+            checkpoint_dir,
+            schema_path=missing_schema,
+            train_config=PCVRTrainConfig(),
+        )
 
 
 def test_build_pcvr_train_config_sidecar_adds_framework_metadata() -> None:
-    flat_config = PCVRTrainConfig().to_flat_dict()
+    structured_config = PCVRTrainConfig()
 
-    payload = build_pcvr_train_config_sidecar(flat_config)
+    payload = build_pcvr_train_config_sidecar(structured_config)
 
     assert payload["train_config_format"] == PCVR_TRAIN_CONFIG_FORMAT
     assert payload["framework_name"] == "taac2026"
-    assert payload["framework_version"]
-    assert payload["train_config"]["d_model"] == flat_config["d_model"]
-    assert payload["train_config"]["user_ns_groups"] == flat_config["user_ns_groups"]
+    assert "framework_version" not in payload
+    assert payload["train_config"]["model"]["d_model"] == structured_config.model.d_model
+    assert payload["train_config"]["model"]["ns"] == structured_config.model.ns.model_dump(mode="json")
 
 
 def test_default_load_train_config_requires_current_payload(tmp_path: Path) -> None:
     checkpoint_dir = tmp_path / "global_step1"
     checkpoint_dir.mkdir()
-    flat_config = PCVRTrainConfig().to_flat_dict()
-    (checkpoint_dir / "train_config.json").write_text(dumps(build_pcvr_train_config_sidecar(flat_config)), encoding="utf-8")
+    structured_config = PCVRTrainConfig()
+    (checkpoint_dir / "train_config.json").write_text(dumps(build_pcvr_train_config_sidecar(structured_config)), encoding="utf-8")
 
-    loaded = default_load_train_config(None, checkpoint_dir)
+    loaded = default_load_train_config(SimpleNamespace(config_type=PCVRTrainConfig), checkpoint_dir)
 
-    assert loaded["d_model"] == flat_config["d_model"]
-    assert loaded["ns_grouping_strategy"] == flat_config["ns_grouping_strategy"]
-    assert loaded["train_config_format"] == PCVR_TRAIN_CONFIG_FORMAT
+    assert loaded.model.d_model == structured_config.model.d_model
+    assert loaded.model.ns.grouping_strategy == structured_config.model.ns.grouping_strategy
 
 
 def test_default_load_train_config_rejects_flat_payload(tmp_path: Path) -> None:
     checkpoint_dir = tmp_path / "global_step1"
     checkpoint_dir.mkdir()
-    flat_config = PCVRTrainConfig().to_flat_dict()
-    (checkpoint_dir / "train_config.json").write_text(dumps(flat_config), encoding="utf-8")
+    flat_payload = {
+        "train_config_format": PCVR_TRAIN_CONFIG_FORMAT,
+        "framework_name": "taac2026",
+        "framework_version": "test",
+        "train_config": {"d_model": 64, "ns_grouping_strategy": "explicit"},
+    }
+    (checkpoint_dir / "train_config.json").write_text(dumps(flat_payload), encoding="utf-8")
 
     with pytest.raises(ValueError):
-        default_load_train_config(None, checkpoint_dir)
+        default_load_train_config(SimpleNamespace(config_type=PCVRTrainConfig), checkpoint_dir)
 
 
 @pytest.mark.parametrize("identifier_kind", ["path", "path_object"])
@@ -709,21 +461,20 @@ def test_load_experiment_package_accepts_path_and_module_identifiers(
 
 
 def test_experiment_package_contracts(loaded_experiment, experiment_case: ExperimentCase) -> None:
-    train_defaults = loaded_experiment.train_defaults.to_flat_dict()
+    train_defaults = loaded_experiment.train_defaults.model_dump(mode="json")
 
     assert loaded_experiment.name == experiment_case.name
     assert loaded_experiment.package_dir == (REPO_ROOT / experiment_case.path).resolve()
     assert loaded_experiment.train_defaults is not None
     assert loaded_experiment.metadata["kind"] == "pcvr"
     assert loaded_experiment.metadata["model_class"] == experiment_case.model_class
-    assert train_defaults["ns_grouping_strategy"] == "explicit"
-    assert train_defaults["user_ns_groups"]
-    assert train_defaults["item_ns_groups"]
+    assert train_defaults["model"]["ns"]["grouping_strategy"] == "explicit"
+    assert train_defaults["model"]["ns"]["user_groups"]
+    assert train_defaults["model"]["ns"]["item_groups"]
     assert "num_hyformer_blocks" not in train_defaults
 
 
 def test_model_module_contracts(loaded_model_module, experiment_case: ExperimentCase) -> None:
-    assert hasattr(loaded_model_module, "ModelInput")
     assert hasattr(loaded_model_module, experiment_case.model_class)
     if experiment_case.path != "experiments/baseline":
         assert not hasattr(loaded_model_module, "PCVRHyFormer")
@@ -731,15 +482,15 @@ def test_model_module_contracts(loaded_model_module, experiment_case: Experiment
 
 def test_ns_group_config_has_required_keys(experiment_case: ExperimentCase) -> None:
     experiment = load_experiment_package(experiment_case.path)
-    payload = experiment.train_defaults.to_flat_dict()
+    ns = experiment.train_defaults.model.ns
 
-    assert payload["ns_grouping_strategy"] == "explicit"
-    assert isinstance(payload["user_ns_groups"], dict)
-    assert isinstance(payload["item_ns_groups"], dict)
-    assert all(isinstance(group, list) for group in payload["user_ns_groups"].values())
-    assert all(isinstance(group, list) for group in payload["item_ns_groups"].values())
-    assert all(all(isinstance(feature_id, int) for feature_id in group) for group in payload["user_ns_groups"].values())
-    assert all(all(isinstance(feature_id, int) for feature_id in group) for group in payload["item_ns_groups"].values())
+    assert ns.grouping_strategy == "explicit"
+    assert isinstance(ns.user_groups, dict)
+    assert isinstance(ns.item_groups, dict)
+    assert all(isinstance(group, list) for group in ns.user_groups.values())
+    assert all(isinstance(group, list) for group in ns.item_groups.values())
+    assert all(all(isinstance(feature_id, int) for feature_id in group) for group in ns.user_groups.values())
+    assert all(all(isinstance(feature_id, int) for feature_id in group) for group in ns.item_groups.values())
 
 
 def test_bundle_manifest_points_to_selected_experiment(

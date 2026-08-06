@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from types import SimpleNamespace
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from pydantic import ValidationError
 
 from taac2026.domain.requests import EvalRequest, InferRequest, TrainRequest
 from taac2026.infrastructure.io.json import dumps, loads
@@ -14,45 +14,47 @@ from taac2026.domain.config import PCVRDataConfig, PCVRTrainConfig
 from taac2026.domain.sidecar import build_pcvr_train_config_sidecar
 import taac2026.application.experiments.experiment as experiment_module
 from taac2026.application.experiments.experiment import PCVRExperiment, _log_prediction_progress
-from taac2026.application.evaluation.workflow import (
-    PCVRPredictionDataBundle,
-    PCVRPredictionRunner,
-    build_pcvr_prediction_hooks,
-)
-from taac2026.application.evaluation.runtime import build_pcvr_runtime_hooks
-from taac2026.application.training.workflow import build_pcvr_train_hooks
-from taac2026.application.training.args import parse_pcvr_train_args
-from taac2026.infrastructure.runtime.execution import RuntimeExecutionConfig
+from taac2026.domain.runtime_config import RuntimeExecutionConfig
+
+
+class DummyModel:
+    num_ns = 0
+
+    def __init__(self, *, schema, config):
+        del schema, config
+
+    def to(self, device):
+        del device
+        return self
+
+    def parameters(self):
+        return []
 
 
 def _make_experiment(
     tmp_path: Path,
     *,
     train_defaults: PCVRTrainConfig | None = None,
-    prediction_hooks=None,
-    runtime_hooks=None,
 ) -> PCVRExperiment:
     package_dir = tmp_path / "package"
     package_dir.mkdir()
     (package_dir / "__init__.py").write_text("", encoding="utf-8")
     (package_dir / "model.py").write_text(
-        "class ModelInput:\n    pass\n\nclass DummyModel:\n    pass\n",
+        "class DummyModel:\n    pass\n",
         encoding="utf-8",
     )
     return PCVRExperiment(
         name="pcvr_symbiosis",
         package_dir=package_dir,
-        model_class_name="DummyModel",
+        model_type=DummyModel,
+        config_type=PCVRTrainConfig,
         train_defaults=train_defaults or PCVRTrainConfig(),
-        train_arg_parser=parse_pcvr_train_args,
-        train_hooks=build_pcvr_train_hooks(),
-        prediction_hooks=prediction_hooks or build_pcvr_prediction_hooks(),
-        runtime_hooks=runtime_hooks or build_pcvr_runtime_hooks(),
     )
 
 
 def _write_observed_schema_fixture(schema_path: Path, parquet_path: Path) -> None:
     payload = {
+        "format": "raw_parquet",
         "user_int": [[1, 10, 1], [2, 20, 4]],
         "item_int": [[3, 20, 1]],
         "user_dense": [[4, 4]],
@@ -83,16 +85,23 @@ def _write_observed_schema_fixture(schema_path: Path, parquet_path: Path) -> Non
 
 
 def _write_train_config(checkpoint_dir: Path, overrides: dict[str, object] | None = None) -> None:
-    config = PCVRTrainConfig().to_flat_dict()
+    config = PCVRTrainConfig()
     if overrides:
-        config.update(overrides)
+        payload = config.model_dump(mode="json")
+        for section, values in overrides.items():
+            payload.setdefault(section, {})
+            if isinstance(values, dict):
+                payload[section].update(values)
+            else:
+                payload[section] = values
+        config = PCVRTrainConfig.model_validate(payload)
     (checkpoint_dir / "train_config.json").write_text(dumps(build_pcvr_train_config_sidecar(config)), encoding="utf-8")
 
 
 def test_resolve_prediction_runtime_settings_requires_train_config_values(tmp_path: Path) -> None:
     experiment = _make_experiment(
         tmp_path,
-        train_defaults=PCVRTrainConfig(data=PCVRDataConfig(batch_size=128, num_workers=8)),
+        train_defaults=PCVRTrainConfig(data=PCVRDataConfig(batch_size=0, num_workers=8)),
     )
     request = InferRequest(
         experiment="experiments/symbiosis",
@@ -102,8 +111,8 @@ def test_resolve_prediction_runtime_settings_requires_train_config_values(tmp_pa
         result_dir=tmp_path / "results",
     )
 
-    with pytest.raises(KeyError, match="batch_size"):
-        experiment._resolve_prediction_runtime_settings(request, {})
+    with pytest.raises(ValueError, match="batch_size"):
+        experiment._resolve_prediction_runtime_settings(request, experiment.train_defaults)
 
 
 def test_resolve_prediction_runtime_settings_preserves_explicit_request_values(tmp_path: Path) -> None:
@@ -136,7 +145,7 @@ def test_infer_uses_train_config_runtime_settings(tmp_path: Path, monkeypatch: p
     (checkpoint_dir / "model.safetensors").write_bytes(b"checkpoint")
     schema_payload = {"features": [{"name": "user_id"}]}
     (checkpoint_dir / "schema.json").write_text(dumps(schema_payload), encoding="utf-8")
-    _write_train_config(checkpoint_dir, {"batch_size": 96, "num_workers": 4})
+    _write_train_config(checkpoint_dir, {"data": {"batch_size": 96, "num_workers": 4}})
     captured: dict[str, object] = {}
 
     def fake_run_prediction_loop(**kwargs):
@@ -181,7 +190,7 @@ def test_infer_consumes_lightweight_prediction_payload(tmp_path: Path, monkeypat
     (checkpoint_dir / "model.safetensors").write_bytes(b"checkpoint")
     schema_payload = {"features": [{"name": "user_id"}]}
     (checkpoint_dir / "schema.json").write_text(dumps(schema_payload), encoding="utf-8")
-    _write_train_config(checkpoint_dir, {"batch_size": 2, "num_workers": 0})
+    _write_train_config(checkpoint_dir, {"data": {"batch_size": 2, "num_workers": 0}})
 
     def fake_bound_run_prediction_loop(self, **kwargs):
         del self, kwargs
@@ -315,6 +324,8 @@ def test_train_defaults_missing_dataset_to_hf_sample(tmp_path: Path, monkeypatch
 
     def fake_train_pcvr_model(**kwargs):
         captured_argv["argv"] = kwargs["argv"]
+        captured_argv["dataset_path"] = kwargs["dataset_path"]
+        captured_argv["schema_path_override"] = kwargs["schema_path_override"]
         return {
             "run_dir": str(run_dir.resolve()),
             "checkpoint_root": str(run_dir.resolve()),
@@ -339,10 +350,8 @@ def test_train_defaults_missing_dataset_to_hf_sample(tmp_path: Path, monkeypatch
         )
     )
 
-    assert "--data_dir" in captured_argv["argv"]
-    assert str(resolved_dataset_path) in captured_argv["argv"]
-    assert "--schema_path" in captured_argv["argv"]
-    assert str(resolved_schema_path) in captured_argv["argv"]
+    assert captured_argv["dataset_path"] == resolved_dataset_path
+    assert captured_argv["schema_path_override"] == resolved_schema_path
     assert set(payload["observed_schema_paths"]) == {"train_split", "valid_split"}
 
 
@@ -351,7 +360,7 @@ def test_infer_defaults_missing_dataset_to_hf_sample(tmp_path: Path, monkeypatch
     checkpoint_dir = tmp_path / "checkpoint"
     checkpoint_dir.mkdir()
     (checkpoint_dir / "model.safetensors").write_bytes(b"checkpoint")
-    _write_train_config(checkpoint_dir, {"batch_size": 32, "num_workers": 1})
+    _write_train_config(checkpoint_dir, {"data": {"batch_size": 32, "num_workers": 1}})
     resolved_dataset_path = tmp_path / "hf_cache" / "demo_1000.parquet"
     resolved_dataset_path.parent.mkdir(parents=True)
     resolved_dataset_path.write_bytes(b"parquet")
@@ -387,7 +396,7 @@ def test_infer_defaults_missing_dataset_to_hf_sample(tmp_path: Path, monkeypatch
     assert payload["schema_path"] == str(resolved_schema_path.resolve())
 
 
-def test_resolve_prediction_runtime_execution_requires_train_config_values(tmp_path: Path) -> None:
+def test_resolve_prediction_runtime_execution_uses_train_config_values(tmp_path: Path) -> None:
     experiment = _make_experiment(
         tmp_path,
         train_defaults=PCVRTrainConfig(runtime=RuntimeExecutionConfig(amp=True, amp_dtype="float16", compile=True)),
@@ -400,8 +409,15 @@ def test_resolve_prediction_runtime_execution_requires_train_config_values(tmp_p
         result_dir=tmp_path / "results",
     )
 
-    with pytest.raises(KeyError, match="amp"):
-        experiment._resolve_prediction_runtime_execution(request, {})
+    runtime_execution, amp_source, amp_dtype_source, compile_source = experiment._resolve_prediction_runtime_execution(
+        request,
+        experiment.train_defaults,
+    )
+
+    assert runtime_execution == RuntimeExecutionConfig(amp=True, amp_dtype="float16", compile=True)
+    assert amp_source == "train_config"
+    assert amp_dtype_source == "train_config"
+    assert compile_source == "train_config"
 
 
 def test_load_train_config_requires_sidecar(tmp_path: Path) -> None:
@@ -413,31 +429,27 @@ def test_load_train_config_requires_sidecar(tmp_path: Path) -> None:
         experiment._load_train_config(checkpoint_dir)
 
 
-def test_load_train_config_requires_complete_sidecar(tmp_path: Path) -> None:
+def test_load_train_config_rejects_unknown_flat_keys(tmp_path: Path) -> None:
     experiment = _make_experiment(tmp_path)
     checkpoint_dir = tmp_path / "checkpoint"
     checkpoint_dir.mkdir()
-    incomplete_config = PCVRTrainConfig().to_flat_dict()
-    incomplete_config.pop("amp")
-    (checkpoint_dir / "train_config.json").write_text(dumps(build_pcvr_train_config_sidecar(incomplete_config)), encoding="utf-8")
+    payload = build_pcvr_train_config_sidecar(PCVRTrainConfig())
+    payload["train_config"]["amp"] = True
+    (checkpoint_dir / "train_config.json").write_text(dumps(payload), encoding="utf-8")
 
-    with pytest.raises(KeyError, match="amp"):
+    with pytest.raises(ValidationError, match="amp"):
         experiment._load_train_config(checkpoint_dir)
 
 
-def test_load_train_config_raises_on_missing_data_split_keys(tmp_path: Path) -> None:
+def test_load_train_config_rejects_incomplete_sidecar(tmp_path: Path) -> None:
     experiment = _make_experiment(tmp_path)
     checkpoint_dir = tmp_path / "checkpoint"
     checkpoint_dir.mkdir()
-    config = PCVRTrainConfig().to_flat_dict()
-    for key in ("split_strategy", "deterministic"):
-        config.pop(key)
-    (checkpoint_dir / "train_config.json").write_text(
-        dumps(build_pcvr_train_config_sidecar(config)),
-        encoding="utf-8",
-    )
+    payload = build_pcvr_train_config_sidecar(PCVRTrainConfig())
+    payload["train_config"].pop("data")
+    (checkpoint_dir / "train_config.json").write_text(dumps(payload), encoding="utf-8")
 
-    with pytest.raises(KeyError, match="split_strategy"):
+    with pytest.raises(ValueError, match=r"incomplete train_config sidecar; missing fields:.*data"):
         experiment._load_train_config(checkpoint_dir)
 
 
@@ -447,7 +459,7 @@ def test_infer_uses_train_config_runtime_execution(tmp_path: Path, monkeypatch: 
     checkpoint_dir.mkdir()
     (checkpoint_dir / "model.safetensors").write_bytes(b"checkpoint")
     (checkpoint_dir / "schema.json").write_text(dumps({"features": []}), encoding="utf-8")
-    _write_train_config(checkpoint_dir, {"amp": True, "amp_dtype": "float16", "compile": True})
+    _write_train_config(checkpoint_dir, {"runtime": {"amp": True, "amp_dtype": "float16", "compile": True}})
     captured: dict[str, object] = {}
 
     def fake_bound_run_prediction_loop(self, **kwargs):
@@ -472,148 +484,6 @@ def test_infer_uses_train_config_runtime_execution(tmp_path: Path, monkeypatch: 
     assert runtime_execution == RuntimeExecutionConfig(amp=True, amp_dtype="float16", compile=True)
 
 
-def test_infer_uses_injected_runtime_hooks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    checkpoint_dir = tmp_path / "hook_checkpoint"
-    checkpoint_dir.mkdir()
-    checkpoint_path = checkpoint_dir / "model.safetensors"
-    checkpoint_path.write_bytes(b"checkpoint")
-    schema_path = checkpoint_dir / "custom_schema.json"
-    schema_payload = {"features": ["runtime_probe"]}
-    schema_path.write_text(dumps(schema_payload), encoding="utf-8")
-    events: list[tuple[str, object]] = []
-    captured: dict[str, object] = {}
-
-    def resolve_inference_checkpoint(experiment, request):
-        del experiment
-        events.append(("checkpoint", request.dataset_path))
-        return checkpoint_path
-
-    def load_train_config(experiment, checkpoint_dir_arg):
-        del experiment
-        events.append(("config", checkpoint_dir_arg))
-        return {
-            **PCVRTrainConfig().to_flat_dict(),
-            "amp": True,
-            "amp_dtype": "float16",
-            "compile": True,
-        }
-
-    def load_runtime_schema(experiment, *, dataset_path, schema_path, checkpoint_dir, mode):
-        del experiment, schema_path
-        events.append(("schema", (dataset_path, checkpoint_dir, mode)))
-        return schema_path_override.resolve(), schema_payload
-
-    schema_path_override = schema_path
-    experiment = _make_experiment(
-        tmp_path,
-        runtime_hooks=build_pcvr_runtime_hooks(
-            resolve_inference_checkpoint=resolve_inference_checkpoint,
-            load_train_config=load_train_config,
-            load_runtime_schema=load_runtime_schema,
-        ),
-    )
-
-    def fake_bound_run_prediction_loop(self, **kwargs):
-        del self
-        captured.update(kwargs)
-        return {"records": [{"user_id": "u1", "score": 0.5, "target": 0.0, "timestamp": None}]}
-
-    monkeypatch.setattr(PCVRExperiment, "_run_prediction_loop", fake_bound_run_prediction_loop)
-
-    request = InferRequest(
-        experiment="experiments/symbiosis",
-        dataset_path=tmp_path / "eval.parquet",
-        schema_path=None,
-        checkpoint_path=None,
-        result_dir=tmp_path / "results",
-    )
-
-    payload = experiment.infer(request)
-
-    assert payload["checkpoint_path"] == str(checkpoint_path)
-    assert payload["schema_path"] == str(schema_path.resolve())
-    assert payload["schema"] == schema_payload
-    assert captured["runtime_execution"] == RuntimeExecutionConfig(amp=True, amp_dtype="float16", compile=True)
-    assert events == [
-        ("checkpoint", request.dataset_path),
-        ("config", checkpoint_dir),
-        ("schema", (request.dataset_path, checkpoint_dir, "inference")),
-    ]
-
-
-def test_run_prediction_loop_uses_injected_prediction_hooks(tmp_path: Path) -> None:
-    checkpoint_dir = tmp_path / "checkpoint"
-    checkpoint_dir.mkdir()
-    schema_path = checkpoint_dir / "schema.json"
-    schema_path.write_text(dumps({"features": []}), encoding="utf-8")
-    checkpoint_path = checkpoint_dir / "model.safetensors"
-    events: list[tuple[str, object]] = []
-
-    def build_data(context):
-        events.append(("data", context.schema_path))
-        return PCVRPredictionDataBundle(
-            dataset=SimpleNamespace(num_rows=2),
-            loader=[{"probe": 1}],
-            data_module="custom_data_module",
-        )
-
-    def build_model(context, data_bundle):
-        del context
-        events.append(("model", data_bundle.data_module))
-        return {"checkpoint": str(checkpoint_path)}
-
-    def prepare_predictor(context, data_bundle, model):
-        del context, data_bundle
-        events.append(("predictor", model))
-
-        def predict_fn(payload):
-            return {"seen": payload}
-
-        return PCVRPredictionRunner(model=model, predict_fn=predict_fn)
-
-    def run_loop(context, data_bundle, runner):
-        events.append(("loop", (context.mode, list(data_bundle.loader))))
-        return {
-            "labels": [0.0],
-            "probabilities": [0.5],
-            "records": [runner.predict_fn("probe")],
-        }
-
-    experiment = _make_experiment(
-        tmp_path,
-        prediction_hooks=build_pcvr_prediction_hooks(
-            build_data=build_data,
-            build_model=build_model,
-            prepare_predictor=prepare_predictor,
-            run_loop=run_loop,
-        ),
-    )
-
-    with experiment._module_context():
-        payload = experiment._run_prediction_loop(
-            dataset_path=tmp_path / "eval.parquet",
-            schema_path=None,
-            checkpoint_path=checkpoint_path,
-            batch_size=32,
-            num_workers=0,
-            device="cpu",
-            is_training_data=False,
-            dataset_role="inference",
-            config={"seq_max_lens": "{}"},
-        )
-
-    assert payload == {
-        "labels": [0.0],
-        "probabilities": [0.5],
-        "records": [{"seen": "probe"}],
-    }
-    assert events == [
-        ("data", schema_path.resolve()),
-        ("model", "custom_data_module"),
-        ("predictor", {"checkpoint": str(checkpoint_path)}),
-        ("loop", ("inference", [{"probe": 1}])),
-    ]
-
 def test_evaluate_writes_score_diagnostics(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     experiment = _make_experiment(tmp_path)
     checkpoint_dir = tmp_path / "checkpoint"
@@ -621,6 +491,7 @@ def test_evaluate_writes_score_diagnostics(tmp_path: Path, monkeypatch: pytest.M
     checkpoint_path = checkpoint_dir / "model.safetensors"
     checkpoint_path.write_bytes(b"checkpoint")
     schema_payload = {
+        "format": "raw_parquet",
         "user_int": [[1, 10, 1], [2, 20, 4]],
         "item_int": [[3, 20, 1]],
         "user_dense": [[4, 4]],
@@ -707,7 +578,7 @@ def test_infer_request_runtime_settings_override_train_config(tmp_path: Path) ->
 
     runtime_execution, amp_source, amp_dtype_source, compile_source = experiment._resolve_prediction_runtime_execution(
         request,
-        {"amp": True, "amp_dtype": "float16", "compile": True},
+        PCVRTrainConfig(runtime=RuntimeExecutionConfig(amp=True, amp_dtype="float16", compile=True)),
     )
 
     assert runtime_execution == RuntimeExecutionConfig(amp=False, amp_dtype="bfloat16", compile=False)

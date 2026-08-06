@@ -28,6 +28,7 @@ _STEP_RANDOM_MAX_OPEN_PARQUET_FILES = 32
 _DELEGATED_SOURCE_DATASET_ATTRIBUTES = frozenset(
     {
         "row_groups",
+        "layout",
         "user_int_schema",
         "item_int_schema",
         "user_dense_schema",

@@ -12,9 +12,11 @@ import torch.nn.functional as F
 from taac2026.api import (
     EmbeddingParameterMixin,
     FeatureEmbeddingBank,
-    ModelInput,
+    NUM_TIME_BUCKETS,
+    PCVRModelInput,
     RMSNorm,
     SequenceTokenizer,
+    build_pcvr_model_specs,
     choose_num_heads,
     configure_rms_norm_runtime as _configure_rms_norm_runtime,
     make_padding_mask,
@@ -24,6 +26,8 @@ from taac2026.api import (
     scaled_dot_product_attention,
     sinusoidal_positions,
 )
+from taac2026.domain.config import PCVRModelConfig
+from taac2026.domain.schema import PCVRSchema
 
 
 ROLE_USER = 0
@@ -222,7 +226,40 @@ class TokenFormerBlock(nn.Module):
 class PCVRTokenFormer(EmbeddingParameterMixin, nn.Module):
     """TokenFormer-style PCVR model with BFTS attention and NLIR gating."""
 
-    def __init__(
+    def __init__(self, schema: PCVRSchema, config: PCVRModelConfig) -> None:
+        specs = build_pcvr_model_specs(schema, config.ns)
+        self._init_specs(
+            user_int_feature_specs=specs.user_int_feature_specs,
+            item_int_feature_specs=specs.item_int_feature_specs,
+            user_dense_dim=specs.user_dense_dim,
+            item_dense_dim=specs.item_dense_dim,
+            seq_vocab_sizes=specs.seq_vocab_sizes,
+            user_ns_groups=specs.user_ns_groups,
+            item_ns_groups=specs.item_ns_groups,
+            d_model=config.d_model,
+            emb_dim=config.emb_dim,
+            num_queries=config.num_queries,
+            num_blocks=config.num_blocks,
+            num_heads=config.num_heads,
+            seq_encoder_type=config.seq_encoder_type,
+            hidden_mult=config.hidden_mult,
+            dropout_rate=config.dropout_rate,
+            seq_top_k=config.seq_top_k,
+            seq_causal=config.seq_causal,
+            action_num=config.action_num,
+            num_time_buckets=NUM_TIME_BUCKETS if config.use_time_buckets else 0,
+            rank_mixer_mode=config.rank_mixer_mode,
+            use_rope=config.use_rope,
+            rope_base=config.rope_base,
+            emb_skip_threshold=config.emb_skip_threshold,
+            seq_id_threshold=config.seq_id_threshold,
+            gradient_checkpointing=config.gradient_checkpointing,
+            ns_tokenizer_type=config.ns.tokenizer_type,
+            user_ns_tokens=config.ns.user_tokens,
+            item_ns_tokens=config.ns.item_tokens,
+        )
+
+    def _init_specs(
         self,
         user_int_feature_specs: list[tuple[int, int, int]],
         item_int_feature_specs: list[tuple[int, int, int]],
@@ -346,14 +383,17 @@ class PCVRTokenFormer(EmbeddingParameterMixin, nn.Module):
         positions = (start.unsqueeze(1) + offsets).clamp_max(tokens.shape[1] - 1)
         return tokens.gather(dim=1, index=positions.unsqueeze(-1).expand(-1, -1, tokens.shape[-1]))
 
-    def _encode_sequence_events(self, inputs: ModelInput) -> tuple[list[torch.Tensor], list[torch.Tensor], list[torch.Tensor]]:
+    def _encode_sequence_events(self, inputs: PCVRModelInput) -> tuple[list[torch.Tensor], list[torch.Tensor], list[torch.Tensor]]:
         pieces: list[torch.Tensor] = []
         masks: list[torch.Tensor] = []
         role_pieces: list[torch.Tensor] = []
         for domain_index, domain in enumerate(self.seq_domains):
-            raw_sequence = inputs.seq_data[domain]
-            seq_len = inputs.seq_lens[domain].to(raw_sequence.device).clamp_min(0).clamp_max(raw_sequence.shape[2])
-            tokens = self.sequence_tokenizers[domain](raw_sequence, inputs.seq_time_buckets.get(domain))
+            sequence_input = inputs.sequences[domain]
+            raw_sequence = sequence_input.values
+            seq_len = sequence_input.lengths.to(raw_sequence.device).clamp_min(0).clamp_max(raw_sequence.shape[2])
+            tokens = self.sequence_tokenizers[domain](
+                raw_sequence, sequence_input.timestamps, inputs.request_timestamp
+            )
             tokens = self._tail_crop(tokens, seq_len)
             seq_len = seq_len.clamp_max(tokens.shape[1])
             if not self.use_rope:
@@ -389,13 +429,13 @@ class PCVRTokenFormer(EmbeddingParameterMixin, nn.Module):
         target_context = self.target_project(torch.cat([user_summary, item_summary, interaction], dim=-1)).unsqueeze(1)
         return self.target_token.expand(user_tokens.shape[0], -1, -1) + target_context
 
-    def _encode_tokens(self, inputs: ModelInput) -> TokenFormerBatch:
-        user_sparse = self.user_fields(inputs.user_int_feats)
-        user_dense = self.user_dense(inputs.user_dense_feats)
-        item_sparse = self.item_fields(inputs.item_int_feats)
-        item_dense = self.item_dense(inputs.item_dense_feats)
-        batch_size = inputs.user_int_feats.shape[0]
-        device = inputs.user_int_feats.device
+    def _encode_tokens(self, inputs: PCVRModelInput) -> TokenFormerBatch:
+        user_sparse = self.user_fields(inputs.user.int_values)
+        user_dense = self.user_dense(inputs.user.dense_values)
+        item_sparse = self.item_fields(inputs.item.int_values)
+        item_dense = self.item_dense(inputs.item.dense_values)
+        batch_size = inputs.user.int_values.shape[0]
+        device = inputs.user.int_values.device
         user_tokens = self._cat_or_empty((user_sparse, user_dense), batch_size, device)
         item_tokens = self._cat_or_empty((item_sparse, item_dense), batch_size, device)
 
@@ -405,7 +445,7 @@ class PCVRTokenFormer(EmbeddingParameterMixin, nn.Module):
 
         self._append_piece(pieces, masks, role_pieces, user_sparse, ROLE_USER)
         self._append_piece(pieces, masks, role_pieces, user_dense, ROLE_DENSE)
-        first_separator = self._separator(inputs.user_int_feats.shape[0], 0, user_tokens)
+        first_separator = self._separator(inputs.user.int_values.shape[0], 0, user_tokens)
         pieces.append(first_separator)
         masks.append(self._zeros_mask(first_separator))
         role_pieces.append(self._role_ids(1, ROLE_SEPARATOR, first_separator.device))
@@ -415,7 +455,7 @@ class PCVRTokenFormer(EmbeddingParameterMixin, nn.Module):
         masks.extend(sequence_masks)
         role_pieces.extend(sequence_roles)
 
-        second_separator = self._separator(inputs.user_int_feats.shape[0], 2, user_tokens)
+        second_separator = self._separator(inputs.user.int_values.shape[0], 2, user_tokens)
         pieces.append(second_separator)
         masks.append(self._zeros_mask(second_separator))
         role_pieces.append(self._role_ids(1, ROLE_SEPARATOR, second_separator.device))
@@ -470,7 +510,7 @@ class PCVRTokenFormer(EmbeddingParameterMixin, nn.Module):
         mask = torch.where(padding_mask.unsqueeze(-1), fallback.expand(batch_size, -1, -1), mask)
         return mask.unsqueeze(1)
 
-    def _embed(self, inputs: ModelInput) -> torch.Tensor:
+    def _embed(self, inputs: PCVRModelInput) -> torch.Tensor:
         batch = self._encode_tokens(inputs)
         tokens = batch.tokens
         for layer_index, block in enumerate(self.blocks):
@@ -491,12 +531,12 @@ class PCVRTokenFormer(EmbeddingParameterMixin, nn.Module):
         )
         return torch.cat([target_summary, context_summary, item_summary], dim=-1)
 
-    def forward(self, inputs: ModelInput) -> torch.Tensor:
+    def forward(self, inputs: PCVRModelInput) -> torch.Tensor:
         return self.classifier(self._embed(inputs))
 
-    def predict(self, inputs: ModelInput) -> tuple[torch.Tensor, torch.Tensor]:
+    def predict(self, inputs: PCVRModelInput) -> tuple[torch.Tensor, torch.Tensor]:
         embeddings = self._embed(inputs)
         return self.classifier(embeddings), embeddings
 
 
-__all__ = ["BFTSAttention", "ModelInput", "PCVRTokenFormer", "TokenFormerBlock", "configure_rms_norm_runtime"]
+__all__ = ["BFTSAttention", "PCVRTokenFormer", "TokenFormerBlock", "configure_rms_norm_runtime"]

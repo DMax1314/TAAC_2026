@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from argparse import Namespace
 
+import torch
+
 from taac2026.application.benchmarking.pcvr_data_pipeline_benchmark import (
     _build_pipeline_config,
     _consume_measured_batches,
     _estimated_batches_per_pass,
 )
+from taac2026.infrastructure.data.batches import PCVRBatch
 
 
 def test_opt_augment_preset_uses_opt_cache_and_transforms() -> None:
@@ -101,7 +104,11 @@ def test_max_batches_consumes_single_continuous_iterator() -> None:
         def __iter__(self):
             self.iterator_count += 1
             for _ in range(10):
-                yield {"label": type("Label", (), {"shape": (3,)})()}
+                yield PCVRBatch(
+                    inputs=None,
+                    label=torch.zeros(3),
+                    user_id=[],
+                )
 
     loader = Loader()
 

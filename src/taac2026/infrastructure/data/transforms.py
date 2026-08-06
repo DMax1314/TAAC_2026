@@ -12,44 +12,13 @@ from taac2026.domain.config import (
     PCVRNonSequentialSparseDropoutConfig,
     PCVRSequenceCropConfig,
 )
-from taac2026.infrastructure.data.batches import PCVRBatch, PCVRBatchTransform, clone_pcvr_batch, repeat_pcvr_rows
-
-
-SEQUENCE_STATS_DIM = 6
-
-
-def _refresh_sequence_stats(batch: PCVRBatch, domain: str) -> None:
-    sequence = batch.get(domain)
-    lengths = batch.get(f"{domain}_len")
-    time_buckets = batch.get(f"{domain}_time_bucket")
-    if not isinstance(sequence, torch.Tensor) or not isinstance(lengths, torch.Tensor):
-        return
-    row_count = int(sequence.shape[0])
-    feature_count = int(sequence.shape[1])
-    max_len = int(sequence.shape[2])
-    stats = sequence.new_zeros((row_count, SEQUENCE_STATS_DIM), dtype=torch.float32)
-    for row_index in range(row_count):
-        length = min(max(int(lengths[row_index].item()), 0), max_len)
-        if length <= 0 or feature_count <= 0:
-            continue
-        row_tokens = sequence[row_index, :, :length]
-        active_events = (row_tokens > 0).any(dim=0)
-        active_count = int(active_events.sum().item())
-        if active_count <= 0:
-            continue
-        event_signatures = {
-            tuple(int(value) for value in row_tokens[:, event_index].detach().cpu().tolist())
-            for event_index in torch.nonzero(active_events, as_tuple=False).flatten().tolist()
-        }
-        unique_count = len(event_signatures)
-        stats[row_index, 0] = float(length)
-        stats[row_index, 1] = float(active_count)
-        stats[row_index, 2] = float(unique_count)
-        stats[row_index, 3] = 1.0 - float(unique_count) / float(max(1, active_count))
-        stats[row_index, 4] = float((row_tokens > 0).sum().item()) / float(max(1, length * feature_count))
-        if isinstance(time_buckets, torch.Tensor) and time_buckets.shape[1] > 0:
-            stats[row_index, 5] = float(time_buckets[row_index, length - 1].item())
-    batch[f"{domain}_stats"] = stats
+from taac2026.infrastructure.data.batches import (
+    PCVRBatch,
+    PCVRBatchTransform,
+    PCVRSequenceInput,
+    clone_pcvr_batch,
+    repeat_pcvr_rows,
+)
 
 
 class PCVRSequenceCropTransform:
@@ -67,26 +36,18 @@ class PCVRSequenceCropTransform:
         return augmented
 
     def _apply_sequence_crop(self, batch: PCVRBatch, *, generator: torch.Generator) -> None:
-        for domain in batch.get("_seq_domains", []):
-            sequence = batch.get(domain)
-            lengths = batch.get(f"{domain}_len")
-            time_buckets = batch.get(f"{domain}_time_bucket")
-            if not isinstance(sequence, torch.Tensor) or not isinstance(lengths, torch.Tensor):
-                continue
-            if not isinstance(time_buckets, torch.Tensor):
-                time_buckets = torch.zeros(sequence.shape[0], sequence.shape[2], dtype=torch.long, device=sequence.device)
-                batch[f"{domain}_time_bucket"] = time_buckets
-            self._crop_domain(sequence, lengths, time_buckets, generator=generator)
-            _refresh_sequence_stats(batch, domain)
+        for _domain, sequence_input in batch.inputs.sequences.items():
+            self._crop_domain(sequence_input, generator=generator)
 
     def _crop_domain(
         self,
-        sequence: torch.Tensor,
-        lengths: torch.Tensor,
-        time_buckets: torch.Tensor,
+        sequence_input: PCVRSequenceInput,
         *,
         generator: torch.Generator,
     ) -> None:
+        sequence = sequence_input.values
+        lengths = sequence_input.lengths
+        timestamps = sequence_input.timestamps
         max_len = int(sequence.shape[2])
         if max_len <= 0 or sequence.shape[0] == 0:
             return
@@ -127,8 +88,8 @@ class PCVRSequenceCropTransform:
         cropped_sequence = sequence.gather(2, sequence_positions)
         sequence.copy_(cropped_sequence.masked_fill(~valid_positions.view(row_count, 1, max_len), 0))
 
-        cropped_time = time_buckets.gather(1, positions)
-        time_buckets.copy_(cropped_time.masked_fill(~valid_positions, 0))
+        cropped_time = timestamps.gather(1, positions)
+        timestamps.copy_(cropped_time.masked_fill(~valid_positions, 0))
         lengths.copy_(window_lengths.to(lengths.dtype))
 
 
@@ -149,20 +110,16 @@ class PCVRDomainDropoutTransform:
         probability = float(self.config.probability)
         if probability <= 0.0:
             return
-        for domain in batch.get("_seq_domains", []):
-            sequence = batch.get(domain)
-            lengths = batch.get(f"{domain}_len")
-            time_buckets = batch.get(f"{domain}_time_bucket")
-            if not isinstance(sequence, torch.Tensor) or not isinstance(lengths, torch.Tensor):
-                continue
+        for _domain, sequence_input in batch.inputs.sequences.items():
+            sequence = sequence_input.values
+            lengths = sequence_input.lengths
+            timestamps = sequence_input.timestamps
             drop_mask = torch.rand(sequence.shape[0], generator=generator) < probability
             if not bool(drop_mask.any()):
                 continue
             sequence[drop_mask] = 0
             lengths[drop_mask] = 0
-            if isinstance(time_buckets, torch.Tensor):
-                time_buckets[drop_mask] = 0
-            _refresh_sequence_stats(batch, domain)
+            timestamps[drop_mask] = 0
 
 
 class PCVRFeatureMaskTransform:
@@ -183,45 +140,34 @@ class PCVRFeatureMaskTransform:
         if probability <= 0.0:
             return
 
-        for feature_key in ("user_int_feats", "item_int_feats"):
-            features = batch.get(feature_key)
-            if isinstance(features, torch.Tensor) and features.numel() > 0:
-                mask = torch.rand(features.shape, generator=generator) < probability
-                features[mask] = 0
-                missing_key = feature_key.replace("_feats", "_missing_mask")
-                missing = batch.get(missing_key)
-                if isinstance(missing, torch.Tensor) and missing.shape == features.shape:
-                    missing[mask] = True
+        for entity_name in ("user", "item"):
+            entity = getattr(batch.inputs, entity_name)
+            if entity.int_values.numel() > 0:
+                mask = torch.rand(entity.int_values.shape, generator=generator) < probability
+                entity.int_values[mask] = 0
+                entity.int_missing_mask[mask] = True
 
-        for domain in batch.get("_seq_domains", []):
-            sequence = batch.get(domain)
-            lengths = batch.get(f"{domain}_len")
-            time_buckets = batch.get(f"{domain}_time_bucket")
-            if not isinstance(sequence, torch.Tensor) or not isinstance(lengths, torch.Tensor):
-                continue
+        for _domain, sequence_input in batch.inputs.sequences.items():
+            sequence = sequence_input.values
+            lengths = sequence_input.lengths
+            timestamps = sequence_input.timestamps
             valid_positions = torch.arange(sequence.shape[2]).view(1, -1) < lengths.view(-1, 1)
             event_mask = (torch.rand(valid_positions.shape, generator=generator) < probability) & valid_positions
             if bool(event_mask.any()):
                 expanded_mask = event_mask.unsqueeze(1).expand_as(sequence)
                 sequence[expanded_mask] = 0
-                if isinstance(time_buckets, torch.Tensor):
-                    time_buckets[event_mask] = 0
-                self._compact_domain(
-                    sequence,
-                    lengths,
-                    time_buckets if isinstance(time_buckets, torch.Tensor) else None,
-                    row_mask=event_mask.any(dim=1),
-                )
-                _refresh_sequence_stats(batch, domain)
+                timestamps[event_mask] = 0
+                self._compact_domain(sequence_input, row_mask=event_mask.any(dim=1))
 
     def _compact_domain(
         self,
-        sequence: torch.Tensor,
-        lengths: torch.Tensor,
-        time_buckets: torch.Tensor | None,
+        sequence_input: PCVRSequenceInput,
         *,
         row_mask: torch.Tensor | None = None,
     ) -> None:
+        sequence = sequence_input.values
+        lengths = sequence_input.lengths
+        timestamps = sequence_input.timestamps
         max_len = int(sequence.shape[2])
         valid_positions = (sequence > 0).any(dim=1)
         if row_mask is None:
@@ -234,17 +180,15 @@ class PCVRFeatureMaskTransform:
             if new_len <= 0:
                 sequence[row_index].zero_()
                 lengths[row_index] = 0
-                if time_buckets is not None:
-                    time_buckets[row_index].zero_()
+                timestamps[row_index].zero_()
                 continue
             selected_sequence = sequence[row_index, :, row_positions[:new_len]].clone()
             sequence[row_index].zero_()
             sequence[row_index, :, :new_len] = selected_sequence
             lengths[row_index] = new_len
-            if time_buckets is not None:
-                selected_time = time_buckets[row_index, row_positions[:new_len]].clone()
-                time_buckets[row_index].zero_()
-                time_buckets[row_index, :new_len] = selected_time
+            selected_time = timestamps[row_index, row_positions[:new_len]].clone()
+            timestamps[row_index].zero_()
+            timestamps[row_index, :new_len] = selected_time
 
 
 class PCVRNonSequentialSparseDropoutTransform:
@@ -270,12 +214,7 @@ class PCVRNonSequentialSparseDropoutTransform:
         if probability <= 0.0:
             return
 
-        row_count = 0
-        for feature_key in ("user_int_feats", "item_int_feats"):
-            features = batch.get(feature_key)
-            if isinstance(features, torch.Tensor) and features.ndim >= 1:
-                row_count = int(features.shape[0])
-                break
+        row_count = int(batch.inputs.request_timestamp.shape[0])
         if row_count <= 0:
             return
 
@@ -283,19 +222,11 @@ class PCVRNonSequentialSparseDropoutTransform:
         if not bool(drop_rows.any()):
             return
 
-        for feature_key in ("user_int_feats", "item_int_feats"):
-            features = batch.get(feature_key)
-            if (
-                not isinstance(features, torch.Tensor)
-                or features.ndim < 1
-                or int(features.shape[0]) != row_count
-            ):
-                continue
-            features[drop_rows] = 0
-            missing_key = feature_key.replace("_feats", "_missing_mask")
-            missing = batch.get(missing_key)
-            if isinstance(missing, torch.Tensor) and missing.shape == features.shape:
-                missing[drop_rows] = True
+        for entity_name in ("user", "item"):
+            entity = getattr(batch.inputs, entity_name)
+            if entity.int_values.shape[0] == row_count:
+                entity.int_values[drop_rows] = 0
+                entity.int_missing_mask[drop_rows] = True
 
 
 def build_pcvr_batch_transform(config: PCVRDataTransformConfig) -> PCVRBatchTransform:
