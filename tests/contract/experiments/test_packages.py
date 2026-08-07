@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 
 from taac2026.application.experiments.registry import load_experiment_package
-from taac2026.domain.config import PCVR_DATA_CACHE_MODE_CHOICES, PCVRModelConfig, PCVRNSConfig
+from taac2026.domain.config import PCVR_DATA_CACHE_MODE_CHOICES, PCVRNSConfig
 from taac2026.domain.schema import PCVRSchema
 from taac2026.domain.sidecar import build_pcvr_train_config_sidecar
 from taac2026.infrastructure.data.batches import (
@@ -66,15 +66,13 @@ def _make_model(experiment_case, model_module, overrides=None):
     )
     if overrides:
         config_kwargs.update(overrides)
-    if experiment_case.path == "experiments/symbiosis":
-        config_type = model_module.SymbiosisModelConfig
-    else:
-        config_type = PCVRModelConfig
+    experiment = load_experiment_package(experiment_case.path)
+    model_config_type = type(experiment.train_defaults.model)
 
     def build(d_model: int):
         return model_class(
             schema=_make_schema(),
-            config=config_type(**{**config_kwargs, "d_model": d_model}),
+            config=model_config_type(**{**config_kwargs, "d_model": d_model}),
         )
 
     try:
@@ -153,10 +151,7 @@ def test_discovered_experiment_packages_load(experiment_case) -> None:
     assert experiment.train_defaults is not None
     assert experiment.metadata["kind"] == "pcvr"
     assert experiment.metadata["model_class"] == experiment_case.model_class
-    if experiment_case.path == "experiments/symbiosis":
-        assert experiment.metadata["config_type"] == "SymbiosisTrainConfig"
-    else:
-        assert experiment.metadata["config_type"] == "PCVRTrainConfig"
+    assert experiment.metadata["config_type"] == type(experiment.train_defaults).__name__
     assert train_defaults["model"]["ns"]["grouping_strategy"] == "explicit"
     assert train_defaults["optimizer"]["max_steps"] > 0
     _assert_valid_data_pipeline_defaults(train_defaults["data_pipeline"])

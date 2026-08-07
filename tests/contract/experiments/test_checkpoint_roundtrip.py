@@ -14,24 +14,25 @@ import pytest
 import torch
 
 from taac2026.application.evaluation.runtime import default_load_runtime_schema, default_load_train_config
-from taac2026.domain.config import PCVRModelConfig, PCVRNSConfig
+from taac2026.domain.config import PCVRNSConfig
 from taac2026.domain.schema import PCVRSchema
 from taac2026.domain.sidecar import load_pcvr_train_config_sidecar
 from taac2026.infrastructure.checkpoints import write_checkpoint_sidecars
 from taac2026.infrastructure.data.batches import PCVREntityInput, PCVRModelInput, PCVRSequenceInput
-from taac2026.infrastructure.experiments.module_loader import load_experiment_submodule, load_module_from_path
+from taac2026.infrastructure.experiments.module_loader import load_module_from_path
 from taac2026.infrastructure.io.json import dumps, read_path
 from tests.support.experiment_matrix import get_experiment_case
 
 
-@pytest.mark.parametrize("experiment_path", ["experiments/baseline", "experiments/symbiosis"])
+@pytest.mark.parametrize(
+    "experiment_path",
+    ["experiments/baseline", "experiments/symbiosis", "experiments/dualq"],
+)
 def test_checkpoint_roundtrip_rebuilds_model_and_predicts(
     experiment_path: str,
     tmp_path: Path,
 ) -> None:
     experiment = load_module_from_path(get_experiment_case(experiment_path).package_dir).EXPERIMENT
-    experiment_case = get_experiment_case(experiment_path)
-    model_module = load_experiment_submodule(experiment_case.package_dir, "model")
 
     schema = PCVRSchema(
         format="raw_parquet",
@@ -47,11 +48,7 @@ def test_checkpoint_roundtrip_rebuilds_model_and_predicts(
     schema_path = tmp_path / "schema.json"
     schema_path.write_text(dumps(schema.model_dump(mode="json")), encoding="utf-8")
 
-    model_config_type = (
-        model_module.SymbiosisModelConfig
-        if experiment_path == "experiments/symbiosis"
-        else PCVRModelConfig
-    )
+    model_config_type = type(experiment.train_defaults.model)
     base_kwargs = dict(
         emb_dim=8,
         num_blocks=1,
@@ -75,12 +72,7 @@ def test_checkpoint_roundtrip_rebuilds_model_and_predicts(
         )
 
     def build_model(d_model: int):
-        model_class = (
-            model_module.PCVRSymbiosis
-            if experiment_path == "experiments/symbiosis"
-            else model_module.PCVRHyFormer
-        )
-        return model_class(schema=schema, config=build(d_model).model)
+        return experiment.model_type(schema=schema, config=build(d_model).model)
 
     try:
         model = build_model(16)
@@ -128,8 +120,7 @@ def test_checkpoint_roundtrip_rebuilds_model_and_predicts(
     assert resolved_schema_path == (checkpoint_dir / "schema.json").resolve()
 
     # 4. uniform model construction from schema + config.model, then forward/predict.
-    model = model_module.PCVRSymbiosis if experiment_path == "experiments/symbiosis" else model_module.PCVRHyFormer
-    model = model(schema=rebuilt_schema, config=rebuilt_config.model).eval()
+    model = experiment.model_type(schema=rebuilt_schema, config=rebuilt_config.model).eval()
 
     model_input = PCVRModelInput(
         user=PCVREntityInput(

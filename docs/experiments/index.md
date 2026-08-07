@@ -25,6 +25,7 @@ icon: lucide/folder-open
 | 想试 UniRec 融合     | [UniRec](unirec.md)                         | MoT、target-aware interest、Hybrid SiLU attention 和 block residual 的组合贡献。    |
 | 想试分布感知统一流   | [Symbiosis](symbiosis.md)                   | 缺失、风险、序列 memory、metadata mask 和 candidate readout 如何服务线上泛化。      |
 | 想试高有效秩表征     | [RankUp](rankup.md)                         | 随机稀疏重组、多 embedding、global token 和 effective-rank 诊断能否避免深层低秩化。 |
+| 想试最终阶段主模型   | [DualQ](dualq.md)                 | DualQ、时间对齐多域序列、pair 加权残差 tokenizer 与全局时间 token 的组合。        |
 | 想知道线上机器       | [Host Device Info](host-device-info.md)     | 线上 CPU/GPU/CUDA/Python/网络/依赖源到底是什么状态。                                |
 | 想看线上数据分布     | [Online Dataset EDA](online-dataset-eda.md) | train 和 infer 数据的 schema、缺失率、基数、序列长度、dense 分布是否漂移。          |
 
