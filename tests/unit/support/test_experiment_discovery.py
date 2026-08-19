@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from textwrap import dedent
 
-from taac2026.application.experiments.discovery import discover_experiment_paths
+from tests.support.experiment_discovery import discover_experiment_paths
 from tests.support.experiment_matrix import build_pcvr_experiment_cases
 
 

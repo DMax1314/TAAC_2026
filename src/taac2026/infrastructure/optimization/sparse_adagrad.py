@@ -61,6 +61,7 @@ class PCVRSparseAdagrad:
         self.state: dict[nn.Parameter, dict[str, object]] = {}
 
     def zero_grad(self, set_to_none: bool = True) -> None:
+        del set_to_none  # interface parity with torch.optim.Optimizer; always clears
         for group in self.param_groups:
             for parameter in group["params"]:
                 if parameter.grad is not None:

@@ -190,6 +190,7 @@ class RoPEMultiheadAttention(nn.Module):
         Returns:
             Tuple of (output, None).
         """
+        del need_weights
         B, Lq, _ = query.shape
         Lk = key.shape[1]
 

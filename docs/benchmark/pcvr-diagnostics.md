@@ -14,13 +14,14 @@ icon: lucide/activity
 uv run python - <<'PY'
 from pathlib import Path
 
-from taac2026.application.experiments.discovery import discover_experiment_paths
 from taac2026.application.experiments.registry import load_experiment_package
 
-for path in discover_experiment_paths(Path("experiments")):
-    experiment = load_experiment_package(path)
+for child in sorted(Path("experiments").iterdir()):
+    if not child.is_dir() or child.name.startswith("__"):
+        continue
+    experiment = load_experiment_package(f"experiments/{child.name}")
     if experiment.metadata.get("kind") == "pcvr":
-        print(path)
+        print(child.name)
 PY
 ```
 

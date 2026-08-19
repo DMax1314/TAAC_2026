@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
+from tests.support.experiment_discovery import discover_experiment_paths
 from tests.support.paths import locate_repo_root
-from taac2026.application.experiments.discovery import discover_experiment_paths
 from taac2026.application.experiments.registry import load_experiment_package
 from taac2026.infrastructure.experiments.module_loader import load_experiment_submodule
 

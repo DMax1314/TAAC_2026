@@ -19,7 +19,6 @@ from taac2026.api import (
     SequenceTokenizer,
     build_pcvr_model_specs,
     choose_num_heads,
-    configure_rms_norm_runtime as _configure_rms_norm_runtime,
     make_padding_mask,
     masked_mean,
     maybe_gradient_checkpoint,
@@ -42,13 +41,6 @@ class RankUpTokenBatch(NamedTuple):
     tokens: torch.Tensor
     padding_mask: torch.Tensor
     readout_count: int
-
-
-def configure_rms_norm_runtime(*, rms_norm_backend: str, rms_norm_block_rows: int) -> None:
-    _configure_rms_norm_runtime(
-        backend=rms_norm_backend,
-        block_rows=rms_norm_block_rows,
-    )
 
 
 def _torch_is_compiling() -> bool:
@@ -600,4 +592,4 @@ class PCVRRankUp(EmbeddingParameterMixin, nn.Module):
         return self.classifier(embeddings), embeddings
 
 
-__all__ = ["PCVRRankUp", "RankUpSelfAttention", "configure_rms_norm_runtime"]
+__all__ = ["PCVRRankUp", "RankUpSelfAttention"]

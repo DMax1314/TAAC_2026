@@ -20,7 +20,6 @@ from taac2026.api import (
     SequenceTokenizer,
     build_pcvr_model_specs,
     choose_num_heads,
-    configure_rms_norm_runtime as _configure_rms_norm_runtime,
     make_padding_mask,
     masked_mean,
     maybe_gradient_checkpoint,
@@ -36,13 +35,6 @@ ROLE_ITEM = 2
 ROLE_TARGET = 3
 ROLE_SEPARATOR = 4
 ROLE_DENSE = 5
-
-
-def configure_rms_norm_runtime(*, rms_norm_backend: str, rms_norm_block_rows: int) -> None:
-    _configure_rms_norm_runtime(
-        backend=rms_norm_backend,
-        block_rows=rms_norm_block_rows,
-    )
 
 
 class TokenFormerBatch(NamedTuple):
@@ -539,4 +531,4 @@ class PCVRTokenFormer(EmbeddingParameterMixin, nn.Module):
         return self.classifier(embeddings), embeddings
 
 
-__all__ = ["BFTSAttention", "PCVRTokenFormer", "TokenFormerBlock", "configure_rms_norm_runtime"]
+__all__ = ["BFTSAttention", "PCVRTokenFormer", "TokenFormerBlock"]

@@ -15,9 +15,9 @@ import torch
 from taac2026.domain.config import PCVRNSConfig
 from taac2026.domain.schema import PCVRSchema
 from taac2026.domain.sidecar import build_pcvr_train_config_sidecar
-from taac2026.infrastructure.data.batches import PCVREntityInput, PCVRModelInput, PCVRSequenceInput
 from taac2026.infrastructure.experiments.module_loader import load_module_from_path
 from taac2026.infrastructure.io.json import dumps
+from tests.support.model_inputs import dualq_contract_model_input
 from tests.support.paths import locate_repo_root
 
 REPO_ROOT = locate_repo_root(Path(__file__))
@@ -47,36 +47,6 @@ def _schema() -> PCVRSchema:
                 "features": [[27, 64], [28, 8]],
             },
         },
-    )
-
-
-def _model_input() -> PCVRModelInput:
-    return PCVRModelInput(
-        user=PCVREntityInput(
-            int_values=torch.tensor([[1, 11, 12, 1, 14], [2, 0, 0, 2, 0]], dtype=torch.long),
-            int_missing_mask=torch.zeros(2, 5, dtype=torch.bool),
-            dense_values=torch.randn(2, 6),
-            dense_missing_mask=torch.zeros(2, 6, dtype=torch.bool),
-        ),
-        item=PCVREntityInput(
-            int_values=torch.tensor([[1], [2]], dtype=torch.long),
-            int_missing_mask=torch.zeros(2, 1, dtype=torch.bool),
-            dense_values=torch.randn(2, 3),
-            dense_missing_mask=torch.zeros(2, 3, dtype=torch.bool),
-        ),
-        sequences={
-            "seq_a": PCVRSequenceInput(
-                values=torch.tensor([[[1, 2, 0, 0]], [[2, 3, 0, 0]]], dtype=torch.long),
-                lengths=torch.tensor([2, 2], dtype=torch.long),
-                timestamps=torch.tensor([[1000, 2000, 0, 0], [500, 600, 0, 0]], dtype=torch.long),
-            ),
-            "seq_b": PCVRSequenceInput(
-                values=torch.tensor([[[1, 0, 0]], [[2, 3, 0]]], dtype=torch.long),
-                lengths=torch.tensor([1, 2], dtype=torch.long),
-                timestamps=torch.tensor([[3000, 0, 0], [100, 200, 0]], dtype=torch.long),
-            ),
-        },
-        request_timestamp=torch.tensor([5000, 5000], dtype=torch.long),
     )
 
 
@@ -163,7 +133,7 @@ def test_dualq_model_contract_forward_and_predict() -> None:
         }
     )
     model = experiment.model_type(schema=_schema(), config=model_config)
-    model_input = _model_input()
+    model_input = dualq_contract_model_input()
 
     logits = model(model_input)
     assert logits.shape == (2, 1)

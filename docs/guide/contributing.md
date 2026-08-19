@@ -72,7 +72,7 @@ EXPERIMENT = create_pcvr_experiment(
 - 被加载模块必须导出 `EXPERIMENT`。
 - `EXPERIMENT` 可以是 `ExperimentSpec`，也可以是带 `name`、`train`、`evaluate`、`infer` 方法的对象。
 
-`create_pcvr_experiment()` 位于 `src/taac2026/application/experiments/factory.py`。它用统一的训练、评估、推理流程构造 `PCVRExperiment`，普通实验不需要自己实现 `train()`、`evaluate()` 或 `infer()`。
+`create_pcvr_experiment()` 位于 `src/taac2026/application/experiments/experiment.py`。它用统一的训练、评估、推理流程构造 `PCVRExperiment`，普通实验不需要自己实现 `train()`、`evaluate()` 或 `infer()`。
 
 `PCVRExperiment` 的运行逻辑在 `src/taac2026/application/experiments/experiment.py`：
 

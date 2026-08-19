@@ -13,7 +13,6 @@ from taac2026.infrastructure.accelerators.attention.flash_attention import flash
 
 
 FlashAttentionBackend = Literal["torch", "tilelang"]
-FLASH_ATTENTION_BACKEND: FlashAttentionBackend = "torch"
 _FLASH_ATTENTION_BACKEND: ContextVar[FlashAttentionBackend] = ContextVar(
     "taac2026_flash_attention_backend",
     default="torch",
@@ -200,7 +199,6 @@ def deduplicate_sequence_events(
 
 
 __all__ = [
-    "FLASH_ATTENTION_BACKEND",
     "FlashAttentionBackend",
     "causal_valid_attention_mask",
     "choose_num_heads",

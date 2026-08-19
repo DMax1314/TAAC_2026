@@ -67,9 +67,7 @@ src/taac2026/
 │   │   ├── runtime.py
 │   │   └── workflow.py
 │   ├── experiments/
-│   │   ├── discovery.py
 │   │   ├── experiment.py
-│   │   ├── factory.py
 │   │   ├── registry.py
 │   │   └── runtime.py
 │   ├── packaging/

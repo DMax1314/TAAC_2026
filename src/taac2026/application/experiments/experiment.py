@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -41,6 +40,35 @@ def _callable_name(value: Any) -> str:
     return getattr(value, "__qualname__", getattr(value, "__name__", type(value).__name__))
 
 
+def create_pcvr_experiment(
+    *,
+    name: str,
+    package_dir: Path,
+    model_type: type[torch.nn.Module],
+    train_defaults: PCVRTrainConfig,
+    config_type: type[PCVRTrainConfig] = PCVRTrainConfig,
+) -> PCVRExperiment:
+    return PCVRExperiment(
+        name=name,
+        package_dir=package_dir,
+        model_type=model_type,
+        config_type=config_type,
+        train_defaults=train_defaults,
+    )
+
+
+@dataclass(slots=True)
+class _PredictionRun:
+    checkpoint: Path
+    dataset_path: Path
+    schema_path: Path
+    schema: Any
+    batch_size: int
+    num_workers: int
+    telemetry: RuntimeTelemetry
+    result: dict[str, Any]
+
+
 @dataclass(slots=True)
 class PCVRExperiment(PCVRExperimentRuntimeMixin):
     name: str
@@ -62,10 +90,6 @@ class PCVRExperiment(PCVRExperimentRuntimeMixin):
             "config_type": _callable_name(self.config_type),
         }
 
-    @contextmanager
-    def _module_context(self) -> Iterator[None]:
-        yield
-
     def train(self, request: TrainRequest) -> Mapping[str, Any]:
         resolved_dataset_path, resolved_schema_override = resolve_default_pcvr_sample_paths(
             request.dataset_path,
@@ -81,23 +105,22 @@ class PCVRExperiment(PCVRExperimentRuntimeMixin):
         if env_schema_path:
             schema_override = Path(env_schema_path)
 
-        with self._module_context():
-            model_module = self._load_model_module()
+        model_module = self._load_model_module()
 
-            summary = dict(train_pcvr_model(
-                model_module=model_module,
-                model_class_name=self.model_class_name,
-                model_type=self.model_type,
-                package_dir=self.package_dir,
-                defaults=self.train_defaults,
-                config_type=self.config_type,
-                argv=request.extra_args,
-                dataset_path=dataset_path,
-                schema_path_override=schema_override,
-                ckpt_dir=ckpt_dir,
-                log_dir=train_log_dir,
-                tf_events_dir=tensorboard_dir,
-            ) or {})
+        summary = dict(train_pcvr_model(
+            model_module=model_module,
+            model_class_name=self.model_class_name,
+            model_type=self.model_type,
+            package_dir=self.package_dir,
+            defaults=self.train_defaults,
+            config_type=self.config_type,
+            argv=request.extra_args,
+            dataset_path=dataset_path,
+            schema_path_override=schema_override,
+            ckpt_dir=ckpt_dir,
+            log_dir=train_log_dir,
+            tf_events_dir=tensorboard_dir,
+        ) or {})
 
         resolved_schema_path = Path(summary["schema_path"]).expanduser().resolve()
 
@@ -119,23 +142,27 @@ class PCVRExperiment(PCVRExperimentRuntimeMixin):
         payload.update(observed_schema_payload)
         return payload
 
-    def evaluate(self, request: EvalRequest) -> Mapping[str, Any]:
-        resolved_dataset_path, resolved_schema_override = resolve_default_pcvr_sample_paths(
+    def _execute_prediction_run(
+        self,
+        request: EvalRequest | InferRequest,
+        *,
+        checkpoint: Path,
+        mode: str,
+        is_training_data: bool,
+    ) -> _PredictionRun:
+        dataset_path, schema_override = resolve_default_pcvr_sample_paths(
             request.dataset_path,
             request.schema_path,
         )
-        checkpoint = default_resolve_evaluation_checkpoint(self, request)
-        output_path = request.output_path or (request.run_dir / "evaluation.json")
-        predictions_path = request.predictions_path or (request.run_dir / "validation_predictions.jsonl")
         config = default_load_train_config(self, checkpoint.parent)
-        resolved_schema_path, resolved_schema = default_load_runtime_schema(
+        schema_path, schema = default_load_runtime_schema(
             self,
-            dataset_path=resolved_dataset_path,
-            schema_path=resolved_schema_override,
+            dataset_path=dataset_path,
+            schema_path=schema_override,
             checkpoint_dir=checkpoint.parent,
-            mode="evaluation",
+            mode=mode,
         )
-        effective_batch_size, batch_size_source, effective_num_workers, num_workers_source = self._resolve_prediction_runtime_settings(
+        batch_size, batch_size_source, num_workers, num_workers_source = self._resolve_prediction_runtime_settings(
             request,
             config,
         )
@@ -144,12 +171,12 @@ class PCVRExperiment(PCVRExperimentRuntimeMixin):
             config,
         )
         logger.info(
-            "Resolved PCVR evaluation runtime: experiment={}, checkpoint={}, batch_size={} ({}), num_workers={} ({}), amp={} ({}), amp_dtype={} ({}), compile={} ({})",
+            "Resolved PCVR " + mode + " runtime: experiment={}, checkpoint={}, batch_size={} ({}), num_workers={} ({}), amp={} ({}), amp_dtype={} ({}), compile={} ({})",
             self.name,
             checkpoint,
-            effective_batch_size,
+            batch_size,
             batch_size_source,
-            effective_num_workers,
+            num_workers,
             num_workers_source,
             runtime_execution.amp,
             amp_source,
@@ -160,27 +187,47 @@ class PCVRExperiment(PCVRExperimentRuntimeMixin):
         )
 
         telemetry = RuntimeTelemetry(
-            label="evaluation",
+            label=mode,
             device=request.device,
             metadata={
                 "experiment_name": self.name,
                 "checkpoint_path": str(checkpoint),
-                "dataset_path": str(resolved_dataset_path),
+                "dataset_path": str(dataset_path),
             },
         ).start()
-        with self._module_context():
-            evaluation = self._run_prediction_loop(
-                dataset_path=resolved_dataset_path,
-                schema_path=resolved_schema_path,
-                checkpoint_path=checkpoint,
-                batch_size=effective_batch_size,
-                num_workers=effective_num_workers,
-                device=request.device,
-                is_training_data=request.is_training_data,
-                dataset_role="evaluation",
-                config=config,
-                runtime_execution=runtime_execution,
-            )
+        result = self._run_prediction_loop(
+            dataset_path=dataset_path,
+            schema_path=schema_path,
+            checkpoint_path=checkpoint,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            device=request.device,
+            is_training_data=is_training_data,
+            dataset_role=mode,
+            config=config,
+            runtime_execution=runtime_execution,
+        )
+        return _PredictionRun(
+            checkpoint=checkpoint,
+            dataset_path=dataset_path,
+            schema_path=schema_path,
+            schema=schema,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            telemetry=telemetry,
+            result=result,
+        )
+
+    def evaluate(self, request: EvalRequest) -> Mapping[str, Any]:
+        run = self._execute_prediction_run(
+            request,
+            checkpoint=default_resolve_evaluation_checkpoint(self, request),
+            mode="evaluation",
+            is_training_data=request.is_training_data,
+        )
+        output_path = request.output_path or (request.run_dir / "evaluation.json")
+        predictions_path = request.predictions_path or (request.run_dir / "validation_predictions.jsonl")
+        evaluation = run.result
 
         labels = np.asarray(evaluation["labels"], dtype=np.float64)
         probabilities = np.asarray(evaluation["probabilities"], dtype=np.float64)
@@ -196,27 +243,27 @@ class PCVRExperiment(PCVRExperimentRuntimeMixin):
                 handle.write(b"\n")
         payload = {
             "experiment_name": self.name,
-            "checkpoint_path": str(checkpoint),
-            "schema_path": str(resolved_schema_path),
-            "schema": resolved_schema,
+            "checkpoint_path": str(run.checkpoint),
+            "schema_path": str(run.schema_path),
+            "schema": run.schema,
             "metrics": metrics,
-            "data_diagnostics": default_build_evaluation_data_diagnostics(self, resolved_dataset_path),
+            "data_diagnostics": default_build_evaluation_data_diagnostics(self, run.dataset_path),
             "validation_predictions_path": str(predictions_path),
-            "batch_size": effective_batch_size,
-            "num_workers": effective_num_workers,
+            "batch_size": run.batch_size,
+            "num_workers": run.num_workers,
         }
-        telemetry_payload = telemetry.finish(
+        telemetry_payload = run.telemetry.finish(
             rows=int(evaluation.get("processed_rows", len(probabilities))),
             batches=int(evaluation.get("batch_count", 0) or 0),
             prediction_file_mb=file_size_mb(predictions_path),
-            checkpoint_file_mb=file_size_mb(checkpoint),
+            checkpoint_file_mb=file_size_mb(run.checkpoint),
         )
         payload["telemetry"] = telemetry_payload
         observed_schema_path = output_path.with_name("evaluation_observed_schema.json")
         default_write_observed_schema_report(
             self,
-            dataset_path=resolved_dataset_path,
-            schema_path=resolved_schema_path,
+            dataset_path=run.dataset_path,
+            schema_path=run.schema_path,
             output_path=observed_schema_path,
             dataset_role="eval",
         )
@@ -226,65 +273,13 @@ class PCVRExperiment(PCVRExperimentRuntimeMixin):
         return payload
 
     def infer(self, request: InferRequest) -> Mapping[str, Any]:
-        resolved_dataset_path, resolved_schema_override = resolve_default_pcvr_sample_paths(
-            request.dataset_path,
-            request.schema_path,
-        )
-        checkpoint = default_resolve_inference_checkpoint(self, request)
-        config = default_load_train_config(self, checkpoint.parent)
-        resolved_schema_path, resolved_schema = default_load_runtime_schema(
-            self,
-            dataset_path=resolved_dataset_path,
-            schema_path=resolved_schema_override,
-            checkpoint_dir=checkpoint.parent,
+        run = self._execute_prediction_run(
+            request,
+            checkpoint=default_resolve_inference_checkpoint(self, request),
             mode="inference",
+            is_training_data=False,
         )
-        effective_batch_size, batch_size_source, effective_num_workers, num_workers_source = self._resolve_prediction_runtime_settings(
-            request,
-            config,
-        )
-        runtime_execution, amp_source, amp_dtype_source, compile_source = self._resolve_prediction_runtime_execution(
-            request,
-            config,
-        )
-        logger.info(
-            "Resolved PCVR inference runtime: experiment={}, checkpoint={}, batch_size={} ({}), num_workers={} ({}), amp={} ({}), amp_dtype={} ({}), compile={} ({})",
-            self.name,
-            checkpoint,
-            effective_batch_size,
-            batch_size_source,
-            effective_num_workers,
-            num_workers_source,
-            runtime_execution.amp,
-            amp_source,
-            runtime_execution.normalized_amp_dtype(),
-            amp_dtype_source,
-            runtime_execution.compile,
-            compile_source,
-        )
-
-        telemetry = RuntimeTelemetry(
-            label="inference",
-            device=request.device,
-            metadata={
-                "experiment_name": self.name,
-                "checkpoint_path": str(checkpoint),
-                "dataset_path": str(resolved_dataset_path),
-            },
-        ).start()
-        with self._module_context():
-            evaluation = self._run_prediction_loop(
-                dataset_path=resolved_dataset_path,
-                schema_path=resolved_schema_path,
-                checkpoint_path=checkpoint,
-                batch_size=effective_batch_size,
-                num_workers=effective_num_workers,
-                device=request.device,
-                is_training_data=False,
-                dataset_role="inference",
-                config=config,
-                runtime_execution=runtime_execution,
-            )
+        evaluation = run.result
 
         raw_predictions = evaluation.get("predictions")
         if raw_predictions is None:
@@ -300,23 +295,23 @@ class PCVRExperiment(PCVRExperimentRuntimeMixin):
         request.result_dir.mkdir(parents=True, exist_ok=True)
         output_path = request.result_dir / "predictions.json"
         write_json(output_path, {"predictions": prediction_map})
-        telemetry_payload = telemetry.finish(
+        telemetry_payload = run.telemetry.finish(
             rows=int(evaluation.get("processed_rows", len(prediction_map))),
             batches=int(evaluation.get("batch_count", 0) or 0),
             prediction_file_mb=file_size_mb(output_path),
-            checkpoint_file_mb=file_size_mb(checkpoint),
+            checkpoint_file_mb=file_size_mb(run.checkpoint),
         )
         write_json(request.result_dir / "inference_telemetry.json", telemetry_payload)
         return {
-            "checkpoint_path": str(checkpoint),
-            "schema_path": str(resolved_schema_path),
-            "schema": resolved_schema,
+            "checkpoint_path": str(run.checkpoint),
+            "schema_path": str(run.schema_path),
+            "schema": run.schema,
             "predictions_path": str(output_path),
             "prediction_count": len(prediction_map),
-            "batch_size": effective_batch_size,
-            "num_workers": effective_num_workers,
+            "batch_size": run.batch_size,
+            "num_workers": run.num_workers,
             "telemetry": telemetry_payload,
         }
 
 
-__all__ = ["PCVRExperiment", "_log_prediction_progress"]
+__all__ = ["PCVRExperiment", "_log_prediction_progress", "create_pcvr_experiment"]

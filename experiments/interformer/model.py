@@ -20,7 +20,6 @@ from taac2026.api import (
     PCVRSchema,
     SequenceTokenizer,
     build_pcvr_model_specs,
-    configure_rms_norm_runtime as _configure_rms_norm_runtime,
     maybe_gradient_checkpoint,
     choose_num_heads,
     make_padding_mask,
@@ -29,13 +28,6 @@ from taac2026.api import (
     safe_key_padding_mask,
     sinusoidal_positions,
 )
-
-
-def configure_rms_norm_runtime(*, rms_norm_backend: str, rms_norm_block_rows: int) -> None:
-    _configure_rms_norm_runtime(
-        backend=rms_norm_backend,
-        block_rows=rms_norm_block_rows,
-    )
 
 
 class PersonalizedFeedForward(nn.Module):

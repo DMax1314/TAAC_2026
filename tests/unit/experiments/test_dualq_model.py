@@ -10,12 +10,13 @@ import pytest
 import torch
 
 from taac2026.domain.schema import PCVRSchema
-from taac2026.infrastructure.data.batches import PCVREntityInput, PCVRModelInput, PCVRSequenceInput
+from taac2026.infrastructure.data.batches import PCVRModelInput, PCVRSequenceInput
 from taac2026.infrastructure.modeling.time_features import BUCKET_BOUNDARIES
 from taac2026.infrastructure.experiments.module_loader import (
     load_experiment_submodule,
     load_module_from_path,
 )
+from tests.support.model_inputs import dualq_contract_model_input
 from tests.support.paths import locate_repo_root
 
 REPO_ROOT = locate_repo_root(Path(__file__))
@@ -162,36 +163,6 @@ def test_global_time_features() -> None:
     assert weekend == (2 if dow >= 6 else 1)
 
 
-def _sample_model_input() -> PCVRModelInput:
-    return PCVRModelInput(
-        user=PCVREntityInput(
-            int_values=torch.tensor([[1, 11, 12, 1, 14], [2, 0, 0, 2, 0]], dtype=torch.long),
-            int_missing_mask=torch.zeros(2, 5, dtype=torch.bool),
-            dense_values=torch.randn(2, 6),
-            dense_missing_mask=torch.zeros(2, 6, dtype=torch.bool),
-        ),
-        item=PCVREntityInput(
-            int_values=torch.tensor([[1], [2]], dtype=torch.long),
-            int_missing_mask=torch.zeros(2, 1, dtype=torch.bool),
-            dense_values=torch.randn(2, 3),
-            dense_missing_mask=torch.zeros(2, 3, dtype=torch.bool),
-        ),
-        sequences={
-            "seq_a": PCVRSequenceInput(
-                values=torch.tensor([[[1, 2, 0, 0]], [[2, 3, 0, 0]]], dtype=torch.long),
-                lengths=torch.tensor([2, 2], dtype=torch.long),
-                timestamps=torch.tensor([[1000, 2000, 0, 0], [500, 600, 0, 0]], dtype=torch.long),
-            ),
-            "seq_b": PCVRSequenceInput(
-                values=torch.tensor([[[1, 0, 0]], [[2, 3, 0]]], dtype=torch.long),
-                lengths=torch.tensor([1, 2], dtype=torch.long),
-                timestamps=torch.tensor([[3000, 0, 0], [100, 200, 0]], dtype=torch.long),
-            ),
-        },
-        request_timestamp=torch.tensor([5000, 5000], dtype=torch.long),
-    )
-
-
 def _small_model(module, *, gradient_checkpointing: bool = False):
     return module.PCVRDualQ(
         schema=_schema(),
@@ -219,7 +190,7 @@ def _small_model(module, *, gradient_checkpointing: bool = False):
 def test_time_aligned_interleave_uses_exact_time_and_puts_padding_last() -> None:
     module = _load_module()
     model = _small_model(module)
-    base = _sample_model_input()
+    base = dualq_contract_model_input()
     inputs = PCVRModelInput(
         user=base.user,
         item=base.item,
@@ -269,7 +240,7 @@ def test_gradient_checkpointing_routes_each_block_through_helper(monkeypatch) ->
     monkeypatch.setattr(model_module, "maybe_gradient_checkpoint", recording_checkpoint)
     model = _small_model(module, gradient_checkpointing=True)
 
-    model(_sample_model_input()).sum().backward()
+    model(dualq_contract_model_input()).sum().backward()
 
     assert checkpoint_flags == [True]
 
@@ -299,7 +270,7 @@ def test_dualq_model_forward_backward_and_predict() -> None:
     )
 
     assert model.num_ns > 0
-    model_input = _sample_model_input()
+    model_input = dualq_contract_model_input()
 
     logits = model(model_input)
     assert logits.shape == (2, 1)
@@ -353,7 +324,7 @@ def test_dualq_model_dense_split_and_pair_tokenizer_wired() -> None:
     assert model.cross_ns_tokenizer is not None  # pair fids 62/89 present
     assert model.num_ns > 0
     with torch.no_grad():
-        logits = model(_sample_model_input())
+        logits = model(dualq_contract_model_input())
     assert logits.shape == (2, 1)
     assert torch.isfinite(logits).all()
 

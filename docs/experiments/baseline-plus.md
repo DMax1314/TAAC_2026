@@ -62,7 +62,7 @@ NS tokens + dense tokens + sequence tokens
 
 - 使用共享 `RMSNorm` 封装，允许运行时切换 torch / TileLang / Triton。
 - 使用 `scaled_dot_product_attention` 入口，便于 attention backend 对齐共享 accelerator 层。
-- 保留 `configure_flash_attention_runtime()` 和 `configure_rms_norm_runtime()` 两个包内函数，让 runtime 在构造模型前注入 backend 配置。
+- backend 由 `PCVRModelConfig.flash_attention_backend` / `rms_norm_backend` 字段声明，框架在构造模型前据此配置共享 accelerator runtime。
 
 这种设计使 Baseline+ 成为 accelerator 与训练 recipe 的试验场，而不是把 kernel 代码散落在实验包中。
 

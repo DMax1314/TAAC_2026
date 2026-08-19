@@ -17,7 +17,6 @@ from taac2026.api import (
     RMSNorm,
     build_pcvr_model_specs,
     choose_num_heads,
-    configure_rms_norm_runtime as _configure_rms_norm_runtime,
     maybe_gradient_checkpoint,
 )
 
@@ -36,13 +35,6 @@ except ImportError:  # pragma: no cover - direct file loading in contract tests
     from backbone import UnifiedInteractionBlock, UnifiedSelfAttention
     from pooling import CandidateClsPooler
     from tokenization import UnifiedSymbiosisTokenizer, UnifiedTokenBatch
-
-
-def configure_rms_norm_runtime(*, rms_norm_backend: str, rms_norm_block_rows: int) -> None:
-    _configure_rms_norm_runtime(
-        backend=rms_norm_backend,
-        block_rows=rms_norm_block_rows,
-    )
 
 
 def _torch_is_compiling() -> bool:
@@ -318,4 +310,4 @@ class PCVRSymbiosis(EmbeddingParameterMixin, nn.Module):
         return self.classifier(embeddings), embeddings
 
 
-__all__ = ["PCVRSymbiosis", "UnifiedSelfAttention", "configure_rms_norm_runtime"]
+__all__ = ["PCVRSymbiosis", "UnifiedSelfAttention"]

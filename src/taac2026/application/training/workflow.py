@@ -215,37 +215,6 @@ class TrainReporter(Protocol):
         ...
 
 
-class NoopTrainReporter:
-    def train_step(self, *, step: int, loss: float, loss_components: Mapping[str, float], dense_lr: float) -> None:
-        pass
-
-    def validation_step(
-        self,
-        *,
-        step: int,
-        auc: float,
-        logloss: float,
-        metrics: Mapping[str, float],
-        score_diagnostics: Mapping[str, float | int],
-    ) -> None:
-        pass
-
-    def should_collect_model_scalars(self, *, phase: str, step: int | None, trainer: Any) -> bool:
-        return False
-
-    def set_model_diagnostics_enabled(self, model: torch.nn.Module, enabled: bool) -> None:
-        pass
-
-    def consume_model_scalars(self, model: torch.nn.Module, *, phase: str) -> Mapping[str, float]:
-        return {}
-
-    def model_scalars(self, *, phase: str, step: int, scalars: Mapping[str, float]) -> None:
-        pass
-
-    def close(self) -> None:
-        pass
-
-
 class TensorBoardTrainReporter:
     def __init__(self, log_dir: Path) -> None:
         from torch.utils.tensorboard import SummaryWriter
@@ -315,7 +284,6 @@ def default_build_train_reporter(context: PCVRTrainContext) -> TrainReporter:
 
 
 __all__ = [
-    "NoopTrainReporter",
     "PCVRTrainContext",
     "PCVRTrainDataBundle",
     "TensorBoardTrainReporter",

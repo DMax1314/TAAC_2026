@@ -16,10 +16,8 @@ from taac2026.application.evaluation.workflow import (
     default_run_prediction_loop,
 )
 from taac2026.application.evaluation.runtime import (
-    default_load_train_config,
     default_load_runtime_schema,
-    default_write_observed_schema_report,
-    default_write_train_split_observed_schema_reports,
+    default_load_train_config,
 )
 from taac2026.infrastructure.experiments.module_loader import load_experiment_submodule
 
@@ -154,72 +152,6 @@ class PCVRExperimentRuntimeMixin:
 
     def _load_train_config(self, checkpoint_dir: Path) -> PCVRTrainConfig:
         return default_load_train_config(self, checkpoint_dir)
-
-    def _load_resolved_schema(
-        self,
-        *,
-        dataset_path: Path,
-        schema_path: Path | None,
-        checkpoint_dir: Path,
-        mode: str,
-    ) -> tuple[Path, Any]:
-        return default_load_runtime_schema(
-            self,
-            dataset_path=dataset_path,
-            schema_path=schema_path,
-            checkpoint_dir=checkpoint_dir,
-            mode=mode,
-        )
-
-    def _write_observed_schema_report(
-        self,
-        *,
-        dataset_path: Path,
-        schema_path: Path,
-        output_path: Path,
-        dataset_role: str,
-        row_group_range: tuple[int, int] | None = None,
-        timestamp_range: Any = None,
-    ) -> Path:
-        return default_write_observed_schema_report(
-            self,
-            dataset_path=dataset_path,
-            schema_path=schema_path,
-            output_path=output_path,
-            dataset_role=dataset_role,
-            row_group_range=row_group_range,
-            timestamp_range=timestamp_range,
-        )
-
-    def _write_train_split_observed_schema_reports(
-        self,
-        *,
-        dataset_path: Path,
-        schema_path: Path,
-        run_dir: Path,
-        valid_ratio: float,
-        train_ratio: float,
-        split_strategy: str = "row_group_tail",
-    ) -> dict[str, Any]:
-        return default_write_train_split_observed_schema_reports(
-            self,
-            dataset_path=dataset_path,
-            schema_path=schema_path,
-            run_dir=run_dir,
-            valid_ratio=valid_ratio,
-            train_ratio=train_ratio,
-            split_strategy=split_strategy,
-        )
-
-    def _resolve_schema_path(self, dataset_path: Path, schema_path: Path | None, checkpoint_dir: Path) -> Path:
-        resolved_schema_path, _schema_payload = default_load_runtime_schema(
-            self,
-            dataset_path=dataset_path,
-            schema_path=schema_path,
-            checkpoint_dir=checkpoint_dir,
-            mode="runtime",
-        )
-        return resolved_schema_path
 
 
 __all__ = ["PCVRExperimentRuntimeMixin"]

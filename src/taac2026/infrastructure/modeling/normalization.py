@@ -11,8 +11,6 @@ from taac2026.infrastructure.accelerators.normalization.layer_norm import layer_
 from taac2026.infrastructure.accelerators.normalization.rms_norm import rms_norm
 
 
-RMS_NORM_BACKEND = "torch"
-RMS_NORM_BLOCK_ROWS = 1
 _RMS_NORM_BACKEND: ContextVar[str] = ContextVar("taac2026_rms_norm_backend", default="torch")
 _RMS_NORM_BLOCK_ROWS: ContextVar[int] = ContextVar("taac2026_rms_norm_block_rows", default=1)
 
@@ -79,8 +77,6 @@ class LayerNorm(nn.Module):
 
 
 __all__ = [
-    "RMS_NORM_BACKEND",
-    "RMS_NORM_BLOCK_ROWS",
     "LayerNorm",
     "RMSNorm",
     "configure_rms_norm_runtime",

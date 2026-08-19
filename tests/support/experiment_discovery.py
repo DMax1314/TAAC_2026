@@ -1,4 +1,4 @@
-"""Shared experiment package discovery helpers."""
+"""Experiment package discovery helpers for test matrices."""
 
 from __future__ import annotations
 

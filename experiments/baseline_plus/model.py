@@ -20,8 +20,6 @@ from taac2026.api import (
     build_pcvr_model_specs,
     choose_num_heads,
     compute_sequence_stats,
-    configure_flash_attention_runtime as _configure_flash_attention_runtime,
-    configure_rms_norm_runtime as _configure_rms_norm_runtime,
     deduplicate_sequence_events,
     make_padding_mask,
     masked_last,
@@ -32,16 +30,6 @@ from taac2026.api import (
     sinusoidal_positions,
 )
 
-
-def configure_flash_attention_runtime(*, flash_attention_backend: str) -> None:
-    _configure_flash_attention_runtime(backend=flash_attention_backend)
-
-
-def configure_rms_norm_runtime(*, rms_norm_backend: str, rms_norm_block_rows: int) -> None:
-    _configure_rms_norm_runtime(
-        backend=rms_norm_backend,
-        block_rows=rms_norm_block_rows,
-    )
 
 
 class FeedForward(nn.Module):
@@ -600,6 +588,4 @@ class PCVRBaselinePlus(EmbeddingParameterMixin, nn.Module):
 
 __all__ = [
     "PCVRBaselinePlus",
-    "configure_flash_attention_runtime",
-    "configure_rms_norm_runtime",
 ]

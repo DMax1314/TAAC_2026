@@ -19,7 +19,6 @@ from taac2026.api import (
     SequenceTokenizer,
     build_pcvr_model_specs,
     compute_sequence_stats,
-    configure_rms_norm_runtime as _configure_rms_norm_runtime,
     deduplicate_sequence_events,
     maybe_gradient_checkpoint,
     causal_valid_attention_mask,
@@ -29,13 +28,6 @@ from taac2026.api import (
     scaled_dot_product_attention,
     sinusoidal_positions,
 )
-
-
-def configure_rms_norm_runtime(*, rms_norm_backend: str, rms_norm_block_rows: int) -> None:
-    _configure_rms_norm_runtime(
-        backend=rms_norm_backend,
-        block_rows=rms_norm_block_rows,
-    )
 
 
 class FeedForward(nn.Module):
