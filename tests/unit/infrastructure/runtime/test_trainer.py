@@ -198,6 +198,57 @@ def _train_config() -> PCVRTrainConfig:
     )
 
 
+def _make_trainer(**kwargs):
+    """Build the production trainer from concise legacy test scenarios."""
+    config = kwargs.pop("train_config")
+    optimizer_updates = {}
+    for key in ("lr", "max_steps", "device", "dense_optimizer_type", "scheduler_type", "warmup_steps", "min_lr_ratio"):
+        if key in kwargs:
+            optimizer_updates[key] = kwargs.pop(key)
+    if optimizer_updates:
+        config = config.model_copy(update={"optimizer": config.optimizer.model_copy(update=optimizer_updates)})
+
+    runtime = kwargs.pop("runtime_execution", None)
+    if runtime is not None:
+        config = config.model_copy(update={"runtime": runtime})
+
+    data_updates = {}
+    if "eval_every_n_steps" in kwargs:
+        data_updates["eval_every_n_steps"] = kwargs.pop("eval_every_n_steps")
+    if data_updates:
+        config = config.model_copy(update={"data": config.data.model_copy(update=data_updates)})
+
+    ema_updates = {}
+    for key in ("ema_enabled", "ema_decay", "ema_start_step", "ema_update_every_n_steps"):
+        if key in kwargs:
+            ema_updates[key.removeprefix("ema_")] = kwargs.pop(key)
+    if ema_updates:
+        config = config.model_copy(update={"ema": config.ema.model_copy(update=ema_updates)})
+
+    sparse_updates = {}
+    for key in ("sparse_lr", "sparse_weight_decay", "reinit_sparse_every_n_steps", "reinit_cardinality_threshold"):
+        if key in kwargs:
+            sparse_updates[key] = kwargs.pop(key)
+    if sparse_updates:
+        config = config.model_copy(update={"sparse_optimizer": config.sparse_optimizer.model_copy(update=sparse_updates)})
+
+    if "loss_terms" in kwargs:
+        loss_terms = kwargs.pop("loss_terms")
+        config = config.model_copy(
+            update={"loss": PCVRLossConfig(terms=tuple(PCVRLossTermConfig(**term) for term in loss_terms))}
+        )
+    if "early_stopping_metric" in kwargs:
+        config = config.model_copy(
+            update={"validation": config.validation.model_copy(update={"early_stopping_metric": kwargs.pop("early_stopping_metric")})}
+        )
+
+    custom_early_stopping = kwargs.pop("early_stopping", None)
+    trainer = PCVRPointwiseTrainer(config=config, **kwargs)
+    if custom_early_stopping is not None:
+        trainer.early_stopping = custom_early_stopping
+    return trainer
+
+
 def _dummy_batch(labels: list[float]) -> PCVRBatch:
     batch_size = len(labels)
     empty = PCVREntityInput(
@@ -241,7 +292,7 @@ def _sparse_probe_batch() -> PCVRBatch:
 def test_train_logs_progress_when_tqdm_is_disabled(monkeypatch, tmp_path, log_capture) -> None:
     train_loader = [_dummy_batch([0.0]) for _ in range(4)]
     valid_loader = [_dummy_batch([0.0]) for _ in range(3)]
-    trainer = PCVRPointwiseTrainer(
+    trainer = _make_trainer(
         model=_DummyModel(),
         train_loader=train_loader,
         valid_loader=valid_loader,
@@ -273,7 +324,7 @@ def test_train_logs_progress_when_tqdm_is_disabled(monkeypatch, tmp_path, log_ca
 def test_train_uses_runtime_execution_progress_log_interval(monkeypatch, tmp_path, log_capture) -> None:
     train_loader = [_dummy_batch([0.0]) for _ in range(4)]
     valid_loader = [_dummy_batch([0.0]) for _ in range(1)]
-    trainer = PCVRPointwiseTrainer(
+    trainer = _make_trainer(
         model=_DummyModel(),
         train_loader=train_loader,
         valid_loader=valid_loader,
@@ -348,7 +399,7 @@ def test_trainer_skips_whole_model_compile_when_model_handles_internal_compile(
     model = _InternalCompileDummyModel()
     monkeypatch.setattr(torch, "compile", recording_compile)
 
-    trainer = PCVRPointwiseTrainer(
+    trainer = _make_trainer(
         model=model,
         train_loader=[],
         valid_loader=[],
@@ -412,7 +463,7 @@ def test_infinite_train_batches_advances_step_window_sampler() -> None:
 
 
 def test_trainer_runtime_execution_runs_train_and_predict_on_cpu(tmp_path) -> None:
-    trainer = PCVRPointwiseTrainer(
+    trainer = _make_trainer(
         model=_DummyModel(),
         train_loader=[],
         valid_loader=[],
@@ -438,7 +489,7 @@ def test_trainer_runtime_execution_runs_train_and_predict_on_cpu(tmp_path) -> No
 
 def test_trainer_writes_model_training_scalars(tmp_path) -> None:
     reporter = _RecordingReporter()
-    trainer = PCVRPointwiseTrainer(
+    trainer = _make_trainer(
         model=_TrainingScalarDummyModel(),
         train_loader=[_dummy_batch([1.0])],
         valid_loader=[_dummy_batch([0.0]), _dummy_batch([1.0])],
@@ -482,7 +533,7 @@ def test_trainer_train_step_matches_shared_focal_loss(tmp_path) -> None:
             ),
         )
     )
-    trainer = PCVRPointwiseTrainer(
+    trainer = _make_trainer(
         model=_DummyModel(),
         train_loader=[],
         valid_loader=[],
@@ -491,7 +542,7 @@ def test_trainer_train_step_matches_shared_focal_loss(tmp_path) -> None:
         device="cpu",
         save_dir=tmp_path / "checkpoints",
         early_stopping=EarlyStopping(tmp_path / "best" / "model.safetensors", patience_steps=2),
-        loss_terms=expected_loss_config.to_list(),
+        loss_terms=[term.model_dump() for term in expected_loss_config.terms],
         schema_path=_schema_fixture(tmp_path),
         train_config=_train_config(),
     )
@@ -529,7 +580,7 @@ def test_trainer_combines_multiple_weighted_loss_terms(tmp_path) -> None:
             PCVRLossTermConfig(name="aux", kind="model", weight=0.5),
         )
     )
-    trainer = PCVRPointwiseTrainer(
+    trainer = _make_trainer(
         model=_AuxLossDummyModel(),
         train_loader=[],
         valid_loader=[],
@@ -538,7 +589,7 @@ def test_trainer_combines_multiple_weighted_loss_terms(tmp_path) -> None:
         device="cpu",
         save_dir=tmp_path / "checkpoints",
         early_stopping=EarlyStopping(tmp_path / "best" / "model.safetensors", patience_steps=2),
-        loss_terms=loss_config.to_list(),
+        loss_terms=[term.model_dump() for term in loss_config.terms],
         schema_path=_schema_fixture(tmp_path),
         train_config=_train_config(),
     )
@@ -559,7 +610,7 @@ def test_trainer_combines_multiple_weighted_loss_terms(tmp_path) -> None:
 
 @pytest.mark.parametrize("dense_optimizer_type", ["orthogonal_adamw", "fused_adamw", "muon"])
 def test_trainer_accepts_supported_dense_optimizers(tmp_path, dense_optimizer_type: str) -> None:
-    trainer = PCVRPointwiseTrainer(
+    trainer = _make_trainer(
         model=_DummyModel(),
         train_loader=[],
         valid_loader=[],
@@ -577,7 +628,7 @@ def test_trainer_accepts_supported_dense_optimizers(tmp_path, dense_optimizer_ty
 
 
 def test_trainer_builds_fused_adamw_optimizer(tmp_path) -> None:
-    trainer = PCVRPointwiseTrainer(
+    trainer = _make_trainer(
         model=_DummyModel(),
         train_loader=[],
         valid_loader=[],
@@ -597,7 +648,7 @@ def test_trainer_builds_fused_adamw_optimizer(tmp_path) -> None:
 
 def test_trainer_muon_updates_matrix_parameters(tmp_path) -> None:
     model = _MatrixDummyModel()
-    trainer = PCVRPointwiseTrainer(
+    trainer = _make_trainer(
         model=model,
         train_loader=[],
         valid_loader=[],
@@ -622,7 +673,7 @@ def test_trainer_muon_updates_matrix_parameters(tmp_path) -> None:
 
 
 def test_trainer_applies_dense_warmup_and_cosine_decay(tmp_path) -> None:
-    trainer = PCVRPointwiseTrainer(
+    trainer = _make_trainer(
         model=_DummyModel(),
         train_loader=[],
         valid_loader=[],
@@ -671,7 +722,7 @@ def test_trainer_uses_step_based_early_stopping_without_interval_scaling(monkeyp
         tmp_path / "best" / "model.safetensors",
         patience_steps=4,
     )
-    trainer = PCVRPointwiseTrainer(
+    trainer = _make_trainer(
         model=_DummyModel(),
         train_loader=[_dummy_batch([0.0])],
         valid_loader=[],
@@ -706,7 +757,7 @@ def test_trainer_uses_step_based_early_stopping_without_interval_scaling(monkeyp
 
 
 def test_evaluate_accepts_bfloat16_logits(tmp_path) -> None:
-    trainer = PCVRPointwiseTrainer(
+    trainer = _make_trainer(
         model=_DummyModel(),
         train_loader=[],
         valid_loader=[_dummy_batch([0.0]), _dummy_batch([1.0])],
@@ -733,7 +784,7 @@ def test_evaluate_accepts_bfloat16_logits(tmp_path) -> None:
 
 
 def test_evaluate_uses_domain_auc_for_single_class(tmp_path) -> None:
-    trainer = PCVRPointwiseTrainer(
+    trainer = _make_trainer(
         model=_DummyModel(),
         train_loader=[],
         valid_loader=[_dummy_batch([1.0]), _dummy_batch([1.0])],
@@ -755,7 +806,7 @@ def test_evaluate_uses_domain_auc_for_single_class(tmp_path) -> None:
 
 
 def test_evaluate_records_score_diagnostics(tmp_path, log_capture) -> None:
-    trainer = PCVRPointwiseTrainer(
+    trainer = _make_trainer(
         model=_DummyModel(),
         train_loader=[],
         valid_loader=[
@@ -791,7 +842,7 @@ def test_evaluate_records_score_diagnostics(tmp_path, log_capture) -> None:
 
 def test_trainer_rejects_probe_early_stopping_metric(tmp_path) -> None:
     with pytest.raises(ValueError, match="unsupported early stopping metric"):
-        PCVRPointwiseTrainer(
+        _make_trainer(
             model=_SparseProbeDummyModel(),
             train_loader=[],
             valid_loader=[_sparse_probe_batch()],
@@ -807,7 +858,7 @@ def test_trainer_rejects_probe_early_stopping_metric(tmp_path) -> None:
 
 def test_validation_result_saves_current_step_checkpoint(tmp_path) -> None:
     early_stopping = EarlyStopping(tmp_path / "best" / "model.safetensors", patience_steps=4)
-    trainer = PCVRPointwiseTrainer(
+    trainer = _make_trainer(
         model=_SparseProbeDummyModel(),
         train_loader=[],
         valid_loader=[],
@@ -832,7 +883,7 @@ def test_validation_result_saves_current_step_checkpoint(tmp_path) -> None:
 
 def test_validation_result_saves_ema_checkpoint_when_enabled(tmp_path) -> None:
     early_stopping = EarlyStopping(tmp_path / "best" / "model.safetensors", patience_steps=4)
-    trainer = PCVRPointwiseTrainer(
+    trainer = _make_trainer(
         model=_DummyModel(),
         train_loader=[],
         valid_loader=[],
@@ -862,7 +913,7 @@ def test_validation_result_saves_ema_checkpoint_when_enabled(tmp_path) -> None:
 
 
 def test_evaluate_uses_ema_weights_and_restores_raw_model(tmp_path) -> None:
-    trainer = PCVRPointwiseTrainer(
+    trainer = _make_trainer(
         model=_DummyModel(),
         train_loader=[],
         valid_loader=[_dummy_batch([0.0])],
@@ -904,7 +955,7 @@ class _NaNProducingModel(torch.nn.Module):
 
 
 def test_train_step_skips_backward_when_loss_is_nan(tmp_path, log_capture) -> None:
-    trainer = PCVRPointwiseTrainer(
+    trainer = _make_trainer(
         model=_NaNProducingModel(),
         train_loader=[],
         valid_loader=[],
@@ -949,7 +1000,7 @@ class _InfProducingModel(torch.nn.Module):
 
 def test_train_step_skips_backward_when_loss_is_inf(tmp_path, log_capture) -> None:
     """BCEWithLogitsLoss(inf) produces nan loss, which triggers the non-finite guard."""
-    trainer = PCVRPointwiseTrainer(
+    trainer = _make_trainer(
         model=_InfProducingModel(),
         train_loader=[],
         valid_loader=[],
@@ -974,7 +1025,7 @@ def test_train_step_skips_backward_when_loss_is_inf(tmp_path, log_capture) -> No
 
 
 def test_train_step_proceeds_normally_with_finite_loss(tmp_path) -> None:
-    trainer = PCVRPointwiseTrainer(
+    trainer = _make_trainer(
         model=_DummyModel(),
         train_loader=[],
         valid_loader=[],
@@ -997,7 +1048,7 @@ def test_train_step_proceeds_normally_with_finite_loss(tmp_path) -> None:
 
 
 def test_train_step_updates_ema_after_successful_optimizer_step(tmp_path) -> None:
-    trainer = PCVRPointwiseTrainer(
+    trainer = _make_trainer(
         model=_DummyModel(),
         train_loader=[],
         valid_loader=[],
@@ -1021,7 +1072,7 @@ def test_train_step_updates_ema_after_successful_optimizer_step(tmp_path) -> Non
 
 
 def test_train_step_does_not_update_ema_when_loss_is_nan(tmp_path) -> None:
-    trainer = PCVRPointwiseTrainer(
+    trainer = _make_trainer(
         model=_NaNProducingModel(),
         train_loader=[],
         valid_loader=[],

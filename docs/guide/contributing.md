@@ -70,7 +70,7 @@ EXPERIMENT = create_pcvr_experiment(
 - `--experiment experiments/my_experiment` 会按文件系统路径加载。
 - `--experiment experiments.my_experiment` 会按 Python module 加载。
 - 被加载模块必须导出 `EXPERIMENT`。
-- `EXPERIMENT` 可以是 `ExperimentSpec`，也可以是带 `name`、`train`、`evaluate`、`infer` 方法的对象。
+- `EXPERIMENT` 必须满足 `Experiment` 协议；PCVR 模型使用 `create_pcvr_experiment()`，函数式维护工具使用 `FunctionExperiment`。
 
 `create_pcvr_experiment()` 位于 `src/taac2026/application/experiments/experiment.py`。它用统一的训练、评估、推理流程构造 `PCVRExperiment`，普通实验不需要自己实现 `train()`、`evaluate()` 或 `infer()`。
 

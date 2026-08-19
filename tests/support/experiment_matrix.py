@@ -29,11 +29,9 @@ def build_pcvr_experiment_cases(experiment_root: Path) -> tuple[ExperimentCase, 
     cases: list[ExperimentCase] = []
     for experiment_path in discover_experiment_paths(root):
         experiment = load_experiment_package(repo_root / experiment_path)
-        if experiment.metadata.get("kind") != "pcvr":
+        if experiment.kind != "pcvr":
             continue
-        model_class = experiment.metadata.get("model_class")
-        if not isinstance(model_class, str) or not model_class:
-            raise AssertionError(f"experiment {experiment_path!r} is missing metadata['model_class']")
+        model_class = experiment.model_class_name
         package_dir = experiment.package_dir.resolve() if experiment.package_dir is not None else (repo_root / experiment_path).resolve()
         cases.append(
             ExperimentCase(

@@ -20,7 +20,7 @@ for child in sorted(Path("experiments").iterdir()):
     if not child.is_dir() or child.name.startswith("__"):
         continue
     experiment = load_experiment_package(f"experiments/{child.name}")
-    if experiment.metadata.get("kind") == "pcvr":
+    if experiment.kind == "pcvr":
         print(child.name)
 PY
 ```

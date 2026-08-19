@@ -15,6 +15,7 @@ import torch
 from taac2026.domain.config import PCVRNSConfig
 from taac2026.domain.schema import PCVRSchema
 from taac2026.domain.sidecar import build_pcvr_train_config_sidecar
+from taac2026.application.evaluation.runtime import load_train_config
 from taac2026.infrastructure.experiments.module_loader import load_module_from_path
 from taac2026.infrastructure.io.json import dumps
 from tests.support.model_inputs import dualq_contract_model_input
@@ -58,7 +59,7 @@ def test_dualq_package_declares_typed_experiment() -> None:
     assert experiment.model_class_name == "PCVRDualQ"
     assert experiment.package_dir == PACKAGE_DIR.resolve()
     assert experiment.config_type is package.DualQTrainConfig
-    assert experiment.metadata["config_type"] == "DualQTrainConfig"
+    assert experiment.config_type_name == "DualQTrainConfig"
     assert isinstance(experiment.train_defaults, package.DualQTrainConfig)
     assert isinstance(experiment.train_defaults.model, package.DualQModelConfig)
 
@@ -99,7 +100,7 @@ def test_dualq_train_config_sidecar_round_trips_package_specific_keys(tmp_path: 
         encoding="utf-8",
     )
 
-    loaded = experiment._load_train_config(checkpoint_dir)
+    loaded = load_train_config(experiment.config_type, checkpoint_dir)
 
     assert isinstance(loaded, package.DualQTrainConfig)
     assert isinstance(loaded.model, package.DualQModelConfig)

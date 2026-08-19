@@ -1,25 +1,17 @@
 from __future__ import annotations
 
+import shutil
 import sys
 from pathlib import Path
-from textwrap import dedent
 
 from taac2026.infrastructure.experiments.module_loader import load_experiment_submodule, load_module_from_path
+from tests.support.paths import fixture_path
 
 
 def _write_package(package_dir: Path) -> None:
-    package_dir.mkdir()
-    (package_dir / "__init__.py").write_text("EXPERIMENT = object()\n", encoding="utf-8")
-    (package_dir / "utils.py").write_text("VALUE = 41\n", encoding="utf-8")
-    (package_dir / "model.py").write_text(
-        dedent(
-            """
-            from .utils import VALUE
-
-            MODEL_VALUE = VALUE + 1
-            """
-        ).lstrip(),
-        encoding="utf-8",
+    shutil.copytree(
+        fixture_path("experiments", "module_loader_package"),
+        package_dir,
     )
 
 

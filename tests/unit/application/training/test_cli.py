@@ -21,39 +21,32 @@ from taac2026.domain.config import (
     PCVRTrainConfig,
 )
 from taac2026.domain.runtime_config import RuntimeExecutionConfig
+import taac2026.application.training.cli as training_cli
 from taac2026.application.training.cli import main, parse_train_args
+from taac2026.domain.experiment import FunctionExperiment
 from taac2026.infrastructure.experiments.module_loader import load_module_from_path
 from taac2026.infrastructure.io.json import loads
 import taac2026.application.training.workflow as workflow_module
-from taac2026.application.training.workflow import PCVRTrainDataBundle, default_build_train_model
+from taac2026.application.training.workflow import PCVRTrainDataBundle, build_train_model
 from taac2026.application.training.args import parse_pcvr_train_config
 
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
 
-def _write_minimal_experiment(package_dir: Path, *, requires_dataset: bool) -> Path:
-    package_dir.mkdir(parents=True)
-    metadata = "{'requires_dataset': False}" if not requires_dataset else "{}"
-    (package_dir / "__init__.py").write_text(
-        "from pathlib import Path\n"
-        "\n"
-        "from taac2026.domain.experiment import ExperimentSpec\n"
-        "\n"
-        "\n"
-        "def _train(request):\n"
-        "    return {\"dataset_path\": None if request.dataset_path is None else str(request.dataset_path), \"run_dir\": str(request.run_dir)}\n"
-        "\n"
-        "\n"
-        "EXPERIMENT = ExperimentSpec(\n"
-        "    name=\"minimal_experiment\",\n"
-        "    package_dir=Path(__file__).resolve().parent,\n"
-        "    train_fn=_train,\n"
-        f"    metadata={metadata},\n"
-        ")\n",
-        encoding="utf-8",
+def _minimal_experiment(*, requires_dataset: bool, kind: str = "maintenance") -> FunctionExperiment:
+    def train(request):
+        return {
+            "dataset_path": None if request.dataset_path is None else str(request.dataset_path),
+            "run_dir": str(request.run_dir),
+        }
+
+    return FunctionExperiment(
+        name="minimal_experiment",
+        kind=kind,
+        requires_dataset=requires_dataset,
+        train_fn=train,
     )
-    return package_dir
 
 
 def test_parse_train_args_forwards_experiment_specific_options() -> None:
@@ -92,9 +85,11 @@ def test_parse_train_args_requires_experiment() -> None:
 def test_training_main_allows_experiment_without_dataset_path(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    experiment_dir = _write_minimal_experiment(tmp_path / "experiments" / "maintenance" / "maintenance_exp", requires_dataset=False)
-
+    experiment_dir = tmp_path / "experiments" / "maintenance" / "maintenance_exp"
+    experiment = _minimal_experiment(requires_dataset=False)
+    monkeypatch.setattr(training_cli, "load_experiment_package", lambda _path: experiment)
     exit_code = main([
         "--experiment",
         str(experiment_dir),
@@ -111,8 +106,9 @@ def test_training_main_allows_experiment_without_dataset_path(
     assert payload["run_dir"] == str(tmp_path / "outputs")
 
 
-def test_training_main_rejects_missing_dataset_for_dataset_experiment(tmp_path: Path) -> None:
-    experiment_dir = _write_minimal_experiment(tmp_path / "experiments" / "maintenance" / "dataset_exp", requires_dataset=True)
+def test_training_main_rejects_missing_dataset_for_dataset_experiment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    experiment_dir = tmp_path / "experiments" / "maintenance" / "dataset_exp"
+    monkeypatch.setattr(training_cli, "load_experiment_package", lambda _path: _minimal_experiment(requires_dataset=True))
 
     with pytest.raises(ValueError, match="requires --dataset-path"):
         main(["--experiment", str(experiment_dir), "--run-dir", str(tmp_path / "outputs")])
@@ -121,27 +117,10 @@ def test_training_main_rejects_missing_dataset_for_dataset_experiment(tmp_path: 
 def test_training_main_allows_missing_dataset_for_pcvr_kind_experiment(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     experiment_dir = tmp_path / "experiments" / "pcvr" / "pcvr_exp"
-    experiment_dir.mkdir(parents=True)
-    (experiment_dir / "__init__.py").write_text(
-        "from pathlib import Path\n"
-        "\n"
-        "from taac2026.domain.experiment import ExperimentSpec\n"
-        "\n"
-        "\n"
-        "def _train(request):\n"
-        "    return {\"dataset_path\": None if request.dataset_path is None else str(request.dataset_path), \"run_dir\": str(request.run_dir)}\n"
-        "\n"
-        "\n"
-        "EXPERIMENT = ExperimentSpec(\n"
-        "    name=\"pcvr_exp\",\n"
-        "    package_dir=Path(__file__).resolve().parent,\n"
-        "    train_fn=_train,\n"
-        "    metadata={\"requires_dataset\": True, \"kind\": \"pcvr\"},\n"
-        ")\n",
-        encoding="utf-8",
-    )
+    monkeypatch.setattr(training_cli, "load_experiment_package", lambda _path: _minimal_experiment(requires_dataset=True, kind="pcvr"))
 
     exit_code = main([
         "--experiment",
@@ -160,27 +139,10 @@ def test_training_main_allows_missing_dataset_for_pcvr_kind_experiment(
 def test_training_main_allows_explicit_dataset_for_local_pcvr_kind_experiment(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     experiment_dir = tmp_path / "experiments" / "pcvr" / "pcvr_exp"
-    experiment_dir.mkdir(parents=True)
-    (experiment_dir / "__init__.py").write_text(
-        "from pathlib import Path\n"
-        "\n"
-        "from taac2026.domain.experiment import ExperimentSpec\n"
-        "\n"
-        "\n"
-        "def _train(request):\n"
-        "    return {\"dataset_path\": None if request.dataset_path is None else str(request.dataset_path)}\n"
-        "\n"
-        "\n"
-        "EXPERIMENT = ExperimentSpec(\n"
-        "    name=\"pcvr_exp\",\n"
-        "    package_dir=Path(__file__).resolve().parent,\n"
-        "    train_fn=_train,\n"
-        "    metadata={\"requires_dataset\": True, \"kind\": \"pcvr\"},\n"
-        ")\n",
-        encoding="utf-8",
-    )
+    monkeypatch.setattr(training_cli, "load_experiment_package", lambda _path: _minimal_experiment(requires_dataset=True, kind="pcvr"))
 
     exit_code = main([
         "--experiment",
@@ -202,25 +164,7 @@ def test_training_main_allows_explicit_dataset_for_bundle_pcvr_kind_experiment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     experiment_dir = tmp_path / "experiments" / "pcvr" / "pcvr_exp"
-    experiment_dir.mkdir(parents=True)
-    (experiment_dir / "__init__.py").write_text(
-        "from pathlib import Path\n"
-        "\n"
-        "from taac2026.domain.experiment import ExperimentSpec\n"
-        "\n"
-        "\n"
-        "def _train(request):\n"
-        "    return {\"dataset_path\": None if request.dataset_path is None else str(request.dataset_path)}\n"
-        "\n"
-        "\n"
-        "EXPERIMENT = ExperimentSpec(\n"
-        "    name=\"pcvr_exp\",\n"
-        "    package_dir=Path(__file__).resolve().parent,\n"
-        "    train_fn=_train,\n"
-        "    metadata={\"requires_dataset\": True, \"kind\": \"pcvr\"},\n"
-        ")\n",
-        encoding="utf-8",
-    )
+    monkeypatch.setattr(training_cli, "load_experiment_package", lambda _path: _minimal_experiment(requires_dataset=True, kind="pcvr"))
     monkeypatch.setenv("TAAC_BUNDLE_MODE", "1")
 
     exit_code = main([
@@ -280,7 +224,7 @@ def test_parse_pcvr_train_config_uses_runtime_progress_log_interval_default(tmp_
     assert config.runtime.progress_log_interval_steps == 77
 
 
-def test_default_build_train_model_configures_shared_flash_runtime(
+def test_build_train_model_configures_shared_flash_runtime(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -311,16 +255,11 @@ def test_default_build_train_model_configures_shared_flash_runtime(
             return []
 
     context = SimpleNamespace(
-        model_module=SimpleNamespace(),
         model_class_name="FakeModel",
         model_type=FakeModel,
-        package_dir=tmp_path,
         data_dir=tmp_path / "data",
         ckpt_dir=tmp_path / "checkpoints",
-        log_dir=tmp_path / "logs",
-        tf_events_dir=tmp_path / "tensorboard",
         schema_path=tmp_path / "schema.json",
-        runtime_execution=RuntimeExecutionConfig(),
         device="cpu",
         reporter=None,
         config=PCVRTrainConfig(model=PCVRModelConfig(flash_attention_backend="tilelang")),
@@ -334,7 +273,7 @@ def test_default_build_train_model_configures_shared_flash_runtime(
         ),
     )
 
-    model = default_build_train_model(context, data_bundle)
+    model = build_train_model(context, data_bundle)
 
     assert captured == {
         "backend": "tilelang",

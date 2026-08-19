@@ -160,7 +160,7 @@ def test_build_bundle_reports_site_experiment_path_collision(
     root = tmp_path / "repo"
     site_collision = root / "site" / "experiments" / "baseline"
     site_collision.mkdir(parents=True)
-    (root / "run.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    (root / "run.sh").touch()
     monkeypatch.chdir(root / "site")
 
     with pytest.raises(ValueError, match="got 'site/experiments/baseline'") as exc_info:

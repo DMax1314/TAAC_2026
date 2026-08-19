@@ -12,7 +12,7 @@ import torch
 import tyro
 
 from taac2026.domain.requests import EvalRequest, InferRequest, default_run_dir
-from taac2026.application.shared import experiment_kind, experiment_requires_dataset, is_bundle_mode
+from taac2026.application.shared import is_bundle_mode
 from taac2026.application.experiments.registry import load_experiment_package
 from taac2026.infrastructure.io.json import dumps
 from taac2026.infrastructure.io.rich_output import print_rich_summary
@@ -110,14 +110,13 @@ def _format_eval_summary(payload: dict[str, Any], *, title: str) -> None:
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_eval_args(argv)
     experiment = load_experiment_package(args.experiment)
-    if args.dataset_path is None and experiment_requires_dataset(experiment) and (experiment_kind(experiment) != "pcvr" or is_bundle_mode()):
+    if args.dataset_path is None and experiment.requires_dataset and (experiment.kind != "pcvr" or is_bundle_mode()):
         raise ValueError(f"experiment {args.experiment!r} requires --dataset-path")
     if args.command == "single":
         run_dir = Path(args.run_dir) if args.run_dir else default_run_dir(args.experiment)
         run_dir.mkdir(parents=True, exist_ok=True)
         configure_logging(run_dir / "evaluate.log")
         request = EvalRequest(
-            experiment=args.experiment,
             dataset_path=Path(args.dataset_path) if args.dataset_path else None,
             schema_path=Path(args.schema_path) if args.schema_path else None,
             run_dir=run_dir,
@@ -138,7 +137,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         result_dir.mkdir(parents=True, exist_ok=True)
         configure_logging(result_dir / "infer.log")
         request = InferRequest(
-            experiment=args.experiment,
             dataset_path=Path(args.dataset_path) if args.dataset_path else None,
             schema_path=Path(args.schema_path) if args.schema_path else None,
             checkpoint_path=Path(args.checkpoint) if args.checkpoint else None,

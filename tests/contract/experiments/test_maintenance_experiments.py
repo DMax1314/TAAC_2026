@@ -107,8 +107,8 @@ def _write_dataset(path: Path) -> None:
 def test_load_maintenance_experiment_packages(experiment_path: str, requires_dataset: bool) -> None:
     experiment = load_experiment_package(experiment_path)
 
-    assert experiment.metadata["kind"] == "maintenance"
-    assert experiment.metadata["requires_dataset"] is requires_dataset
+    assert experiment.kind == "maintenance"
+    assert experiment.requires_dataset is requires_dataset
 
 
 def test_host_device_info_experiment_runs_without_writing_log_file(
@@ -132,7 +132,6 @@ def test_host_device_info_experiment_runs_without_writing_log_file(
     run_dir = tmp_path / "outputs"
     result = experiment.train(
         TrainRequest(
-            experiment="experiments/host_device_info",
             dataset_path=None,
             schema_path=None,
             run_dir=run_dir,
@@ -154,7 +153,6 @@ def test_host_device_info_experiment_rejects_extra_args(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="does not accept extra_args"):
         experiment.train(
             TrainRequest(
-                experiment="experiments/host_device_info",
                 dataset_path=None,
                 schema_path=None,
                 run_dir=run_dir,
@@ -320,7 +318,6 @@ def test_online_dataset_eda_experiment_prints_report_to_stdout(
     with log_capture.at_level(logging.INFO):
         result = experiment.train(
             TrainRequest(
-                experiment="experiments/online_dataset_eda",
                 dataset_path=dataset_path,
                 schema_path=schema_path,
                 run_dir=run_dir,
@@ -361,7 +358,6 @@ def test_online_dataset_eda_experiment_runs_as_inference_profile(
 
     train_result = experiment.train(
         TrainRequest(
-            experiment="experiments/online_dataset_eda",
             dataset_path=dataset_path,
             schema_path=schema_path,
             run_dir=train_dir,
@@ -374,7 +370,6 @@ def test_online_dataset_eda_experiment_runs_as_inference_profile(
     with log_capture.at_level(logging.INFO):
         infer_result = experiment.infer(
             InferRequest(
-                experiment="experiments/online_dataset_eda",
                 dataset_path=dataset_path,
                 schema_path=schema_path,
                 checkpoint_path=reference_profile,
@@ -402,7 +397,6 @@ def test_online_dataset_eda_experiment_rejects_extra_args(tmp_path: Path) -> Non
     with pytest.raises(ValueError, match="does not accept extra_args"):
         experiment.train(
             TrainRequest(
-                experiment="experiments/online_dataset_eda",
                 dataset_path=dataset_path,
                 schema_path=schema_path,
                 run_dir=tmp_path / "outputs",

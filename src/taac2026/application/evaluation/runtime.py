@@ -18,13 +18,11 @@ from taac2026.domain.sidecar import load_pcvr_train_config_sidecar
 from taac2026.infrastructure.modeling.model_contract import resolve_checkpoint_schema_path
 
 
-def default_resolve_evaluation_checkpoint(experiment: Any, request: EvalRequest) -> Path:
-    del experiment
+def resolve_evaluation_checkpoint(request: EvalRequest) -> Path:
     return resolve_checkpoint_path(request.run_dir, request.checkpoint_path)
 
 
-def default_resolve_inference_checkpoint(experiment: Any, request: InferRequest) -> Path:
-    del experiment
+def resolve_inference_checkpoint(request: InferRequest) -> Path:
     checkpoint_root = Path(os.environ.get("MODEL_OUTPUT_PATH", "")).expanduser()
     checkpoint = resolve_checkpoint_path(Path.cwd(), request.checkpoint_path) if request.checkpoint_path else None
     if checkpoint is None and str(checkpoint_root) not in {"", "."} and checkpoint_root.exists():
@@ -34,30 +32,26 @@ def default_resolve_inference_checkpoint(experiment: Any, request: InferRequest)
     return checkpoint
 
 
-def default_load_train_config(experiment: Any, checkpoint_dir: Path) -> PCVRTrainConfig:
+def load_train_config(config_type: type[PCVRTrainConfig], checkpoint_dir: Path) -> PCVRTrainConfig:
     config_path = checkpoint_dir / "train_config.json"
     if not config_path.exists():
         raise FileNotFoundError(f"PCVR train_config.json not found in checkpoint directory: {checkpoint_dir}")
-    payload = load_pcvr_train_config_sidecar(read_json(config_path), config_type=experiment.config_type)
+    payload = load_pcvr_train_config_sidecar(read_json(config_path), config_type=config_type)
     return payload
 
 
-def default_load_runtime_schema(
-    experiment: Any,
+def load_runtime_schema(
     *,
-    dataset_path: Path,
     schema_path: Path | None,
     checkpoint_dir: Path,
     mode: str,
 ) -> tuple[Path, Any]:
-    del experiment, dataset_path
     resolved_schema_path = resolve_checkpoint_schema_path(checkpoint_dir, schema_path)
     logger.info("Resolved PCVR {} schema.json: {}", mode, resolved_schema_path)
     return resolved_schema_path, read_json(resolved_schema_path)
 
 
-def default_build_evaluation_data_diagnostics(experiment: Any, dataset_path: Path) -> dict[str, Any]:
-    del experiment
+def build_evaluation_data_diagnostics(dataset_path: Path) -> dict[str, Any]:
     resolved_dataset_path = dataset_path.expanduser()
     warnings: list[str] = []
     try:
@@ -95,8 +89,7 @@ def default_build_evaluation_data_diagnostics(experiment: Any, dataset_path: Pat
     }
 
 
-def default_write_observed_schema_report(
-    experiment: Any,
+def write_observed_schema_report(
     *,
     dataset_path: Path,
     schema_path: Path,
@@ -117,8 +110,7 @@ def default_write_observed_schema_report(
     return output_path
 
 
-def default_write_train_split_observed_schema_reports(
-    experiment: Any,
+def write_train_split_observed_schema_reports(
     *,
     dataset_path: Path,
     schema_path: Path,
@@ -147,8 +139,7 @@ def default_write_train_split_observed_schema_reports(
         raise ValueError(f"unsupported split_strategy={split_strategy!r}")
     observed_schema_paths = {
         "train_split": str(
-            default_write_observed_schema_report(
-                experiment,
+            write_observed_schema_report(
                 dataset_path=dataset_path,
                 schema_path=schema_path,
                 output_path=run_dir / "train_split_observed_schema.json",
@@ -158,8 +149,7 @@ def default_write_train_split_observed_schema_reports(
             )
         ),
         "valid_split": str(
-            default_write_observed_schema_report(
-                experiment,
+            write_observed_schema_report(
                 dataset_path=dataset_path,
                 schema_path=schema_path,
                 output_path=run_dir / "valid_split_observed_schema.json",
@@ -195,11 +185,11 @@ def default_write_train_split_observed_schema_reports(
 
 
 __all__ = [
-    "default_build_evaluation_data_diagnostics",
-    "default_load_runtime_schema",
-    "default_load_train_config",
-    "default_resolve_evaluation_checkpoint",
-    "default_resolve_inference_checkpoint",
-    "default_write_observed_schema_report",
-    "default_write_train_split_observed_schema_reports",
+    "build_evaluation_data_diagnostics",
+    "load_runtime_schema",
+    "load_train_config",
+    "resolve_evaluation_checkpoint",
+    "resolve_inference_checkpoint",
+    "write_observed_schema_report",
+    "write_train_split_observed_schema_reports",
 ]

@@ -103,7 +103,7 @@ experiments/<tool>/
 └── runner.py
 ```
 
-它们导出 `ExperimentSpec`，可以没有模型类和 checkpoint sidecar；训练、评估和推理流程由框架统一编排，实验包不需要也不提供 hooks。
+它们通常导出 `FunctionExperiment`，可以没有模型类和 checkpoint sidecar；实验包用接收结构化 request 的函数声明所支持的操作，共享 CLI 和 bundle runtime 负责调用。
 
 ## 五、改实验时先看哪里
 

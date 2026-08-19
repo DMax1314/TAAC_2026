@@ -1,61 +1,16 @@
 from __future__ import annotations
 
+import shutil
 import zipfile
 from pathlib import Path
 
-from tests.support.paths import locate_repo_root
+from tests.support.paths import fixture_path, locate_repo_root
 from taac2026.infrastructure.io.json import dump_bytes, loads
 
 
 REPO_ROOT = locate_repo_root(Path(__file__))
 
 _MINIMAL_PYPROJECT = "[project]\nname = \"minimal\"\nversion = \"0.0.0\"\n"
-
-_MINIMAL_TRAINING_CLI = (
-    "from __future__ import annotations\n"
-    "\n"
-    "import orjson\n"
-    "import os\n"
-    "import sys\n"
-    "from pathlib import Path\n"
-    "\n"
-    "\n"
-    "def main() -> None:\n"
-    "    print(orjson.dumps({\"cwd\": str(Path.cwd()), \"argv\": sys.argv[1:], "
-    "\"experiment\": os.environ.get(\"TAAC_EXPERIMENT\")}).decode())\n"
-    "\n"
-    "\n"
-    "if __name__ == \"__main__\":\n"
-    "    main()\n"
-)
-
-_MINIMAL_EVALUATION_CLI = (
-    "from __future__ import annotations\n"
-    "\n"
-    "import json\n"
-    "import sys\n"
-    "from pathlib import Path\n"
-    "\n"
-    "\n"
-    "def main() -> None:\n"
-    "    print(json.dumps({\"cwd\": str(Path.cwd()), \"argv\": sys.argv[1:]}))\n"
-    "\n"
-    "\n"
-    "if __name__ == \"__main__\":\n"
-    "    main()\n"
-)
-
-_MINIMAL_INFERENCE_ENTRYPOINT = (
-    "from __future__ import annotations\n"
-    "\n"
-    "import orjson\n"
-    "import os\n"
-    "from pathlib import Path\n"
-    "\n"
-    "\n"
-    "def main() -> None:\n"
-    "    print(orjson.dumps({\"cwd\": str(Path.cwd()), \"experiment\": os.environ.get(\"TAAC_EXPERIMENT\")}).decode())\n"
-)
 
 
 def code_package_names(code_package_path: Path) -> set[str]:
@@ -87,7 +42,7 @@ def _write_minimal_runtime_package(
     bundled_experiment_path: str | None,
     package_inits: tuple[str, ...],
     entrypoint_path: str,
-    entrypoint_source: str,
+    entrypoint_fixture: Path,
 ) -> None:
     with zipfile.ZipFile(code_package_path, mode="w", compression=zipfile.ZIP_DEFLATED) as code_archive:
         manifest: dict[str, object] = {}
@@ -105,7 +60,7 @@ def _write_minimal_runtime_package(
         ):
             code_archive.writestr(package_init, "")
         write_platform_runtime(code_archive)
-        code_archive.writestr(entrypoint_path, entrypoint_source)
+        code_archive.write(entrypoint_fixture, entrypoint_path)
 
 
 def write_minimal_training_runtime_package(
@@ -119,7 +74,7 @@ def write_minimal_training_runtime_package(
         bundled_experiment_path=bundled_experiment_path,
         package_inits=("project/src/taac2026/application/training/__init__.py",),
         entrypoint_path="project/src/taac2026/application/training/cli.py",
-        entrypoint_source=_MINIMAL_TRAINING_CLI,
+        entrypoint_fixture=fixture_path("runtime", "training_cli.py"),
     )
 
 
@@ -134,7 +89,7 @@ def write_minimal_eval_runtime_package(
         bundled_experiment_path=bundled_experiment_path,
         package_inits=("project/src/taac2026/application/evaluation/__init__.py",),
         entrypoint_path="project/src/taac2026/application/evaluation/cli.py",
-        entrypoint_source=_MINIMAL_EVALUATION_CLI,
+        entrypoint_fixture=fixture_path("runtime", "evaluation_cli.py"),
     )
 
 
@@ -149,25 +104,16 @@ def write_minimal_inference_runtime_package(
         bundled_experiment_path=bundled_experiment_path,
         package_inits=("project/src/taac2026/application/evaluation/__init__.py",),
         entrypoint_path="project/src/taac2026/application/evaluation/infer.py",
-        entrypoint_source=_MINIMAL_INFERENCE_ENTRYPOINT,
+        entrypoint_fixture=fixture_path("runtime", "inference_entrypoint.py"),
     )
 
 
-def write_fake_pip_package(root: Path, log_path: Path) -> Path:
+def write_fake_pip_package(root: Path) -> Path:
     fake_pip = root / "fake_pip"
     pip_package = fake_pip / "pip"
     pip_package.mkdir(parents=True)
-    (pip_package / "__init__.py").write_text("", encoding="utf-8")
-    (pip_package / "__main__.py").write_text(
-        "from __future__ import annotations\n"
-        "\n"
-        "import orjson\n"
-        "import sys\n"
-        "from pathlib import Path\n"
-        "\n"
-        f"Path({str(log_path)!r}).write_bytes(orjson.dumps(sys.argv[1:]))\n",
-        encoding="utf-8",
-    )
+    (pip_package / "__init__.py").touch()
+    shutil.copy2(fixture_path("runtime", "fake_pip_main.py"), pip_package / "__main__.py")
     return fake_pip
 
 

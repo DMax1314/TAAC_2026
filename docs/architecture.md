@@ -45,7 +45,7 @@ src/taac2026/
 ├── api.py                     # 给实验包使用的稳定 public facade
 ├── domain/
 │   ├── config.py              # PCVR train/model/data/cache/pipeline/optimizer/NS 配置
-│   ├── experiment.py          # ExperimentSpec 插件契约
+│   ├── experiment.py          # Experiment Protocol / FunctionExperiment 插件契约
 │   ├── metrics.py             # AUC / LogLoss / GAUC / 诊断指标
 │   ├── requests.py            # TrainRequest / EvalRequest / InferRequest
 │   ├── runtime_config.py      # AMP、compile、determinism、loss 和 optimizer 边界配置
@@ -68,8 +68,7 @@ src/taac2026/
 │   │   └── workflow.py
 │   ├── experiments/
 │   │   ├── experiment.py
-│   │   ├── registry.py
-│   │   └── runtime.py
+│   │   └── registry.py
 │   ├── packaging/
 │   │   ├── cli.py
 │   │   └── service.py
@@ -136,6 +135,7 @@ src/taac2026/
     ├── runtime/
     │   ├── checkpoint_io.py
     │   ├── execution.py
+    │   ├── reporting.py
     │   └── trainer.py
     ├── checkpoints.py
     └── logging.py
@@ -261,9 +261,9 @@ experiments/baseline/
 └── model.py      # 当前实验的模型实现
 ```
 
-普通 PCVR 模型实验通常用 `create_pcvr_experiment()` 创建。维护类实验可以直接导出 `ExperimentSpec`，例如 `host_device_info` 和 `online_dataset_eda`。
+普通 PCVR 模型实验通常用 `create_pcvr_experiment()` 创建。维护类实验直接导出 `FunctionExperiment`，例如 `host_device_info` 和 `online_dataset_eda`。
 
-框架不靠目录名判断实验类型，而是看 `EXPERIMENT` 的能力和 metadata。
+注册表只校验 `EXPERIMENT` 是否满足 `Experiment` Protocol，并返回实验包声明的原始对象。实验类型和数据要求通过显式的 `kind`、`requires_dataset` 属性表达，不再使用松散的 metadata 字典或二次包装。
 
 ## 公共 API
 
@@ -271,6 +271,7 @@ experiments/baseline/
 
 常用导入包括：
 
+- `FunctionExperiment`、`TrainRequest`、`EvalRequest`、`InferRequest`
 - `PCVRTrainConfig`、`PCVRModelConfig`、`PCVRNSConfig`
 - `PCVRDataPipelineConfig`、cache 和 transform 配置
 - `RuntimeExecutionConfig`、`PCVRLossConfig`、`PCVRLossTermConfig`

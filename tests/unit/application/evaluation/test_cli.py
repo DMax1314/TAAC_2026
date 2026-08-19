@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import ClassVar
 
 import pytest
 
@@ -76,7 +75,8 @@ def test_evaluation_main_allows_missing_dataset_for_pcvr_kind_experiment(monkeyp
     captured_request = {}
 
     class FakeExperiment:
-        metadata: ClassVar[dict[str, object]] = {"requires_dataset": True, "kind": "pcvr"}
+        kind = "pcvr"
+        requires_dataset = True
 
         def infer(self, request):
             captured_request["dataset_path"] = request.dataset_path
@@ -110,7 +110,8 @@ def test_evaluation_main_allows_explicit_dataset_for_local_pcvr_kind_experiment(
     captured_request = {}
 
     class FakeExperiment:
-        metadata: ClassVar[dict[str, object]] = {"requires_dataset": True, "kind": "pcvr"}
+        kind = "pcvr"
+        requires_dataset = True
 
         def infer(self, request):
             captured_request["dataset_path"] = request.dataset_path
@@ -146,7 +147,8 @@ def test_evaluation_main_allows_explicit_dataset_for_bundle_pcvr_kind_experiment
     captured_request = {}
 
     class FakeExperiment:
-        metadata: ClassVar[dict[str, object]] = {"requires_dataset": True, "kind": "pcvr"}
+        kind = "pcvr"
+        requires_dataset = True
 
         def infer(self, request):
             captured_request["dataset_path"] = request.dataset_path
@@ -178,7 +180,7 @@ def test_evaluation_main_rejects_missing_dataset_for_non_pcvr_experiment(monkeyp
     monkeypatch.setattr(
         evaluation_cli,
         "load_experiment_package",
-        lambda _experiment: SimpleNamespace(metadata={"requires_dataset": True, "kind": "maintenance"}),
+        lambda _experiment: SimpleNamespace(requires_dataset=True, kind="maintenance"),
     )
 
     with pytest.raises(ValueError, match="requires --dataset-path"):

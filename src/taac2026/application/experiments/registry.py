@@ -5,25 +5,14 @@ from __future__ import annotations
 import importlib
 from pathlib import Path
 
-from taac2026.domain.experiment import ExperimentSpec
+from taac2026.domain.experiment import Experiment
 from taac2026.infrastructure.experiments.module_loader import load_module_from_path
 from taac2026.infrastructure.io.files import repo_root
 
 
-def _coerce_experiment(value: object, source: str) -> ExperimentSpec:
-    if isinstance(value, ExperimentSpec):
+def _validate_experiment(value: object, source: str) -> Experiment:
+    if isinstance(value, Experiment):
         return value
-    required = ("name", "train", "evaluate", "infer")
-    if all(hasattr(value, attribute) for attribute in required):
-        return ExperimentSpec(
-            name=str(value.name),
-            package_dir=getattr(value, "package_dir", None),
-            train_fn=value.train,
-            evaluate_fn=value.evaluate,
-            infer_fn=value.infer,
-            train_defaults=getattr(value, "train_defaults", None),
-            metadata=dict(getattr(value, "metadata", {})),
-        )
     raise TypeError(f"EXPERIMENT in {source} is not a supported experiment object")
 
 
@@ -37,7 +26,7 @@ def _path_from_user_value(value: str) -> Path | None:
     return None
 
 
-def load_experiment_package(value: str | Path) -> ExperimentSpec:
+def load_experiment_package(value: str | Path) -> Experiment:
     source = str(value)
     if isinstance(value, Path):
         module = load_module_from_path(value)
@@ -53,4 +42,4 @@ def load_experiment_package(value: str | Path) -> ExperimentSpec:
 
     if not hasattr(module, "EXPERIMENT"):
         raise AttributeError(f"experiment package {source!r} does not define EXPERIMENT")
-    return _coerce_experiment(module.EXPERIMENT, source)
+    return _validate_experiment(module.EXPERIMENT, source)

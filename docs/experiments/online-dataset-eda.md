@@ -33,10 +33,11 @@ ONLINE_DATASET_EDA_RESULT={...}
 入口文件 `experiments/online_dataset_eda/__init__.py` 导出：
 
 ```python
-EXPERIMENT = ExperimentSpec(
+EXPERIMENT = FunctionExperiment(
     name="online_dataset_eda",
-    kind="maintenance",
-    requires_dataset=True,
+    package_dir=PACKAGE_DIR,
+    train_fn=_train,
+    infer_fn=_infer,
 )
 ```
 

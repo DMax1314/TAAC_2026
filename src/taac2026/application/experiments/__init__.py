@@ -1,1 +1,1 @@
-"""Experiment loading and factory services."""
+"""Experiment adapters and package loading."""

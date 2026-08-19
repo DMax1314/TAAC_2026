@@ -20,12 +20,10 @@ from tqdm import tqdm
 
 from taac2026.domain.metrics import binary_auc, binary_score_diagnostics
 from taac2026.domain.config import (
-    DENSE_LR_SCHEDULER_TYPE_CHOICES,
     PCVR_EARLY_STOPPING_METRIC_CHOICES,
     PCVRTrainConfig,
 )
 from taac2026.infrastructure.data.batches import PCVRBatch
-from taac2026.domain.runtime_config import DENSE_OPTIMIZER_TYPE_CHOICES, PCVRLossConfig, RuntimeExecutionConfig
 from taac2026.infrastructure.logging import logger
 from taac2026.infrastructure.modeling.tensors import sigmoid_probabilities_numpy
 from taac2026.infrastructure.runtime.checkpoint_io import PCVRTrainerSupportMixin
@@ -40,6 +38,8 @@ from taac2026.infrastructure.runtime.execution import (
     runtime_execution_summary,
     runtime_grad_scaler_enabled,
 )
+from taac2026.infrastructure.runtime.reporting import NoopTrainReporter, TrainReporter
+from taac2026.infrastructure.checkpoints import preferred_checkpoint_path
 from taac2026.infrastructure.runtime.protocols import SparseParameterModel
 
 
@@ -86,87 +86,6 @@ def clip_grad_norms_with_sparse(
     return total_norm
 
 
-class _NoopReporter:
-    def train_step(self, **kwargs: Any) -> None:
-        pass
-
-    def validation_step(self, **kwargs: Any) -> None:
-        pass
-
-    def should_collect_model_scalars(self, **kwargs: Any) -> bool:
-        return False
-
-    def set_model_diagnostics_enabled(self, model: nn.Module, enabled: bool) -> None:
-        pass
-
-    def consume_model_scalars(self, model: nn.Module, *, phase: str) -> dict[str, float]:
-        return {}
-
-    def model_scalars(self, **kwargs: Any) -> None:
-        pass
-
-
-class _ScalarWriterReporter:
-    def __init__(self, writer: Any) -> None:
-        self.writer = writer
-
-    def train_step(self, *, step: int, loss: float, loss_components: Mapping[str, float], dense_lr: float) -> None:
-        self.writer.add_scalar("Loss/train", float(loss), int(step))
-        for name, value in loss_components.items():
-            self.writer.add_scalar(f"Loss/train/{name}", float(value), int(step))
-        self.writer.add_scalar("LR/dense", float(dense_lr), int(step))
-
-    def validation_step(
-        self,
-        *,
-        step: int,
-        auc: float,
-        logloss: float,
-        metrics: Mapping[str, float],
-        score_diagnostics: Mapping[str, float | int],
-    ) -> None:
-        del metrics
-        self.writer.add_scalar("AUC/valid", float(auc), int(step))
-        self.writer.add_scalar("LogLoss/valid", float(logloss), int(step))
-        for metric_name, value in score_diagnostics.items():
-            self.writer.add_scalar(f"score/{metric_name}", float(value), int(step))
-        flush = getattr(self.writer, "flush", None)
-        if callable(flush):
-            flush()
-
-    def should_collect_model_scalars(self, *, phase: str, step: int | None, trainer: Any) -> bool:
-        del phase
-        if step is None:
-            return False
-        interval = int(trainer.runtime_execution.progress_log_interval_steps)
-        return (
-            step == 1
-            or (interval > 0 and step % interval == 0)
-            or (trainer.eval_every_n_steps > 0 and step % trainer.eval_every_n_steps == 0)
-            or (trainer.max_steps > 0 and step == trainer.max_steps)
-        )
-
-    def set_model_diagnostics_enabled(self, model: nn.Module, enabled: bool) -> None:
-        set_enabled = getattr(model, "set_training_diagnostics_enabled", None)
-        if not callable(set_enabled):
-            set_enabled = getattr(model, "set_tensorboard_diagnostics_enabled", None)
-        if callable(set_enabled):
-            set_enabled(enabled)
-
-    def consume_model_scalars(self, model: nn.Module, *, phase: str) -> Mapping[str, float]:
-        consume_scalars = getattr(model, "consume_training_scalars", None)
-        if not callable(consume_scalars):
-            consume_scalars = getattr(model, "consume_tensorboard_scalars", None)
-        if not callable(consume_scalars):
-            return {}
-        return consume_scalars(phase=phase)
-
-    def model_scalars(self, *, phase: str, step: int, scalars: Mapping[str, float]) -> None:
-        del phase
-        for tag, value in scalars.items():
-            self.writer.add_scalar(str(tag), float(value), int(step))
-
-
 def _use_interactive_progress() -> bool:
     isatty = getattr(sys.stderr, "isatty", None)
     return bool(isatty and isatty())
@@ -188,52 +107,26 @@ class PCVRPointwiseTrainer(PCVRTrainerSupportMixin):
         model: nn.Module,
         train_loader: DataLoader,
         valid_loader: DataLoader,
-        lr: float,
-        max_steps: int,
-        device: str,
+        config: PCVRTrainConfig,
         save_dir: str | Path,
-        early_stopping: EarlyStopping,
         schema_path: str | Path,
-        train_config: PCVRTrainConfig,
-        dense_optimizer_type: str = "adamw",
-        scheduler_type: str = "none",
-        warmup_steps: int = 0,
-        min_lr_ratio: float = 0.0,
-        ema_enabled: bool = False,
-        ema_decay: float = 0.999,
-        ema_start_step: int = 0,
-        ema_update_every_n_steps: int = 1,
-        loss_terms: Any | None = None,
-        sparse_lr: float = 0.05,
-        sparse_weight_decay: float = 0.0,
-        reinit_sparse_every_n_steps: int = 0,
-        reinit_cardinality_threshold: int = 0,
-        ckpt_params: dict[str, Any] | None = None,
-        writer: Any | None = None,
-        reporter: Any | None = None,
-        eval_every_n_steps: int = 5_000,
-        early_stopping_metric: str = "auc",
-        runtime_execution: RuntimeExecutionConfig | None = None,
+        reporter: TrainReporter | None = None,
     ) -> None:
+        optimizer_config = config.optimizer
+        ema_config = config.ema
+        sparse_config = config.sparse_optimizer
+        self.config = config
+        self.device = optimizer_config.device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.model = model
         self.train_loader = train_loader
         self.valid_loader = valid_loader
-        self.writer = writer
-        self.reporter = reporter or (_ScalarWriterReporter(writer) if writer is not None else _NoopReporter())
+        self.reporter = reporter or NoopTrainReporter()
         self.schema_path = Path(schema_path).expanduser().resolve()
-        self.dense_optimizer_type = str(dense_optimizer_type).strip().lower()
-        if self.dense_optimizer_type not in DENSE_OPTIMIZER_TYPE_CHOICES:
-            raise ValueError(f"unsupported dense optimizer type: {dense_optimizer_type}")
-        self.scheduler_type = str(scheduler_type).strip().lower()
-        if self.scheduler_type not in DENSE_LR_SCHEDULER_TYPE_CHOICES:
-            raise ValueError(f"unsupported scheduler type: {scheduler_type}")
-        self.warmup_steps = int(warmup_steps)
-        if self.warmup_steps < 0:
-            raise ValueError("warmup_steps must be non-negative")
-        self.min_lr_ratio = float(min_lr_ratio)
-        if not 0.0 <= self.min_lr_ratio <= 1.0:
-            raise ValueError("min_lr_ratio must be between 0.0 and 1.0")
-        self.base_dense_lr = float(lr)
+        self.dense_optimizer_type = optimizer_config.dense_optimizer_type
+        self.scheduler_type = optimizer_config.scheduler_type
+        self.warmup_steps = optimizer_config.warmup_steps
+        self.min_lr_ratio = optimizer_config.min_lr_ratio
+        self.base_dense_lr = float(optimizer_config.lr)
         self.current_dense_lr = self.base_dense_lr
         self.optim_step = 0
         self.dense_params: list[nn.Parameter] = []
@@ -249,7 +142,7 @@ class PCVRPointwiseTrainer(PCVRTrainerSupportMixin):
                 )
                 self.sparse_optimizer = None
                 self.dense_params = list(model.parameters())
-                self.dense_optimizer = self._build_dense_optimizer(self.dense_params, lr)
+                self.dense_optimizer = self._build_dense_optimizer(self.dense_params, self.base_dense_lr)
             else:
                 self.dense_params = list(dense_params)
                 sparse_param_count = sum(parameter.numel() for parameter in sparse_params)
@@ -258,19 +151,19 @@ class PCVRPointwiseTrainer(PCVRTrainerSupportMixin):
                     "Sparse params: {} tensors, {} parameters (Adagrad lr={})",
                     len(sparse_params),
                     f"{sparse_param_count:,}",
-                    sparse_lr,
+                    sparse_config.sparse_lr,
                 )
                 logger.info(
                     "Dense params: {} tensors, {} parameters ({} lr={})",
                     len(dense_params),
                     f"{dense_param_count:,}",
                     self._dense_optimizer_display_name(),
-                    lr,
+                    self.base_dense_lr,
                 )
                 self.sparse_optimizer = torch.optim.Adagrad(
-                    sparse_params, lr=sparse_lr, weight_decay=sparse_weight_decay
+                    sparse_params, lr=sparse_config.sparse_lr, weight_decay=sparse_config.sparse_weight_decay
                 )
-                if not runtime_grad_scaler_enabled(runtime_execution or RuntimeExecutionConfig(), device):
+                if not runtime_grad_scaler_enabled(config.runtime, self.device):
                     # Custom index-based sparse Adagrad avoids torch's sparse
                     # primitives (coalesce/sparse_mask/invariant checks) that
                     # dominate CPU and GPU time for embedding tables. AMP uses
@@ -279,19 +172,22 @@ class PCVRPointwiseTrainer(PCVRTrainerSupportMixin):
                     from taac2026.infrastructure.optimization.sparse_adagrad import PCVRSparseAdagrad
 
                     self.sparse_optimizer = PCVRSparseAdagrad(
-                        sparse_params, lr=sparse_lr, weight_decay=sparse_weight_decay
+                        sparse_params, lr=sparse_config.sparse_lr, weight_decay=sparse_config.sparse_weight_decay
                     )
-                self.dense_optimizer: torch.optim.Optimizer = self._build_dense_optimizer(self.dense_params, lr)
+                self.dense_optimizer: torch.optim.Optimizer = self._build_dense_optimizer(self.dense_params, self.base_dense_lr)
         else:
             self.sparse_optimizer = None
             self.dense_params = list(model.parameters())
-            self.dense_optimizer = self._build_dense_optimizer(self.dense_params, lr)
+            self.dense_optimizer = self._build_dense_optimizer(self.dense_params, self.base_dense_lr)
 
-        self.max_steps = int(max_steps)
-        self.device = device
+        self.max_steps = int(optimizer_config.max_steps)
         self.save_dir = Path(save_dir).expanduser().resolve()
-        self.early_stopping = early_stopping
-        self.runtime_execution = runtime_execution or RuntimeExecutionConfig()
+        self.early_stopping = EarlyStopping(
+            checkpoint_path=preferred_checkpoint_path(self.save_dir),
+            patience_steps=optimizer_config.patience_steps,
+            label="model",
+        )
+        self.runtime_execution = config.runtime
         uses_internal_compile = maybe_prepare_internal_compile(
             self.model,
             enabled=self.runtime_execution.compile,
@@ -309,12 +205,12 @@ class PCVRPointwiseTrainer(PCVRTrainerSupportMixin):
         )
         self.grad_scaler = create_grad_scaler(self.runtime_execution, self.device)
         self.ema: ExponentialMovingAverage | None = None
-        if ema_enabled:
+        if ema_config.enabled:
             self.ema = ExponentialMovingAverage.from_model(
                 self.model,
-                decay=float(ema_decay),
-                start_step=int(ema_start_step),
-                update_every_n_steps=int(ema_update_every_n_steps),
+                decay=float(ema_config.decay),
+                start_step=int(ema_config.start_step),
+                update_every_n_steps=int(ema_config.update_every_n_steps),
             )
             logger.info(
                 "PCVR model EMA enabled: decay={}, start_step={}, update_every_n_steps={}",
@@ -322,20 +218,16 @@ class PCVRPointwiseTrainer(PCVRTrainerSupportMixin):
                 self.ema.start_step,
                 self.ema.update_every_n_steps,
             )
-        self.loss_config = PCVRLossConfig.from_value(loss_terms)
+        self.loss_config = config.loss
         self.last_train_loss_components: dict[str, float] = {}
-        self.reinit_sparse_every_n_steps = int(reinit_sparse_every_n_steps)
-        self.reinit_cardinality_threshold = reinit_cardinality_threshold
-        self.sparse_lr = sparse_lr
-        self.sparse_weight_decay = sparse_weight_decay
-        self.ckpt_params = ckpt_params or {}
-        self.eval_every_n_steps = int(eval_every_n_steps)
-        if self.eval_every_n_steps < 0:
-            raise ValueError("eval_every_n_steps must be non-negative")
-        self.early_stopping_metric = str(early_stopping_metric).strip().lower()
+        self.reinit_sparse_every_n_steps = sparse_config.reinit_sparse_every_n_steps
+        self.reinit_cardinality_threshold = sparse_config.reinit_cardinality_threshold
+        self.sparse_lr = sparse_config.sparse_lr
+        self.sparse_weight_decay = sparse_config.sparse_weight_decay
+        self.eval_every_n_steps = config.data.eval_every_n_steps
+        self.early_stopping_metric = config.validation.early_stopping_metric
         if self.early_stopping_metric not in PCVR_EARLY_STOPPING_METRIC_CHOICES:
-            raise ValueError(f"unsupported early stopping metric: {early_stopping_metric}")
-        self.train_config = train_config
+            raise ValueError(f"unsupported early stopping metric: {self.early_stopping_metric}")
         self.last_eval_diagnostics: dict[str, float | int] = {}
         self.last_eval_metrics: dict[str, float] = {}
         self.last_train_model_scalars: dict[str, float] = {}

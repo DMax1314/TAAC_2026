@@ -54,10 +54,7 @@ def _log_prediction_progress(
 
 @dataclass(slots=True)
 class PCVRPredictionContext:
-    model_module: Any
-    model_class_name: str
     model_type: type[torch.nn.Module]
-    package_dir: Path
     dataset_path: Path
     schema_path: Path
     checkpoint_path: Path
@@ -82,7 +79,6 @@ class PCVRPredictionContext:
 class PCVRPredictionDataBundle:
     dataset: Any
     loader: Any
-    data_module: Any = pcvr_data
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,7 +87,7 @@ class PCVRPredictionRunner:
     predict_fn: Any
 
 
-def default_build_prediction_data(
+def build_prediction_data(
     context: PCVRPredictionContext,
 ) -> PCVRPredictionDataBundle:
     pcvr_data.ensure_torch_file_system_sharing_strategy()
@@ -117,7 +113,7 @@ def default_build_prediction_data(
     return PCVRPredictionDataBundle(dataset=dataset, loader=loader)
 
 
-def default_build_prediction_model(
+def build_prediction_model(
     context: PCVRPredictionContext,
     data_bundle: PCVRPredictionDataBundle,
 ) -> Any:
@@ -133,7 +129,7 @@ def default_build_prediction_model(
     )
 
 
-def default_prepare_prediction_runner(
+def prepare_prediction_runner(
     context: PCVRPredictionContext,
     data_bundle: PCVRPredictionDataBundle,
     model: Any,
@@ -159,7 +155,7 @@ def default_prepare_prediction_runner(
     return PCVRPredictionRunner(model=model, predict_fn=predict_fn)
 
 
-def default_run_prediction_loop(
+def run_prediction_loop(
     context: PCVRPredictionContext,
     data_bundle: PCVRPredictionDataBundle,
     runner: PCVRPredictionRunner,
@@ -302,8 +298,8 @@ __all__ = [
     "PCVRPredictionDataBundle",
     "PCVRPredictionRunner",
     "_log_prediction_progress",
-    "default_build_prediction_data",
-    "default_build_prediction_model",
-    "default_prepare_prediction_runner",
-    "default_run_prediction_loop",
+    "build_prediction_data",
+    "build_prediction_model",
+    "prepare_prediction_runner",
+    "run_prediction_loop",
 ]

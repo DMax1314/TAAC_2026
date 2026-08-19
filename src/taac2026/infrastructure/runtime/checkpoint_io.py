@@ -55,21 +55,11 @@ class PCVRTrainerSupportMixin:
                 continue
             orthogonalize_gradient(gradient)
 
-    def _build_step_dir_name(
-        self,
-        global_step: int,
-        checkpoint_params: dict[str, Any] | None = None,
-    ) -> str:
-        merged_params = dict(self.ckpt_params)
-        if checkpoint_params:
-            merged_params.update(checkpoint_params)
-        return build_checkpoint_dir_name(global_step, merged_params)
-
     def _write_sidecar_files(self, checkpoint_dir: Path) -> None:
         write_checkpoint_sidecars(
             checkpoint_dir,
             schema_path=self.schema_path,
-            train_config=self.train_config,
+            train_config=self.config,
         )
 
     def _save_step_checkpoint(
@@ -77,7 +67,7 @@ class PCVRTrainerSupportMixin:
         global_step: int,
         checkpoint_params: dict[str, Any] | None = None,
     ) -> Path:
-        checkpoint_dir = self.save_dir / self._build_step_dir_name(global_step, checkpoint_params)
+        checkpoint_dir = self.save_dir / build_checkpoint_dir_name(global_step, checkpoint_params or {})
         save_checkpoint_state_dict(self._checkpoint_state_dict(), checkpoint_dir)
         self._write_sidecar_files(checkpoint_dir)
         logger.info("Saved checkpoint to {}", preferred_checkpoint_path(checkpoint_dir))

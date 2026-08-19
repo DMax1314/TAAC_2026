@@ -5,8 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from taac2026.domain.requests import TrainRequest
-from taac2026.domain.experiment import ExperimentSpec
+from taac2026.api import FunctionExperiment, TrainRequest
 
 from .runner import HostDeviceInfoConfig, collect_host_device_info
 
@@ -38,15 +37,11 @@ def _train(request: TrainRequest) -> dict[str, object]:
     }
 
 
-EXPERIMENT = ExperimentSpec(
+EXPERIMENT = FunctionExperiment(
     name="host_device_info",
     package_dir=PACKAGE_DIR,
+    requires_dataset=False,
     train_fn=_train,
-    metadata={
-        "kind": "maintenance",
-        "task": "host_device_info",
-        "requires_dataset": False,
-    },
 )
 
 __all__ = ["EXPERIMENT"]

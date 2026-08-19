@@ -9,6 +9,7 @@ import torch
 import torch.nn.functional as F
 
 from taac2026.application.experiments.registry import load_experiment_package
+from taac2026.application.evaluation.runtime import load_train_config
 from taac2026.domain.config import PCVR_DATA_CACHE_MODE_CHOICES, PCVRNSConfig
 from taac2026.domain.schema import PCVRSchema
 from taac2026.domain.sidecar import build_pcvr_train_config_sidecar
@@ -149,9 +150,9 @@ def test_discovered_experiment_packages_load(experiment_case) -> None:
     assert experiment.name == experiment_case.name
     assert experiment.package_dir == experiment_case.package_dir
     assert experiment.train_defaults is not None
-    assert experiment.metadata["kind"] == "pcvr"
-    assert experiment.metadata["model_class"] == experiment_case.model_class
-    assert experiment.metadata["config_type"] == type(experiment.train_defaults).__name__
+    assert experiment.kind == "pcvr"
+    assert experiment.model_class_name == experiment_case.model_class
+    assert experiment.config_type_name == type(experiment.train_defaults).__name__
     assert train_defaults["model"]["ns"]["grouping_strategy"] == "explicit"
     assert train_defaults["optimizer"]["max_steps"] > 0
     _assert_valid_data_pipeline_defaults(train_defaults["data_pipeline"])
@@ -215,7 +216,7 @@ def test_symbiosis_train_config_sidecar_round_trips_package_specific_keys(tmp_pa
         encoding="utf-8",
     )
 
-    loaded = symbiosis_module.EXPERIMENT._load_train_config(checkpoint_dir)
+    loaded = load_train_config(symbiosis_module.EXPERIMENT.config_type, checkpoint_dir)
 
     assert isinstance(loaded, symbiosis_module.SymbiosisTrainConfig)
     assert loaded.model.v2_use_dense_tokens is True

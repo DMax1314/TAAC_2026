@@ -1,120 +1,15 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
-from textwrap import dedent
 
 from tests.support.experiment_discovery import discover_experiment_paths
 from tests.support.experiment_matrix import build_pcvr_experiment_cases
+from tests.support.paths import fixture_path
 
 
-def _write_minimal_pcvr_experiment(package_dir: Path, *, experiment_name: str, model_class_name: str) -> None:
-    package_dir.mkdir(parents=True)
-    (package_dir / "__init__.py").write_text(
-        dedent(
-            f"""
-            from pathlib import Path
-
-            from taac2026.domain.config import (
-                PCVRDataCacheConfig,
-                PCVRDataConfig,
-                PCVRDataPipelineConfig,
-                PCVRLossConfig,
-                PCVRLossTermConfig,
-                PCVRModelConfig,
-                PCVRNSConfig,
-                PCVROptimizerConfig,
-                PCVRSparseOptimizerConfig,
-                PCVRTrainConfig,
-            )
-            from taac2026.application.experiments.experiment import PCVRExperiment
-            from taac2026.infrastructure.runtime.execution import RuntimeExecutionConfig
-            from .model import {model_class_name}
-
-            TRAIN_DEFAULTS = PCVRTrainConfig(
-                data=PCVRDataConfig(
-                    batch_size=256,
-                    num_workers=8,
-                    buffer_batches=20,
-                    train_ratio=1.0,
-                    valid_ratio=0.1,
-                    eval_every_n_steps=5_000,
-                    seq_max_lens="seq_a:256,seq_b:256,seq_c:512,seq_d:512",
-                ),
-                data_pipeline=PCVRDataPipelineConfig(
-                    cache=PCVRDataCacheConfig(mode="none", max_batches=0),
-                    transforms=(),
-                    seed=None,
-                    strict_time_filter=True,
-                ),
-                optimizer=PCVROptimizerConfig(
-                    lr=1e-4,
-                    max_steps=0,
-                    patience_steps=25_000,
-                    seed=42,
-                    device=None,
-                    dense_optimizer_type="adamw",
-                    scheduler_type="none",
-                    warmup_steps=0,
-                    min_lr_ratio=0.0,
-                ),
-                runtime=RuntimeExecutionConfig(amp=False, amp_dtype="bfloat16", compile=False),
-                loss=PCVRLossConfig(terms=(PCVRLossTermConfig(name="bce", kind="bce", weight=1.0),)),
-                sparse_optimizer=PCVRSparseOptimizerConfig(
-                    sparse_lr=0.05,
-                    sparse_weight_decay=0.0,
-                    reinit_sparse_every_n_steps=0,
-                    reinit_cardinality_threshold=0,
-                ),
-                model=PCVRModelConfig(
-                    d_model=64,
-                    emb_dim=64,
-                    num_queries=2,
-                    num_blocks=2,
-                    num_heads=4,
-                    seq_encoder_type="transformer",
-                    hidden_mult=4,
-                    dropout_rate=0.01,
-                    seq_top_k=50,
-                    seq_causal=False,
-                    action_num=1,
-                    use_time_buckets=True,
-                    rank_mixer_mode="full",
-                    use_rope=False,
-                    rope_base=10000.0,
-                    emb_skip_threshold=1_000_000,
-                    seq_id_threshold=10000,
-                    gradient_checkpointing=False,
-                    ns=PCVRNSConfig(
-                        grouping_strategy="explicit",
-                        user_groups={{"U1": [0]}},
-                        item_groups={{"I1": [0]}},
-                        tokenizer_type="rankmixer",
-                        user_tokens=5,
-                        item_tokens=2,
-                    ),
-                ),
-            )
-
-            EXPERIMENT = PCVRExperiment(
-                name={experiment_name!r},
-                package_dir=Path(__file__).resolve().parent,
-                model_type={model_class_name},
-                config_type=PCVRTrainConfig,
-                train_defaults=TRAIN_DEFAULTS,
-            )
-
-            __all__ = ["EXPERIMENT", "TRAIN_DEFAULTS"]
-            """
-        ).lstrip(),
-        encoding="utf-8",
-    )
-    (package_dir / "model.py").write_text(
-        f"class {model_class_name}:\n"
-        "    pass\n"
-        "\n"
-        f"__all__ = [\"{model_class_name}\"]\n",
-        encoding="utf-8",
-    )
+def _copy_minimal_pcvr_experiment(package_dir: Path) -> None:
+    shutil.copytree(fixture_path("experiments", "minimal_pcvr"), package_dir)
 
 
 def test_discover_experiment_paths_filters_to_valid_packages(tmp_path: Path) -> None:
@@ -124,22 +19,18 @@ def test_discover_experiment_paths_filters_to_valid_packages(tmp_path: Path) -> 
     valid = experiment_root / "valid_exp"
     valid.mkdir()
     for name in ("__init__.py", "model.py"):
-        (valid / name).write_text("", encoding="utf-8")
+        (valid / name).touch()
 
     hidden = experiment_root / "__pycache__"
     hidden.mkdir()
-    (hidden / "__init__.py").write_text("", encoding="utf-8")
+    (hidden / "__init__.py").touch()
 
     assert discover_experiment_paths(experiment_root) == ["experiments/valid_exp"]
 
 
 def test_build_pcvr_experiment_cases_discovers_minimal_new_package(tmp_path: Path) -> None:
     experiment_root = tmp_path / "experiments"
-    _write_minimal_pcvr_experiment(
-        experiment_root / "minimal_exp",
-        experiment_name="pcvr_minimal_exp",
-        model_class_name="PCVRMinimalExp",
-    )
+    _copy_minimal_pcvr_experiment(experiment_root / "minimal_exp")
 
     cases = build_pcvr_experiment_cases(experiment_root)
 

@@ -13,7 +13,6 @@ from taac2026.domain.config import (
     PCVR_DATA_SPLIT_STRATEGY_CHOICES,
     PCVRDataPipelineConfig,
 )
-from taac2026.infrastructure.modeling.time_features import BUCKET_BOUNDARIES, NUM_TIME_BUCKETS
 from taac2026.infrastructure.data.observation import (
     PCVRRowGroupSplitPlan,
     PCVRTimestampRange,
@@ -25,7 +24,6 @@ from taac2026.infrastructure.data.observation import (
     plan_pcvr_timestamp_tail_split,
 )
 from taac2026.infrastructure.data.parquet_dataset import PCVRHashSplitFilter, PCVRParquetDataset
-from taac2026.infrastructure.data.schema_layout import FeatureSchema
 from taac2026.infrastructure.logging import logger
 
 
@@ -57,7 +55,7 @@ def get_pcvr_data(
     clip_vocab: bool = True,
     seq_max_lens: dict[str, int] | None = None,
     data_pipeline_config: PCVRDataPipelineConfig | None = None,
-    **kwargs: Any,
+    max_steps: int = 0,
 ) -> tuple[DataLoader, DataLoader, Any]:
     ensure_torch_file_system_sharing_strategy()
     random.seed(seed)
@@ -84,7 +82,7 @@ def get_pcvr_data(
 
     train_pipeline_config = data_pipeline_config or PCVRDataPipelineConfig()
     valid_pipeline_config = PCVRDataPipelineConfig(cache=train_pipeline_config.cache)
-    planned_steps = int(kwargs.get("max_steps", 0) or 0)
+    planned_steps = int(max_steps or 0)
 
     train_source_dataset = PCVRParquetDataset(
         parquet_path=data_dir,
@@ -333,9 +331,6 @@ def _make_loader(dataset: Any, *, num_workers: int) -> DataLoader:
 
 
 __all__ = [
-    "BUCKET_BOUNDARIES",
-    "NUM_TIME_BUCKETS",
-    "FeatureSchema",
     "PCVRParquetDataset",
     "PCVRRowGroupSplitPlan",
     "PCVRTimestampRange",

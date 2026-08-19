@@ -162,7 +162,7 @@ def test_generated_infer_script_installs_project_dependencies_before_entrypoint(
     result = build_inference_bundle("experiments/baseline", output_dir=output_dir)
     write_minimal_inference_runtime_package(result.code_package_path)
     pip_args_path = tmp_path / "pip_args.json"
-    fake_pip = write_fake_pip_package(tmp_path, pip_args_path)
+    fake_pip = write_fake_pip_package(tmp_path)
 
     env = _inference_bundle_env(
         {
@@ -170,6 +170,7 @@ def test_generated_infer_script_installs_project_dependencies_before_entrypoint(
             "TAAC_PIP_EXTRA_ARGS": "-q",
             "TAAC_PIP_INDEX_URL": "",
             "PYTHONPATH": str(fake_pip),
+            "TAAC_TEST_PIP_ARGS_PATH": str(pip_args_path),
             "USER_CACHE_PATH": str(user_cache_path),
         }
     )
@@ -196,7 +197,7 @@ def test_generated_infer_script_accepts_explicit_bundle_pip_extras(tmp_path: Pat
     result = build_inference_bundle("experiments/baseline", output_dir=output_dir)
     write_minimal_inference_runtime_package(result.code_package_path)
     pip_args_path = tmp_path / "pip_args.json"
-    fake_pip = write_fake_pip_package(tmp_path, pip_args_path)
+    fake_pip = write_fake_pip_package(tmp_path)
 
     env = _inference_bundle_env(
         {
@@ -204,6 +205,7 @@ def test_generated_infer_script_accepts_explicit_bundle_pip_extras(tmp_path: Pat
             "TAAC_PIP_EXTRA_ARGS": "-q",
             "TAAC_PIP_INDEX_URL": "",
             "PYTHONPATH": str(fake_pip),
+            "TAAC_TEST_PIP_ARGS_PATH": str(pip_args_path),
             "USER_CACHE_PATH": str(user_cache_path),
         }
     )

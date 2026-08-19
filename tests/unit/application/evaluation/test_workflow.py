@@ -10,7 +10,7 @@ from taac2026.application.evaluation.workflow import (
     PCVRPredictionContext,
     PCVRPredictionDataBundle,
     PCVRPredictionRunner,
-    default_run_prediction_loop,
+    run_prediction_loop,
 )
 from taac2026.domain.config import PCVRTrainConfig
 from taac2026.domain.runtime_config import RuntimeExecutionConfig
@@ -52,10 +52,7 @@ def test_default_prediction_loop_uses_lightweight_inference_payload(tmp_path: Pa
         return torch.tensor([[-2.0], [2.0]]), torch.empty(2, 0)
 
     context = PCVRPredictionContext(
-        model_module=SimpleNamespace(),
-        model_class_name="DummyModel",
         model_type=torch.nn.Module,
-        package_dir=tmp_path,
         dataset_path=tmp_path / "eval.parquet",
         schema_path=tmp_path / "schema.json",
         checkpoint_path=tmp_path / "checkpoint" / "model.safetensors",
@@ -70,7 +67,7 @@ def test_default_prediction_loop_uses_lightweight_inference_payload(tmp_path: Pa
     data_bundle = PCVRPredictionDataBundle(dataset=SimpleNamespace(num_rows=2), loader=[batch])
     runner = PCVRPredictionRunner(model=object(), predict_fn=predict_fn)
 
-    payload = default_run_prediction_loop(context, data_bundle, runner)
+    payload = run_prediction_loop(context, data_bundle, runner)
 
     assert observed_inference_mode == [True]
     assert payload["processed_rows"] == 2
@@ -92,10 +89,7 @@ def test_default_prediction_loop_keeps_evaluation_records(tmp_path: Path) -> Non
         return torch.tensor([[-2.0], [2.0]]), torch.empty(2, 0)
 
     context = PCVRPredictionContext(
-        model_module=SimpleNamespace(),
-        model_class_name="DummyModel",
         model_type=torch.nn.Module,
-        package_dir=tmp_path,
         dataset_path=tmp_path / "eval.parquet",
         schema_path=tmp_path / "schema.json",
         checkpoint_path=tmp_path / "checkpoint" / "model.safetensors",
@@ -110,7 +104,7 @@ def test_default_prediction_loop_keeps_evaluation_records(tmp_path: Path) -> Non
     data_bundle = PCVRPredictionDataBundle(dataset=SimpleNamespace(num_rows=2), loader=[batch])
     runner = PCVRPredictionRunner(model=object(), predict_fn=predict_fn)
 
-    payload = default_run_prediction_loop(context, data_bundle, runner)
+    payload = run_prediction_loop(context, data_bundle, runner)
 
     assert [record["user_id"] for record in payload["records"]] == ["u0", "u1"]
     assert payload["labels"] == [0.0, 1.0]

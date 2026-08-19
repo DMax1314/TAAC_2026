@@ -24,7 +24,6 @@ from taac2026.domain.runtime_config import (
     PCVRLossTermConfig,
     RuntimeExecutionConfig,
     normalize_amp_dtype,
-    parse_pcvr_loss_config_arg,
 )
 from taac2026.infrastructure.logging import configure_logging, logger
 
@@ -319,7 +318,6 @@ __all__ = [
     "maybe_compile_callable",
     "maybe_prepare_internal_compile",
     "normalize_amp_dtype",
-    "parse_pcvr_loss_config_arg",
     "runtime_amp_enabled",
     "runtime_autocast_context",
     "runtime_device_type",

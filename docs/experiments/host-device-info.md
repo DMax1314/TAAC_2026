@@ -24,13 +24,14 @@ Host Device Info 把这些信息集中打印，避免在训练脚本里临时插
 
 ## 二、实验契约
 
-入口文件 `experiments/host_device_info/__init__.py` 导出 `ExperimentSpec`：
+入口文件 `experiments/host_device_info/__init__.py` 导出 `FunctionExperiment`：
 
 ```python
-EXPERIMENT = ExperimentSpec(
+EXPERIMENT = FunctionExperiment(
     name="host_device_info",
-    kind="maintenance",
+    package_dir=PACKAGE_DIR,
     requires_dataset=False,
+    train_fn=_train,
 )
 ```
 

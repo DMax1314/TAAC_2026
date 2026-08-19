@@ -29,7 +29,7 @@ from taac2026.infrastructure.modeling.model_contract import (
     parse_seq_max_lens,
     resolve_schema_path,
 )
-from taac2026.application.evaluation.runtime import default_load_train_config
+from taac2026.application.evaluation.runtime import load_train_config
 from taac2026.infrastructure.io.json import dumps, loads
 from tests.support.experiment_matrix import ExperimentCase, REPO_ROOT, discover_pcvr_experiment_cases, load_model_module
 
@@ -421,19 +421,19 @@ def test_build_pcvr_train_config_sidecar_adds_framework_metadata() -> None:
     assert payload["train_config"]["model"]["ns"] == structured_config.model.ns.model_dump(mode="json")
 
 
-def test_default_load_train_config_requires_current_payload(tmp_path: Path) -> None:
+def test_load_train_config_requires_current_payload(tmp_path: Path) -> None:
     checkpoint_dir = tmp_path / "global_step1"
     checkpoint_dir.mkdir()
     structured_config = PCVRTrainConfig()
     (checkpoint_dir / "train_config.json").write_text(dumps(build_pcvr_train_config_sidecar(structured_config)), encoding="utf-8")
 
-    loaded = default_load_train_config(SimpleNamespace(config_type=PCVRTrainConfig), checkpoint_dir)
+    loaded = load_train_config(PCVRTrainConfig, checkpoint_dir)
 
     assert loaded.model.d_model == structured_config.model.d_model
     assert loaded.model.ns.grouping_strategy == structured_config.model.ns.grouping_strategy
 
 
-def test_default_load_train_config_rejects_flat_payload(tmp_path: Path) -> None:
+def test_load_train_config_rejects_flat_payload(tmp_path: Path) -> None:
     checkpoint_dir = tmp_path / "global_step1"
     checkpoint_dir.mkdir()
     flat_payload = {
@@ -445,7 +445,7 @@ def test_default_load_train_config_rejects_flat_payload(tmp_path: Path) -> None:
     (checkpoint_dir / "train_config.json").write_text(dumps(flat_payload), encoding="utf-8")
 
     with pytest.raises(ValueError):
-        default_load_train_config(SimpleNamespace(config_type=PCVRTrainConfig), checkpoint_dir)
+        load_train_config(PCVRTrainConfig, checkpoint_dir)
 
 
 @pytest.mark.parametrize("identifier_kind", ["path", "path_object"])
@@ -466,8 +466,8 @@ def test_experiment_package_contracts(loaded_experiment, experiment_case: Experi
     assert loaded_experiment.name == experiment_case.name
     assert loaded_experiment.package_dir == (REPO_ROOT / experiment_case.path).resolve()
     assert loaded_experiment.train_defaults is not None
-    assert loaded_experiment.metadata["kind"] == "pcvr"
-    assert loaded_experiment.metadata["model_class"] == experiment_case.model_class
+    assert loaded_experiment.kind == "pcvr"
+    assert loaded_experiment.model_class_name == experiment_case.model_class
     assert train_defaults["model"]["ns"]["grouping_strategy"] == "explicit"
     assert train_defaults["model"]["ns"]["user_groups"]
     assert train_defaults["model"]["ns"]["item_groups"]

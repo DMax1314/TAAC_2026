@@ -13,19 +13,26 @@ import torch
 
 from taac2026.domain.requests import EvalRequest, InferRequest, TrainRequest
 from taac2026.domain.metrics import compute_classification_metrics
+from taac2026.domain.runtime_config import RuntimeExecutionConfig, normalize_amp_dtype
 from taac2026.infrastructure.io.files import write_json
 from taac2026.infrastructure.io.json import dump_bytes
 from taac2026.domain.config import PCVRTrainConfig
-from taac2026.application.experiments.runtime import PCVRExperimentRuntimeMixin
-from taac2026.application.evaluation.workflow import _log_prediction_progress
+from taac2026.application.evaluation.workflow import (
+    PCVRPredictionContext,
+    _log_prediction_progress,
+    build_prediction_data,
+    build_prediction_model,
+    prepare_prediction_runner,
+    run_prediction_loop,
+)
 from taac2026.application.evaluation.runtime import (
-    default_build_evaluation_data_diagnostics,
-    default_load_train_config,
-    default_load_runtime_schema,
-    default_resolve_evaluation_checkpoint,
-    default_resolve_inference_checkpoint,
-    default_write_observed_schema_report,
-    default_write_train_split_observed_schema_reports,
+    build_evaluation_data_diagnostics,
+    load_train_config,
+    load_runtime_schema,
+    resolve_evaluation_checkpoint,
+    resolve_inference_checkpoint,
+    write_observed_schema_report,
+    write_train_split_observed_schema_reports,
 )
 from taac2026.infrastructure.data.sample_dataset import resolve_default_pcvr_sample_paths
 from taac2026.infrastructure.logging import logger
@@ -34,6 +41,8 @@ from taac2026.application.training.args import train_pcvr_model
 
 
 _EVAL_AUC_BOOTSTRAP_SAMPLES = 200
+_INFER_REQUEST_DEFAULT_BATCH_SIZE = int(InferRequest.__dataclass_fields__["batch_size"].default)
+_INFER_REQUEST_DEFAULT_NUM_WORKERS = int(InferRequest.__dataclass_fields__["num_workers"].default)
 
 
 def _callable_name(value: Any) -> str:
@@ -70,7 +79,10 @@ class _PredictionRun:
 
 
 @dataclass(slots=True)
-class PCVRExperiment(PCVRExperimentRuntimeMixin):
+class PCVRExperiment:
+    kind = "pcvr"
+    requires_dataset = True
+
     name: str
     package_dir: Path
     model_type: type[torch.nn.Module]
@@ -82,13 +94,101 @@ class PCVRExperiment(PCVRExperimentRuntimeMixin):
         return self.model_type.__name__
 
     @property
-    def metadata(self) -> dict[str, str]:
-        return {
-            "kind": "pcvr",
-            "model_class": self.model_class_name,
-            "source": str(self.package_dir),
-            "config_type": _callable_name(self.config_type),
-        }
+    def config_type_name(self) -> str:
+        return _callable_name(self.config_type)
+
+    def _configured_infer_runtime_value(
+        self,
+        config: PCVRTrainConfig,
+        *,
+        config_key: str,
+        minimum: int,
+    ) -> tuple[int, str]:
+        configured_value = getattr(config.data, config_key)
+        if configured_value is None or configured_value < minimum:
+            raise ValueError(f"PCVR train_config key {config_key!r} must be >= {minimum}, got {configured_value!r}")
+        return configured_value, "train_config"
+
+    def _resolve_prediction_runtime_settings(
+        self,
+        request: EvalRequest | InferRequest,
+        config: PCVRTrainConfig,
+    ) -> tuple[int, str, int, str]:
+        batch_size = int(request.batch_size)
+        batch_size_source = "request" if request.batch_size != _INFER_REQUEST_DEFAULT_BATCH_SIZE else "cli_default"
+        if batch_size_source == "cli_default":
+            batch_size, batch_size_source = self._configured_infer_runtime_value(
+                config,
+                config_key="batch_size",
+                minimum=1,
+            )
+
+        num_workers = int(request.num_workers)
+        num_workers_source = "request" if request.num_workers != _INFER_REQUEST_DEFAULT_NUM_WORKERS else "cli_default"
+        if num_workers_source == "cli_default":
+            num_workers, num_workers_source = self._configured_infer_runtime_value(
+                config,
+                config_key="num_workers",
+                minimum=0,
+            )
+
+        return batch_size, batch_size_source, num_workers, num_workers_source
+
+    def _resolve_prediction_runtime_execution(
+        self,
+        request: EvalRequest | InferRequest,
+        config: PCVRTrainConfig,
+    ) -> tuple[RuntimeExecutionConfig, str, str, str]:
+        runtime = config.runtime
+        amp = runtime.amp if request.amp is None else request.amp
+        amp_source = "train_config" if request.amp is None else "request"
+        amp_dtype = runtime.amp_dtype if request.amp_dtype in (None, "") else normalize_amp_dtype(request.amp_dtype)
+        amp_dtype_source = "train_config" if request.amp_dtype in (None, "") else "request"
+        compile_enabled = runtime.compile if request.compile is None else request.compile
+        compile_source = "train_config" if request.compile is None else "request"
+        return (
+            RuntimeExecutionConfig(
+                amp=amp,
+                amp_dtype=amp_dtype,
+                compile=compile_enabled,
+                deterministic=runtime.deterministic,
+            ),
+            amp_source,
+            amp_dtype_source,
+            compile_source,
+        )
+
+    def _run_prediction_loop(
+        self,
+        *,
+        dataset_path: Path,
+        schema_path: Path | None,
+        checkpoint_path: Path,
+        batch_size: int,
+        num_workers: int,
+        device: str,
+        is_training_data: bool,
+        dataset_role: str,
+        config: PCVRTrainConfig | None = None,
+        runtime_execution: RuntimeExecutionConfig | None = None,
+    ) -> dict[str, Any]:
+        context = PCVRPredictionContext(
+            model_type=self.model_type,
+            dataset_path=dataset_path,
+            schema_path=schema_path,
+            checkpoint_path=checkpoint_path,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            device=device,
+            is_training_data=is_training_data,
+            dataset_role=dataset_role,
+            config=config if config is not None else load_train_config(self.config_type, checkpoint_path.parent),
+            runtime_execution=runtime_execution or RuntimeExecutionConfig(),
+        )
+        data_bundle = build_prediction_data(context)
+        model = build_prediction_model(context, data_bundle)
+        runner = prepare_prediction_runner(context, data_bundle, model)
+        return run_prediction_loop(context, data_bundle, runner)
 
     def train(self, request: TrainRequest) -> Mapping[str, Any]:
         resolved_dataset_path, resolved_schema_override = resolve_default_pcvr_sample_paths(
@@ -105,13 +205,9 @@ class PCVRExperiment(PCVRExperimentRuntimeMixin):
         if env_schema_path:
             schema_override = Path(env_schema_path)
 
-        model_module = self._load_model_module()
-
         summary = dict(train_pcvr_model(
-            model_module=model_module,
             model_class_name=self.model_class_name,
             model_type=self.model_type,
-            package_dir=self.package_dir,
             defaults=self.train_defaults,
             config_type=self.config_type,
             argv=request.extra_args,
@@ -124,8 +220,7 @@ class PCVRExperiment(PCVRExperimentRuntimeMixin):
 
         resolved_schema_path = Path(summary["schema_path"]).expanduser().resolve()
 
-        observed_schema_payload = default_write_train_split_observed_schema_reports(
-            self,
+        observed_schema_payload = write_train_split_observed_schema_reports(
             dataset_path=dataset_path,
             schema_path=resolved_schema_path,
             run_dir=run_dir,
@@ -154,10 +249,8 @@ class PCVRExperiment(PCVRExperimentRuntimeMixin):
             request.dataset_path,
             request.schema_path,
         )
-        config = default_load_train_config(self, checkpoint.parent)
-        schema_path, schema = default_load_runtime_schema(
-            self,
-            dataset_path=dataset_path,
+        config = load_train_config(self.config_type, checkpoint.parent)
+        schema_path, schema = load_runtime_schema(
             schema_path=schema_override,
             checkpoint_dir=checkpoint.parent,
             mode=mode,
@@ -221,7 +314,7 @@ class PCVRExperiment(PCVRExperimentRuntimeMixin):
     def evaluate(self, request: EvalRequest) -> Mapping[str, Any]:
         run = self._execute_prediction_run(
             request,
-            checkpoint=default_resolve_evaluation_checkpoint(self, request),
+            checkpoint=resolve_evaluation_checkpoint(request),
             mode="evaluation",
             is_training_data=request.is_training_data,
         )
@@ -247,7 +340,7 @@ class PCVRExperiment(PCVRExperimentRuntimeMixin):
             "schema_path": str(run.schema_path),
             "schema": run.schema,
             "metrics": metrics,
-            "data_diagnostics": default_build_evaluation_data_diagnostics(self, run.dataset_path),
+            "data_diagnostics": build_evaluation_data_diagnostics(run.dataset_path),
             "validation_predictions_path": str(predictions_path),
             "batch_size": run.batch_size,
             "num_workers": run.num_workers,
@@ -260,8 +353,7 @@ class PCVRExperiment(PCVRExperimentRuntimeMixin):
         )
         payload["telemetry"] = telemetry_payload
         observed_schema_path = output_path.with_name("evaluation_observed_schema.json")
-        default_write_observed_schema_report(
-            self,
+        write_observed_schema_report(
             dataset_path=run.dataset_path,
             schema_path=run.schema_path,
             output_path=observed_schema_path,
@@ -275,7 +367,7 @@ class PCVRExperiment(PCVRExperimentRuntimeMixin):
     def infer(self, request: InferRequest) -> Mapping[str, Any]:
         run = self._execute_prediction_run(
             request,
-            checkpoint=default_resolve_inference_checkpoint(self, request),
+            checkpoint=resolve_inference_checkpoint(request),
             mode="inference",
             is_training_data=False,
         )

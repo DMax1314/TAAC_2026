@@ -12,6 +12,7 @@ from taac2026.domain.requests import EvalRequest, InferRequest, TrainRequest
 from taac2026.infrastructure.io.json import dumps, loads
 from taac2026.domain.config import PCVRDataConfig, PCVRTrainConfig
 from taac2026.domain.sidecar import build_pcvr_train_config_sidecar
+from taac2026.application.evaluation.runtime import load_train_config
 import taac2026.application.experiments.experiment as experiment_module
 from taac2026.application.experiments.experiment import PCVRExperiment, _log_prediction_progress
 from taac2026.domain.runtime_config import RuntimeExecutionConfig
@@ -37,12 +38,6 @@ def _make_experiment(
     train_defaults: PCVRTrainConfig | None = None,
 ) -> PCVRExperiment:
     package_dir = tmp_path / "package"
-    package_dir.mkdir()
-    (package_dir / "__init__.py").write_text("", encoding="utf-8")
-    (package_dir / "model.py").write_text(
-        "class DummyModel:\n    pass\n",
-        encoding="utf-8",
-    )
     return PCVRExperiment(
         name="pcvr_symbiosis",
         package_dir=package_dir,
@@ -104,7 +99,6 @@ def test_resolve_prediction_runtime_settings_requires_train_config_values(tmp_pa
         train_defaults=PCVRTrainConfig(data=PCVRDataConfig(batch_size=0, num_workers=8)),
     )
     request = InferRequest(
-        experiment="experiments/symbiosis",
         dataset_path=tmp_path / "eval.parquet",
         schema_path=None,
         checkpoint_path=None,
@@ -121,7 +115,6 @@ def test_resolve_prediction_runtime_settings_preserves_explicit_request_values(t
         train_defaults=PCVRTrainConfig(data=PCVRDataConfig(batch_size=128, num_workers=8)),
     )
     request = InferRequest(
-        experiment="experiments/symbiosis",
         dataset_path=tmp_path / "eval.parquet",
         schema_path=None,
         checkpoint_path=None,
@@ -160,7 +153,6 @@ def test_infer_uses_train_config_runtime_settings(tmp_path: Path, monkeypatch: p
     monkeypatch.setattr(PCVRExperiment, "_run_prediction_loop", fake_bound_run_prediction_loop)
 
     request = InferRequest(
-        experiment="experiments/symbiosis",
         dataset_path=tmp_path / "eval.parquet",
         schema_path=None,
         checkpoint_path=None,
@@ -205,7 +197,6 @@ def test_infer_consumes_lightweight_prediction_payload(tmp_path: Path, monkeypat
 
     payload = experiment.infer(
         InferRequest(
-            experiment="experiments/symbiosis",
             dataset_path=tmp_path / "eval.parquet",
             schema_path=None,
             checkpoint_path=None,
@@ -244,7 +235,6 @@ def test_train_writes_split_observed_schema_reports(
 
     payload = experiment.train(
         TrainRequest(
-            experiment="experiments/symbiosis",
             dataset_path=dataset_path,
             schema_path=schema_path,
             run_dir=run_dir,
@@ -288,7 +278,6 @@ def test_train_writes_timestamp_auto_split_observed_schema_reports(
 
     payload = experiment.train(
         TrainRequest(
-            experiment="experiments/symbiosis",
             dataset_path=dataset_path,
             schema_path=schema_path,
             run_dir=run_dir,
@@ -343,7 +332,6 @@ def test_train_defaults_missing_dataset_to_hf_sample(tmp_path: Path, monkeypatch
 
     payload = experiment.train(
         TrainRequest(
-            experiment="experiments/symbiosis",
             dataset_path=None,
             schema_path=None,
             run_dir=run_dir,
@@ -383,7 +371,6 @@ def test_infer_defaults_missing_dataset_to_hf_sample(tmp_path: Path, monkeypatch
     monkeypatch.setattr(PCVRExperiment, "_run_prediction_loop", fake_bound_run_prediction_loop)
 
     request = InferRequest(
-        experiment="experiments/symbiosis",
         dataset_path=None,
         schema_path=None,
         checkpoint_path=None,
@@ -402,7 +389,6 @@ def test_resolve_prediction_runtime_execution_uses_train_config_values(tmp_path:
         train_defaults=PCVRTrainConfig(runtime=RuntimeExecutionConfig(amp=True, amp_dtype="float16", compile=True)),
     )
     request = InferRequest(
-        experiment="experiments/symbiosis",
         dataset_path=tmp_path / "eval.parquet",
         schema_path=None,
         checkpoint_path=None,
@@ -426,7 +412,7 @@ def test_load_train_config_requires_sidecar(tmp_path: Path) -> None:
     checkpoint_dir.mkdir()
 
     with pytest.raises(FileNotFoundError, match=r"train_config\.json"):
-        experiment._load_train_config(checkpoint_dir)
+        load_train_config(experiment.config_type, checkpoint_dir)
 
 
 def test_load_train_config_rejects_unknown_flat_keys(tmp_path: Path) -> None:
@@ -438,7 +424,7 @@ def test_load_train_config_rejects_unknown_flat_keys(tmp_path: Path) -> None:
     (checkpoint_dir / "train_config.json").write_text(dumps(payload), encoding="utf-8")
 
     with pytest.raises(ValidationError, match="amp"):
-        experiment._load_train_config(checkpoint_dir)
+        load_train_config(experiment.config_type, checkpoint_dir)
 
 
 def test_load_train_config_rejects_incomplete_sidecar(tmp_path: Path) -> None:
@@ -450,7 +436,7 @@ def test_load_train_config_rejects_incomplete_sidecar(tmp_path: Path) -> None:
     (checkpoint_dir / "train_config.json").write_text(dumps(payload), encoding="utf-8")
 
     with pytest.raises(ValueError, match=r"incomplete train_config sidecar; missing fields:.*data"):
-        experiment._load_train_config(checkpoint_dir)
+        load_train_config(experiment.config_type, checkpoint_dir)
 
 
 def test_infer_uses_train_config_runtime_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -471,7 +457,6 @@ def test_infer_uses_train_config_runtime_execution(tmp_path: Path, monkeypatch: 
     monkeypatch.setattr(PCVRExperiment, "_run_prediction_loop", fake_bound_run_prediction_loop)
 
     request = InferRequest(
-        experiment="experiments/symbiosis",
         dataset_path=tmp_path / "eval.parquet",
         schema_path=None,
         checkpoint_path=None,
@@ -522,7 +507,6 @@ def test_evaluate_writes_score_diagnostics(tmp_path: Path, monkeypatch: pytest.M
     monkeypatch.setattr(PCVRExperiment, "_run_prediction_loop", fake_bound_run_prediction_loop)
     output_path = tmp_path / "evaluation.json"
     request = EvalRequest(
-        experiment="experiments/symbiosis",
         dataset_path=dataset_path,
         schema_path=None,
         run_dir=checkpoint_dir,
@@ -566,7 +550,6 @@ def test_evaluate_writes_score_diagnostics(tmp_path: Path, monkeypatch: pytest.M
 def test_infer_request_runtime_settings_override_train_config(tmp_path: Path) -> None:
     experiment = _make_experiment(tmp_path)
     request = InferRequest(
-        experiment="experiments/symbiosis",
         dataset_path=tmp_path / "eval.parquet",
         schema_path=None,
         checkpoint_path=None,

@@ -21,12 +21,9 @@ from taac2026.infrastructure.io.json import dumps
 from taac2026.infrastructure.io.rich_output import print_rich_summary
 from taac2026.infrastructure.io.streams import write_stdout_line
 from taac2026.domain.config import PCVRModelConfig, PCVRTrainConfig
-from taac2026.domain.runtime_config import DENSE_OPTIMIZER_TYPE_CHOICES, RuntimeExecutionConfig
+from taac2026.domain.runtime_config import DENSE_OPTIMIZER_TYPE_CHOICES
 from taac2026.infrastructure.data.batches import PCVRBatch, PCVREntityInput, PCVRModelInput
 from taac2026.infrastructure.runtime.trainer import PCVRPointwiseTrainer
-from taac2026.infrastructure.runtime.execution import (
-    EarlyStopping,
-)
 
 
 DEFAULT_BENCHMARK_OPTIMIZERS: tuple[str, ...] = (
@@ -280,13 +277,9 @@ def _benchmark_optimizer(
                 model=model,
                 train_loader=[],
                 valid_loader=[],
-                lr=args.lr,
-                max_steps=args.steps,
-                device=str(device),
                 save_dir=Path(tempdir),
-                early_stopping=EarlyStopping(Path(tempdir) / "best" / "model.safetensors", patience_steps=2),
                 schema_path=Path(tempdir) / "schema.json",
-                train_config=PCVRTrainConfig(
+                config=PCVRTrainConfig(
                     model=PCVRModelConfig(
                         d_model=args.hidden_dim,
                         emb_dim=args.hidden_dim,
@@ -297,12 +290,17 @@ def _benchmark_optimizer(
                         action_num=1,
                         use_time_buckets=False,
                     ),
-                ),
-                dense_optimizer_type=optimizer_name,
-                runtime_execution=RuntimeExecutionConfig(
-                    amp=args.amp,
-                    amp_dtype=args.amp_dtype,
-                    compile=args.compile,
+                    optimizer={
+                        "lr": args.lr,
+                        "max_steps": args.steps,
+                        "device": str(device),
+                        "dense_optimizer_type": optimizer_name,
+                    },
+                    runtime={
+                        "amp": args.amp,
+                        "amp_dtype": args.amp_dtype,
+                        "compile": args.compile,
+                    },
                 ),
             )
             for _ in range(args.warmup_steps):

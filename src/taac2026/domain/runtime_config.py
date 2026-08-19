@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-import json
 import math
 from typing import Any
 
@@ -129,32 +127,6 @@ class PCVRLossTermConfig(TAACBoundaryModel):
             raise ValueError(f"loss term temperature must be > 0, got {value}")
         return temperature
 
-    @classmethod
-    def from_value(cls, value: PCVRLossTermConfig | Mapping[str, Any]) -> PCVRLossTermConfig:
-        if isinstance(value, cls):
-            return value
-        if not isinstance(value, Mapping):
-            raise TypeError(f"loss term must be a mapping, got {type(value).__name__}")
-        return cls(
-            name=str(value["name"]),
-            kind=str(value.get("kind", "bce")),
-            weight=float(value.get("weight", 1.0)),
-            focal_alpha=float(value.get("focal_alpha", 0.1)),
-            focal_gamma=float(value.get("focal_gamma", 2.0)),
-            temperature=float(value.get("temperature", value.get("pairwise_auc_temperature", 1.0))),
-        )
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "name": self.name,
-            "kind": self.kind,
-            "weight": self.weight,
-            "focal_alpha": self.focal_alpha,
-            "focal_gamma": self.focal_gamma,
-            "temperature": self.temperature,
-        }
-
-
 def _default_pcvr_loss_terms() -> tuple[PCVRLossTermConfig, ...]:
     return (PCVRLossTermConfig(name="bce", kind="bce", weight=1.0),)
 
@@ -175,112 +147,11 @@ class PCVRLossConfig(TAACBoundaryModel):
             raise ValueError(f"PCVR loss term names must be unique; duplicates: {joined}")
         return self
 
-    @classmethod
-    def from_value(cls, value: PCVRLossConfig | Mapping[str, Any] | Sequence[Any] | str | None) -> PCVRLossConfig:
-        if value is None:
-            return cls()
-        if isinstance(value, cls):
-            return value
-        if isinstance(value, str):
-            value = _parse_loss_config_string(value)
-        if isinstance(value, Mapping):
-            value = value.get("terms", value.get("loss_terms"))
-            if value is None:
-                raise KeyError("PCVR loss config mapping must include 'terms' or 'loss_terms'")
-        if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray, str)):
-            return cls(terms=tuple(PCVRLossTermConfig.from_value(term) for term in value))
-        raise TypeError(f"unsupported PCVR loss config value: {type(value).__name__}")
-
-    def to_list(self) -> list[dict[str, Any]]:
-        return [term.to_dict() for term in self.terms]
-
-    def with_weight_overrides(self, raw_overrides: str | Mapping[str, float] | None) -> PCVRLossConfig:
-        if raw_overrides in (None, ""):
-            return self
-        overrides = _parse_loss_weight_overrides(raw_overrides)
-        known_names = {term.name for term in self.terms}
-        unknown_names = sorted(set(overrides) - known_names)
-        if unknown_names:
-            joined = ", ".join(unknown_names)
-            raise KeyError(f"loss weight override references unknown term(s): {joined}")
-        return PCVRLossConfig(
-            terms=tuple(
-                PCVRLossTermConfig(
-                    name=term.name,
-                    kind=term.kind,
-                    weight=overrides.get(term.name, term.weight),
-                    focal_alpha=term.focal_alpha,
-                    focal_gamma=term.focal_gamma,
-                    temperature=term.temperature,
-                )
-                for term in self.terms
-            )
-        )
-
     def summary(self) -> str:
         return ", ".join(f"{term.name}:{term.kind}*{term.weight:g}" for term in self.terms)
 
 
 DEFAULT_PCVR_LOSS_CONFIG = PCVRLossConfig()
-
-
-def _parse_loss_config_string(value: str) -> Any:
-    stripped = value.strip()
-    if not stripped:
-        raise ValueError("loss config string must be non-empty")
-    if stripped[0] in "[{":
-        return json.loads(stripped)
-    terms: list[dict[str, Any]] = []
-    for chunk in stripped.split(","):
-        token = chunk.strip()
-        if not token:
-            continue
-        parts = [part.strip() for part in token.split(":")]
-        if len(parts) == 1:
-            name = parts[0]
-            kind = parts[0]
-            weight = 1.0
-        elif len(parts) == 2:
-            name, weight_raw = parts
-            kind = name
-            weight = float(weight_raw)
-        elif len(parts) == 3:
-            name, kind, weight_raw = parts
-            weight = float(weight_raw)
-        else:
-            raise ValueError(f"invalid loss term spec: {token!r}")
-        terms.append({"name": name, "kind": kind, "weight": weight})
-    return terms
-
-
-def _parse_loss_weight_overrides(raw_overrides: str | Mapping[str, float]) -> dict[str, float]:
-    if isinstance(raw_overrides, Mapping):
-        pairs = raw_overrides.items()
-    else:
-        pairs = []
-        for chunk in str(raw_overrides).split(","):
-            token = chunk.strip()
-            if not token:
-                continue
-            if "=" not in token:
-                raise ValueError(f"loss weight override must use name=weight syntax: {token!r}")
-            name, raw_weight = token.split("=", 1)
-            pairs.append((name.strip(), raw_weight.strip()))
-
-    overrides: dict[str, float] = {}
-    for name, raw_weight in pairs:
-        normalized_name = str(name).strip()
-        if not normalized_name:
-            raise ValueError("loss weight override name must be non-empty")
-        weight = float(raw_weight)
-        if not math.isfinite(weight) or weight < 0.0:
-            raise ValueError(f"loss weight override must be finite and >= 0, got {raw_weight}")
-        overrides[normalized_name] = weight
-    return overrides
-
-
-def parse_pcvr_loss_config_arg(value: str) -> list[dict[str, Any]]:
-    return PCVRLossConfig.from_value(value).to_list()
 
 
 __all__ = [
@@ -293,5 +164,4 @@ __all__ = [
     "PCVRLossTermConfig",
     "RuntimeExecutionConfig",
     "normalize_amp_dtype",
-    "parse_pcvr_loss_config_arg",
 ]

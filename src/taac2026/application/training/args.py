@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -16,14 +15,13 @@ from taac2026.infrastructure.io.files import write_json
 from taac2026.infrastructure.logging import logger
 from taac2026.application.training.workflow import (
     PCVRTrainContext,
-    default_build_train_data,
-    default_build_train_model,
-    default_build_train_reporter,
-    default_build_train_summary,
-    default_build_train_trainer,
-    default_run_training,
+    build_train_data,
+    build_train_model,
+    build_train_summary,
+    build_train_trainer,
 )
 from taac2026.infrastructure.runtime.telemetry import RuntimeTelemetry
+from taac2026.infrastructure.runtime.reporting import TensorBoardTrainReporter
 from taac2026.infrastructure.runtime.execution import (
     create_logger,
     runtime_execution_summary,
@@ -49,9 +47,7 @@ def parse_pcvr_train_config(
 
 def train_pcvr_model(
     *,
-    model_module: Any,
     model_class_name: str,
-    package_dir: Path,
     defaults: PCVRTrainConfig,
     config_type: type[PCVRTrainConfig],
     model_type: type[torch.nn.Module],
@@ -72,9 +68,8 @@ def train_pcvr_model(
     create_logger(log_dir / "train.log")
     device = config.optimizer.device or ("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("Args: {}", config.model_dump(mode="json"))
-    runtime_execution = config.runtime
     logger.info(
-        "Resolved PCVR training runtime: {}", runtime_execution_summary(runtime_execution, device)
+        "Resolved PCVR training runtime: {}", runtime_execution_summary(config.runtime, device)
     )
 
     reporter = None
@@ -83,34 +78,27 @@ def train_pcvr_model(
         device=device,
         metadata={
             "model_class": model_class_name,
-            "package_dir": str(package_dir),
             "run_dir": str(ckpt_dir),
         },
     ).start()
     try:
         schema_path = resolve_training_schema_path(dataset_path, schema_path_override)
         context = PCVRTrainContext(
-            model_module=model_module,
             model_class_name=model_class_name,
             model_type=model_type,
-            package_dir=package_dir,
             config=config,
             data_dir=dataset_path,
             ckpt_dir=ckpt_dir,
-            log_dir=log_dir,
-            tf_events_dir=tf_events_dir,
             schema_path=schema_path,
-            runtime_execution=runtime_execution,
             device=device,
-            reporter=None,
+            reporter=TensorBoardTrainReporter(tf_events_dir),
         )
-        reporter = default_build_train_reporter(context)
-        context = replace(context, reporter=reporter)
-        data_bundle = default_build_train_data(context)
-        model = default_build_train_model(context, data_bundle)
-        trainer = default_build_train_trainer(context, data_bundle, model)
-        default_run_training(context, trainer)
-        summary = dict(default_build_train_summary(context, trainer) or {})
+        reporter = context.reporter
+        data_bundle = build_train_data(context)
+        model = build_train_model(context, data_bundle)
+        trainer = build_train_trainer(context, data_bundle, model)
+        trainer.train()
+        summary = dict(build_train_summary(context, trainer) or {})
         train_rows = int(getattr(data_bundle.dataset, "num_rows", 0) or 0)
         valid_dataset = getattr(data_bundle.valid_loader, "dataset", None)
         valid_rows = int(getattr(valid_dataset, "num_rows", 0) or 0)

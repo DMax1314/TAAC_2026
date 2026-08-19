@@ -28,6 +28,7 @@ def _training_bundle_env(tmp_path: Path, updates: dict[str, str] | None = None) 
         "TAAC_BUNDLE_WORKDIR": str(tmp_path / "bundle_workdir"),
         "TAAC_PYTHON": sys.executable,
         "TAAC_RUNNER": "python",
+        "TAAC_TEST_PIP_ARGS_PATH": str(tmp_path / "pip_args.json"),
     }
     if updates:
         base.update(updates)
@@ -135,7 +136,7 @@ def test_training_run_script_installs_project_dependencies_before_entrypoint(tmp
     result = build_training_bundle("experiments/baseline", output_dir=output_dir)
     write_minimal_training_runtime_package(result.code_package_path)
     pip_args_path = tmp_path / "pip_args.json"
-    fake_pip = write_fake_pip_package(tmp_path, pip_args_path)
+    fake_pip = write_fake_pip_package(tmp_path)
 
     env = _training_bundle_env(
         tmp_path,
@@ -169,7 +170,7 @@ def test_training_run_script_accepts_explicit_bundle_pip_extras(tmp_path: Path) 
     result = build_training_bundle("experiments/baseline", output_dir=output_dir)
     write_minimal_training_runtime_package(result.code_package_path)
     pip_args_path = tmp_path / "pip_args.json"
-    fake_pip = write_fake_pip_package(tmp_path, pip_args_path)
+    fake_pip = write_fake_pip_package(tmp_path)
 
     env = _training_bundle_env(
         tmp_path,
@@ -226,8 +227,7 @@ def test_training_run_script_does_not_inject_default_experiment(tmp_path: Path) 
     output_dir = tmp_path / "baseline_bundle"
     result = build_training_bundle("experiments/baseline", output_dir=output_dir)
     write_minimal_training_runtime_package(result.code_package_path, bundled_experiment_path=None)
-    pip_args_path = tmp_path / "pip_args.json"
-    fake_pip = write_fake_pip_package(tmp_path, pip_args_path)
+    fake_pip = write_fake_pip_package(tmp_path)
 
     env = _training_bundle_env(
         tmp_path,
@@ -255,8 +255,7 @@ def test_training_run_script_uses_platform_train_env_paths(tmp_path: Path) -> No
     output_dir = tmp_path / "baseline_bundle"
     result = build_training_bundle("experiments/baseline", output_dir=output_dir)
     write_minimal_training_runtime_package(result.code_package_path)
-    pip_args_path = tmp_path / "pip_args.json"
-    fake_pip = write_fake_pip_package(tmp_path, pip_args_path)
+    fake_pip = write_fake_pip_package(tmp_path)
 
     env = _training_bundle_env(
         tmp_path,

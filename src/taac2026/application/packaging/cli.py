@@ -19,12 +19,8 @@ def _write_training_entrypoint(workspace_root: Path, target_path: Path) -> None:
     shutil.copy2(workspace_root / "run.sh", target_path)
 
 
-def _read_inference_entrypoint_source() -> str:
-    return Path(inference_bundle_entrypoint.__file__).read_text(encoding="utf-8")
-
-
 def _write_inference_entrypoint(_workspace_root: Path, target_path: Path) -> None:
-    target_path.write_text(_read_inference_entrypoint_source(), encoding="utf-8")
+    shutil.copy2(Path(inference_bundle_entrypoint.__file__), target_path)
 
 
 _TRAINING_COMMAND = BundleCommand(

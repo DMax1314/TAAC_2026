@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from taac2026.application.evaluation.runtime import default_load_runtime_schema, default_load_train_config
+from taac2026.application.evaluation.runtime import load_runtime_schema, load_train_config
 from taac2026.domain.config import PCVRNSConfig
 from taac2026.domain.schema import PCVRSchema
 from taac2026.domain.sidecar import load_pcvr_train_config_sidecar
@@ -109,10 +109,8 @@ def test_checkpoint_roundtrip_rebuilds_model_and_predicts(
     assert rebuilt_config.model.d_model == config.model.d_model
 
     # 3. evaluation runtime rebuilds the same config and resolves the checkpoint schema.
-    assert default_load_train_config(experiment, checkpoint_dir).model_dump() == config.model_dump()
-    resolved_schema_path, _schema_payload = default_load_runtime_schema(
-        experiment,
-        dataset_path=tmp_path,
+    assert load_train_config(experiment.config_type, checkpoint_dir).model_dump() == config.model_dump()
+    resolved_schema_path, _schema_payload = load_runtime_schema(
         schema_path=None,
         checkpoint_dir=checkpoint_dir,
         mode="evaluation",

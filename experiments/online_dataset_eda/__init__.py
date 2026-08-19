@@ -5,9 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from taac2026.domain.requests import InferRequest
-from taac2026.domain.requests import TrainRequest
-from taac2026.domain.experiment import ExperimentSpec
+from taac2026.api import FunctionExperiment, InferRequest, TrainRequest
 
 from .runner import OnlineDatasetEDAConfig, run_online_dataset_eda
 
@@ -93,17 +91,11 @@ def _infer(request: InferRequest) -> dict[str, object]:
     }
 
 
-EXPERIMENT = ExperimentSpec(
+EXPERIMENT = FunctionExperiment(
     name="online_dataset_eda",
     package_dir=PACKAGE_DIR,
     train_fn=_train,
     infer_fn=_infer,
-    metadata={
-        "kind": "maintenance",
-        "task": "online_dataset_eda",
-        "requires_dataset": True,
-        "supports_infer": True,
-    },
 )
 
 __all__ = ["EXPERIMENT"]
