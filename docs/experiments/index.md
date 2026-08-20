@@ -18,14 +18,12 @@ icon: lucide/folder-open
 | 目标                 | 从这里开始                                  | 适合回答的问题                                                                      |
 | -------------------- | ------------------------------------------- | ----------------------------------------------------------------------------------- |
 | 需要一个干净参照     | [Baseline](baseline.md)                     | HyFormer 原始路线在当前 runtime 下的最低复杂度表现。                                |
-| 想看增强版训练配置   | [Baseline+](baseline-plus.md)               | 数据增强、OPT cache、Muon 和 accelerator backend 对同类结构的影响。                 |
 | 想做用户-物品交互    | [InterFormer](interformer.md)               | 用户上下文、物品候选和序列行为是否应在双分支中交替融合。                            |
 | 想做统一 Transformer | [OneTrans](onetrans.md)                     | 序列 token 与非序列 token 进入同一 causal 主干后，逐层压缩是否有效。                |
 | 想试 TokenFormer     | [TokenFormer](tokenformer.md)               | BFTS 分层注意力和 NLIR 门控能否缓解统一 token 流里的序列坍塌传播。                  |
-| 想试 UniRec 融合     | [UniRec](unirec.md)                         | MoT、target-aware interest、Hybrid SiLU attention 和 block residual 的组合贡献。    |
 | 想试分布感知统一流   | [Symbiosis](symbiosis.md)                   | 缺失、风险、序列 memory、metadata mask 和 candidate readout 如何服务线上泛化。      |
-| 想试高有效秩表征     | [RankUp](rankup.md)                         | 随机稀疏重组、多 embedding、global token 和 effective-rank 诊断能否避免深层低秩化。 |
-| 想试最终阶段主模型   | [DualQ](dualq.md)                 | DualQ、时间对齐多域序列、pair 加权残差 tokenizer 与全局时间 token 的组合。        |
+| 想试最终阶段主模型   | [DualQ](dualq.md)                           | DualQ、时间对齐多域序列、pair 加权残差 tokenizer 与全局时间 token 的组合。          |
+| 想复现工业赛冠军结构 | [QueryFormer](queryformer.md)               | 四类 Query attention、逐字段 DCNv2 与多列独立 embedding 能否带来可复现增益。        |
 | 想知道线上机器       | [Host Device Info](host-device-info.md)     | 线上 CPU/GPU/CUDA/Python/网络/依赖源到底是什么状态。                                |
 | 想看线上数据分布     | [Online Dataset EDA](online-dataset-eda.md) | train 和 infer 数据的 schema、缺失率、基数、序列长度、dense 分布是否漂移。          |
 
@@ -33,13 +31,15 @@ icon: lucide/folder-open
 
 当前模型实验大致分为四类。
 
-**参照与增强。** Baseline 和 Baseline+ 共享 HyFormer 问题设定。Baseline 用最少默认增强保留干净参照；Baseline+ 把 cache、轻量增强、Muon 和 backend 选项打开，用来观察工程配置带来的真实性能变化。
+**参照。** Baseline 用最少默认增强保留 HyFormer 的干净零刻度。Cache、数据增强、Muon 和 accelerator backend 属于共享训练或性能变量，应通过类型化配置和 benchmark 独立比较，不再用另一个模型包承载。
 
-**异构交互。** InterFormer 仍把非序列上下文和序列上下文视作不同类型的信息流，只是在 block 内加强两者交互。它适合做“分支结构是否比全量拼接更稳”的对照。
+**异构交互。** InterFormer 仍把非序列上下文和序列上下文视作不同类型的信息流，只是在 block 内加强两者交互。QueryFormer 进一步显式区分用户、候选广告与各行为域，并通过双向 query 生成和检索建立信息回路。它们适合做“分支结构是否比全量拼接更稳”的对照。
 
-**统一 token 流。** OneTrans、TokenFormer、Symbiosis 和 UniRec 都把多域特征与行为序列放到更统一的 token 空间。它们的差别在于如何控制长序列计算、如何处理静态特征与序列的互相污染，以及 readout 是否围绕候选物品展开。
+**统一 token 流。** OneTrans、TokenFormer 和 Symbiosis 都把多域特征与行为序列放到更统一的 token 空间。它们的差别在于如何控制长序列计算，以及是否显式表达 token 来源、缺失与风险。
 
-**表示容量与诊断。** RankUp 不主要追求新的交互范式，而是把问题放在深层表征是否低秩坍塌上。它适合和 TokenFormer/Symbiosis 配合观察 effective rank、AUC 与稳定性之间的关系。
+**竞赛方案迁移。** DualQ 和 QueryFormer 分别承载学术赛道统一模块方案与工业赛冠军公开结构。它们保留明确来源和差异说明，用于和论文式实验形成现实方案对照。
+
+**表示诊断。** 有效秩计算属于共享 modeling 能力，不再由诊断专用模型拥有。Symbiosis 在启用训练诊断时记录输入、输出 token 的 effective rank，其他实验可复用同一 `masked_effective_rank` primitive。
 
 ## 三、统一运行方式
 

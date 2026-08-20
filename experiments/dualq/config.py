@@ -24,6 +24,8 @@ class DualQModelConfig(PCVRModelConfig):
     use_time_gap_domain_gates: bool = True
     use_fid87_token_residual: bool = True
     use_time_decay_summary: bool = True
+    compress_high_cardinality: bool = True
+    use_fm_highway: bool = True
     # DualQ query budget: must equal user_q_tokens + item_q_tokens.
     num_queries: int = 6
     user_q_tokens: int = 4

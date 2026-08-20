@@ -227,6 +227,7 @@ class PCVRExperiment:
             valid_ratio=float(summary["valid_ratio"]),
             train_ratio=float(summary["train_ratio"]),
             split_strategy=str(summary.get("split_strategy", "row_group_tail")),
+            split_seed=int(summary.get("split_seed", 42)),
         )
 
         payload = dict(summary)

@@ -9,7 +9,9 @@ icon: lucide/git-branch
 DualQ 是 TAAC2026 学术赛道第二轮 Top-17（统一模块创新奖）方案的
 `round2best` 变体（来源：<https://github.com/zzhlkw-ai/TAAC2026>，MIT
 License）在共享 PCVR runtime 上的迁移。它把「多域行为序列 + 用户静态特征 + 候选
-物品 + pair 交互特征」统一翻译成 token 流，再交给同构 HyFormer 主干。
+物品 + pair 交互特征」统一翻译成 token 流，再交给同构 HyFormer 主干。当前版本还
+加入高基数 ID hash 恢复，以及取自 UniDot（<https://github.com/linrongc/kdd26_unidot>，
+MIT License）思想的显式 FM Highway。
 
 **迁移范围：模型结构已迁移，数据特征尚未迁移。** 本包完成了模型结构层面的完整迁
 移（DualQ、多域序列 attention、pair tokenizer、时间特征、全局时间 token），但依赖
@@ -28,22 +30,22 @@ tokenizer、dual-Q 查询拆分）。迁移目标是让这套结构在共享 run
 
 入口位于 `experiments/dualq/__init__.py`。
 
-| 项目                | 默认值                                                 |
-| ------------------- | ------------------------------------------------------ |
-| 实验名              | `pcvr_dualq`                                      |
-| 模型类              | `PCVRDualQ`                                       |
-| 配置扩展            | `DualQModelConfig`（dualq 开关）+ 训练默认值 |
-| batch size          | `576`                                                  |
-| split / sampling    | `timestamp_auto` / `step_random`                       |
-| 序列上限            | `seq_a:256,seq_b:256,seq_c:512,seq_d:512`              |
-| `d_model / emb_dim` | `192 / 64`                                             |
-| block / head        | `2 / 4`                                                |
-| seq encoder         | `swiglu`，`seq_causal=False`                           |
-| 优化器 / lr         | `adamw`（dense）/ `4.83e-4`，sparse lr `0.05`          |
-| EMA                 | `0.999 @ 1500`（开启）                                 |
-| AMP / compile       | BF16 AMP 开启，compile 开启                            |
-| loss                | BCE                                                    |
-| validation          | 每 5000 步评估，early stopping 监控 AUC                |
+| 项目                | 默认值                                        |
+| ------------------- | --------------------------------------------- |
+| 实验名              | `pcvr_dualq`                                  |
+| 模型类              | `PCVRDualQ`                                   |
+| 配置扩展            | `DualQModelConfig`（dualq 开关）+ 训练默认值  |
+| batch size          | `576`                                         |
+| split / sampling    | `timestamp_auto` / `step_random`              |
+| 序列上限            | `seq_a:256,seq_b:256,seq_c:512,seq_d:512`     |
+| `d_model / emb_dim` | `192 / 64`                                    |
+| block / head        | `2 / 4`                                       |
+| seq encoder         | `swiglu`，`seq_causal=False`                  |
+| 优化器 / lr         | `adamw`（dense）/ `4.83e-4`，sparse lr `0.05` |
+| EMA                 | `0.999 @ 1500`（开启）                        |
+| AMP / compile       | BF16 AMP 开启，compile 开启                   |
+| loss                | BCE + `0.05 × pairwise_auc`                   |
+| validation          | 每 5000 步评估，early stopping 监控 AUC       |
 
 ## 三、建模决策
 
@@ -71,6 +73,8 @@ tokenizer、dual-Q 查询拆分）。迁移目标是让这套结构在共享 run
 - item dense 特征按 schema 字段 tokenize（`ItemDenseTokenizer`，fid 129 存在时拆
   body/stat）；用户侧 fid 61（`user_emb_dim=256`）与 fid 87
   （`user_seq_block_dim * user_seq_num = 320`）按精确维度拆分。
+- vocab 超过 `emb_skip_threshold` 的用户、物品与序列 ID 不再直接变为零向量；
+  `compress_high_cardinality=True` 时使用固定桶数的确定性 hash embedding 恢复信号。
 
 ### 3.4 时间特征（全部从规范时间戳派生）
 
@@ -84,11 +88,19 @@ tokenizer、dual-Q 查询拆分）。迁移目标是让这套结构在共享 run
 - 全局时间 token：由 `request_timestamp` 按 UTC+8 派生 hour/day-of-week/weekend
   vocab embedding，拼到序列流末尾。
 
-### 3.5 消融开关
+### 3.5 FM Highway
+
+`use_fm_highway=True` 时，模型在进入 HyFormer block 前对 user/item token 和每条行为
+序列的 masked-mean summary 做 LayerNorm，显式计算 user×item 与 sequence×item 的
+dot-product bundle。该 bundle 再经过独立 LayerNorm，绕过深层残差路径直接送入预测
+头。它是适配 DualQ 单总线结构的最小版本，不等同于 UniDot 的完整双总线逐层 Highway。
+
+### 3.6 消融开关
 
 `use_time_gap_domain_gates`、`use_fid87_token_residual`、`use_time_decay_summary`、
-`use_global_time_token`、`use_seq_gap_buckets` 均为类型化布尔开关，走共享 CLI、
-写入 checkpoint sidecar、并从 sidecar 重建。
+`use_global_time_token`、`use_seq_gap_buckets`、`compress_high_cardinality`、
+`use_fm_highway` 均为类型化布尔开关，走共享 CLI、写入 checkpoint sidecar、并从
+sidecar 重建。
 
 ## 四、统一运行方式
 
@@ -122,6 +134,8 @@ bash run.sh infer \
 - `use_din` 未迁移：DIN 动态兴趣路径在来源仓库最终配置中未启用。
 - `MultiSeqQueryGenerator` / `DINQBias` 组件未引入（来源中未被最终配置使用）。
 - `seq_causal=False`、`use_rope=False`：与来源 `round2best` run.sh 保持一致。
+- FM Highway 来自 UniDot 的显式二阶直达思想，是当前仓库新增的 DualQ 消融，不属于
+  来源 `round2best`。
 
 ## 六、迁移清单
 
@@ -133,6 +147,9 @@ bash run.sh infer \
 | item dense grouping    | 已迁移             | 按 schema 字段 tokenize，fid 129 body/stat 拆分                                   |
 | time gap / time stats  | 已迁移             | 从规范时间戳在模型内派生（gap bucket / ts_float / ts_stat）                       |
 | global time token      | 已迁移             | 从 request 时间戳按 UTC+8 派生 hour/dow/weekend                                   |
+| 高基数 hash 恢复       | 已迁移             | 超阈值用户、物品和序列 ID 使用固定桶 embedding，不再静默置零                      |
+| FM Highway             | 已集成             | user×item 与 sequence×item dot bundle 直接进入分类头，可类型化关闭                |
+| Pairwise AUC loss      | 已集成             | 默认 `BCE + 0.05 × pairwise_auc`，无有效正负 pair 的 batch 返回零 pairwise loss   |
 | train-set profile 特征 | 未迁移（第二阶段） | id 频次 bucket、item dense 统计、item time dense 需数据集侧单独实现，不能静默跳过 |
 | OOF CTR/CVR 编码       | 未迁移（第二阶段） | item OOF 目标编码依赖离线训练集，显式推迟                                         |
 

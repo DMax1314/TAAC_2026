@@ -59,8 +59,8 @@ class PCVRDataConfig(TAACBoundaryModel):
     num_workers: int = 16
     buffer_batches: int = 1
     train_steps_per_sweep: int = 0
-    train_ratio: float = 1.0
-    valid_ratio: float = 0.1
+    train_ratio: float = Field(default=1.0, gt=0.0, le=1.0)
+    valid_ratio: float = Field(default=0.1, gt=0.0, lt=1.0)
     split_strategy: PCVRDataSplitStrategy = "row_group_tail"
     sampling_strategy: PCVRDataSamplingStrategy = "step_random"
     eval_every_n_steps: int = 5_000

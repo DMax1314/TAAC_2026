@@ -32,6 +32,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from taac2026.api import hash_compress_ids
+
 TS_FLOAT_DIM = 8
 TS_STAT_DIM = 6
 
@@ -926,25 +928,37 @@ class GroupNSTokenizer(nn.Module):
         emb_dim: int,
         d_model: int,
         emb_skip_threshold: int = 0,
+        compress_high_cardinality: bool = False,
     ) -> None:
         super().__init__()
         self.feature_specs = feature_specs
         self.groups = groups
         self.emb_skip_threshold = emb_skip_threshold
+        self.compress_high_cardinality = bool(compress_high_cardinality)
         self.emb_dim_list = []
+        self._emb_compressed: list[bool] = []
 
         embs = []
         for vs, _offset, _length in feature_specs:
-            skip = int(vs) <= 0 or (
-                emb_skip_threshold > 0 and int(vs) > emb_skip_threshold
-            )
+            high_cardinality = emb_skip_threshold > 0 and int(vs) > emb_skip_threshold
+            skip = int(vs) <= 0 or (high_cardinality and not self.compress_high_cardinality)
             if skip:
                 embs.append(None)
                 self.emb_dim_list.append(0)
+                self._emb_compressed.append(False)
             else:
-                emb_dim = get_emb_dim(vs, 64)
-                embs.append(nn.Embedding(int(vs) + 1, emb_dim, padding_idx=0, sparse=True))
-                self.emb_dim_list.append(emb_dim)
+                effective_vocab = emb_skip_threshold if high_cardinality else int(vs)
+                feature_emb_dim = get_emb_dim(effective_vocab, 64)
+                embs.append(
+                    nn.Embedding(
+                        int(effective_vocab) + 1,
+                        feature_emb_dim,
+                        padding_idx=0,
+                        sparse=True,
+                    )
+                )
+                self.emb_dim_list.append(feature_emb_dim)
+                self._emb_compressed.append(high_cardinality)
 
         self.embs = nn.ModuleList([e for e in embs if e is not None])
 
@@ -1007,10 +1021,14 @@ class GroupNSTokenizer(nn.Module):
                 else:
                     emb_layer = self.embs[emb_real_idx]
 
+                    values = int_feats[:, offset : offset + length].long()
+                    if self._emb_compressed[fid_idx]:
+                        values = hash_compress_ids(values, emb_layer.num_embeddings - 1)
+
                     if length == 1:
-                        fid_emb = emb_layer(int_feats[:, offset].long())
+                        fid_emb = emb_layer(values.squeeze(-1))
                     else:
-                        vals = int_feats[:, offset : offset + length].long()
+                        vals = values
                         emb_all = emb_layer(vals)  # (B, L, D)
 
                         mask = (vals != 0).unsqueeze(-1)  # (B, L, 1)
@@ -1065,6 +1083,7 @@ class RankMixerNSTokenizer(nn.Module):
         num_ns_tokens: int,
         emb_skip_threshold: int = 0,
         extra_emb_dim: int = 0,
+        compress_high_cardinality: bool = False,
     ) -> None:
         """Initializes RankMixerNSTokenizer.
 
@@ -1082,24 +1101,35 @@ class RankMixerNSTokenizer(nn.Module):
         self.emb_dim = emb_dim
         self.num_ns_tokens = num_ns_tokens
         self.emb_skip_threshold = emb_skip_threshold
+        self.compress_high_cardinality = bool(compress_high_cardinality)
         self.total_emb_dim = 0
         self.offset_to_index = {}
+        self._emb_compressed: list[bool] = []
 
         embs = []
         count = 0
         for vs, offset, _length in feature_specs:
-            skip = int(vs) <= 0 or (
-                emb_skip_threshold > 0 and int(vs) > emb_skip_threshold
-            )
+            high_cardinality = emb_skip_threshold > 0 and int(vs) > emb_skip_threshold
+            skip = int(vs) <= 0 or (high_cardinality and not self.compress_high_cardinality)
             if skip:
                 embs.append(None)
+                self._emb_compressed.append(False)
                 # Skipped features still contribute a zero vector of size
                 # emb_dim in forward(), so account for them here.
                 self.total_emb_dim += emb_dim
             else:
-                vs_emb_dim = get_emb_dim(vs, emb_dim)
+                effective_vocab = emb_skip_threshold if high_cardinality else int(vs)
+                vs_emb_dim = get_emb_dim(effective_vocab, emb_dim)
                 self.total_emb_dim += vs_emb_dim
-                embs.append(nn.Embedding(int(vs) + 1, vs_emb_dim, padding_idx=0, sparse=True))
+                embs.append(
+                    nn.Embedding(
+                        int(effective_vocab) + 1,
+                        vs_emb_dim,
+                        padding_idx=0,
+                        sparse=True,
+                    )
+                )
+                self._emb_compressed.append(high_cardinality)
                 self.offset_to_index[offset] = count
                 count += 1
 
@@ -1173,6 +1203,8 @@ class RankMixerNSTokenizer(nn.Module):
                     continue
 
                 emb_layer = self.embs[emb_real_idx]
+                if self._emb_compressed[fid_idx]:
+                    x = hash_compress_ids(x, emb_layer.num_embeddings - 1)
 
                 # ---- scalar feature ----
                 if length == 1:

@@ -97,13 +97,12 @@ uv run taac-benchmark-pcvr-data-pipeline \
 ```bash
 uv run taac-plot-pcvr-diagnostics \
   --run baseline=outputs/smoke/baseline_seed42 \
-  --run baseline_plus=outputs/smoke/baseline_plus_seed42 \
   --run interformer=outputs/smoke/interformer_seed42 \
   --run onetrans=outputs/smoke/onetrans_seed42 \
   --run symbiosis=outputs/smoke/symbiosis_seed42 \
   --run tokenformer=outputs/smoke/tokenformer_seed42 \
-  --run unirec=outputs/smoke/unirec_seed42 \
-  --run rankup=outputs/smoke/rankup_seed42 \
+  --run dualq=outputs/smoke/dualq_seed42 \
+  --run queryformer=outputs/smoke/queryformer_seed42 \
   --output-dir figures/pcvr_diagnostics
 ```
 

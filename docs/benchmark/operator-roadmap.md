@@ -29,7 +29,7 @@ icon: lucide/cpu
 | #   | 算子                     | 当前用法                                                      | 优先级 | 说明                                                                                                |
 | --- | ------------------------ | ------------------------------------------------------------- | ------ | --------------------------------------------------------------------------------------------------- |
 | 3   | LayerNorm                | 全项目大量使用 `nn.LayerNorm`                                 | P0     | Triton fwd + bwd 已接入；后续补 TileLang backend，并逐步替换高频模型路径                            |
-| 4   | Fused SwiGLU             | baseline/tokenformer/rankup/symbiosis 使用纯 PyTorch 激活乘法 | P0     | 融合 gate、SiLU 和 value 乘法，减少中间张量分配；Linear 融合可作为后续阶段                          |
+| 4   | Fused SwiGLU             | baseline/tokenformer/symbiosis 使用纯 PyTorch 激活乘法 | P0     | 融合 gate、SiLU 和 value 乘法，减少中间张量分配；Linear 融合可作为后续阶段                          |
 | 5   | Fused BCE loss           | 训练热路径使用 `F.binary_cross_entropy_with_logits`           | P1     | 融合 logits 到 loss/reduction，减少显存往返，需覆盖 sample weight 或 reduction 策略后再替换训练路径 |
 | 6   | Fused GELU               | baseline 使用 `F.gelu()`                                      | P2     | 单算子收益较小，更适合作为 Linear + GELU fusion 的子目标                                            |
 | 7   | Fused SiLU               | tokenizer 等多处使用 `nn.SiLU()`                              | P2     | 单独加速收益有限，优先服务 Linear + SiLU 或 SwiGLU fusion                                           |
@@ -52,10 +52,11 @@ icon: lucide/cpu
 
 ## 真实模型训练 step profiling（2026-08，A30）
 
-用 `tools/profile_train_step.py` 对 `experiments/baseline_plus`（真实数据管线 + 真实
-模型 + BCE/Muon/Adagrad 全链路）做了 torch profiler 采样，优化前每 step 的 GPU
+曾用当时的 Baseline+ 实验（真实数据管线 + 真实模型 + BCE/Muon/Adagrad 全链路）做
+torch profiler 采样，优化前每 step 的 GPU
 self 时间约 168ms，优化后约 120ms（-29%），step 耗时中位数 309ms → 268ms，训练
-loss/AUC 曲线完全一致。
+loss/AUC 曲线完全一致。Baseline+ 已不再作为独立模型维护；这些数字保留为历史优化证据，
+不能和当前 Baseline 的绝对耗时直接比较。
 
 | #   | 优化项                                                                                                                                                                                                                                             | 量化效果                                                                                                                                                                        |
 | --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -69,7 +70,8 @@ loss/AUC 曲线完全一致。
 
 ```bash
 uv run python tools/profile_train_step.py \
-  --experiment experiments/baseline_plus --optimizer.device cuda --optimizer.max_steps 30 \
+  --experiment experiments/baseline --optimizer.device cuda --optimizer.max_steps 30 \
+  --optimizer.dense_optimizer_type muon --model.rms_norm_backend tilelang \
   --dataset-path outputs/sample_data/demo_1000.parquet \
   --schema-path docs/archive/files/schema/sample_1000_raw.schema.json
 ```
@@ -83,7 +85,7 @@ Fused SwiGLU / BCE 在真实 profile 中不是热点（`mm`/`addmm` 合计仅 ~3
 
 | #   | 问题                                                                                                                           | 现状                                                                                                                                                                              |
 | --- | ------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 18  | `baseline_plus` 默认 `rms_norm_backend="tilelang"` 无法训练：fusion 用 `RMSNorm(d_model*6)`=384，非 2 的幂被 tilelang 后端拒绝 | ✅ 已完成：非 2 幂 dim 自动 pad 到安全形状（2 的幂或 128 的倍数，`effective_cols` 保持真实除数）；`baseline_plus` 默认后端可直接训练（GPU smoke 3 步通过）                         |
+| 18  | 历史 Baseline+ 路径暴露 `RMSNorm(d_model*6)`=384 非 2 的幂时 TileLang 后端拒绝训练 | ✅ 已完成：共享 RMSNorm 对非 2 幂 dim 自动 pad 到安全形状（2 的幂或 128 的倍数，`effective_cols` 保持真实除数）；当时已做 GPU smoke 3 步验证 |
 | 19  | tilelang rms_norm kernel cache key 含 `rows`，序列 token 数逐 batch 变化导致每 step 重编译                                     | ✅ 已完成：kernel 改用动态行数（`T.dynamic`）编译，cache key 去掉 `rows`；同一 `(cols, dtype, eps, block_rows)` 只编译一次（GPU 测试断言 fwd/bwd cache 各 1），triton 后端同步支持 |
 | 20  | torch 2.13 `nn.Embedding(sparse=True)` 的 backward 返回 uncoalesced 稀疏梯度，`clip_grad_norm_` 已移除 sparse 分支             | 已用 `clip_grad_norms_with_sparse` 兼容（见 #17）                                                                                                                                 |
 
@@ -91,7 +93,7 @@ Fused SwiGLU / BCE 在真实 profile 中不是热点（`mm`/`addmm` 合计仅 ~3
 
 | #   | 算子                         | 来源/动机                                                     | 优先级 |
 | --- | ---------------------------- | ------------------------------------------------------------- | ------ |
-| 12  | SiLU Attention Triton kernel | UniRec 上游仓库已有实现，本仓库文档提到但尚未接入共享 runtime | P1     |
+| 12  | SiLU Attention Triton kernel | 公开 UniRec 方案已有实现，本仓库尚未接入共享 runtime | P1     |
 | 13  | Fused Linear + Activation    | Linear + SiLU / GELU 融合，减少 kernel launch 开销            | P1     |
 | 14  | Fused Scale + Bias + Add     | RMSNorm 后 affine 和 residual add 融合                        | P2     |
 | 15  | Top-K / Top-P sampling       | 推理时 logits 到概率/采样的 fused 路径                        | P2     |
@@ -104,7 +106,7 @@ Fused SwiGLU / BCE 在真实 profile 中不是热点（`mm`/`addmm` 合计仅 ~3
 2. FlashAttention Triton backend，先补齐文档曾经宣称但源码缺失的 backend。
 3. LayerNorm Triton / TileLang，优先覆盖高频模型路径（tilelang rms_norm 的非 2 幂
    dim 已通过 pad 解决、动态行数复用已解决，见附带发现 #18/#19）。
-4. Fused SwiGLU，让 baseline、tokenformer、rankup、symbiosis 等实验受益（真实 profile
+4. Fused SwiGLU，让 baseline、tokenformer、symbiosis 等实验受益（真实 profile
    中 `mm`/`addmm` 合计 ~30ms/step，收益有限但多实验受益）。
 5. Fused BCE loss，训练 loss 热路径（真实 profile 中占比极小，仅在校验损失前顺手做）。
 6. Gated Delta Rule Triton backend，作为 TileLang kernel 族的可替代实现。

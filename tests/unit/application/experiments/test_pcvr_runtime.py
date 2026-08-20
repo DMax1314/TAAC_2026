@@ -72,6 +72,7 @@ def _write_observed_schema_fixture(schema_path: Path, parquet_path: Path) -> Non
                 "domain_a_seq_10": [[100, 101], [103]],
                 "domain_a_seq_11": [[5, 6], [6, 7, 7]],
                 "timestamp": [100, 200],
+                "user_id": ["u1", "u2"],
             }
         ),
         parquet_path,
@@ -291,6 +292,8 @@ def test_train_writes_timestamp_auto_split_observed_schema_reports(
         "split_strategy": "timestamp_auto",
         "train_timestamp_range": {"start": None, "end": 200},
         "valid_timestamp_range": {"start": 200, "end": None},
+        "is_disjoint": True,
+        "is_l1_ready": True,
     }
     assert payload["row_group_split"]["train_row_group_range"] == [0, 2]
     assert payload["row_group_split"]["valid_row_group_range"] == [0, 2]
@@ -300,6 +303,59 @@ def test_train_writes_timestamp_auto_split_observed_schema_reports(
     assert valid_report["timestamp_range"] == {"start": 200, "end": None}
     assert train_report["schema"]["user_int"] == [[1, 1, 1], [2, 2, 2]]
     assert valid_report["schema"]["user_int"] == [[1, 1, 1], [2, 3, 3]]
+
+
+@pytest.mark.parametrize("split_strategy", ["user_hash", "sample_hash"])
+def test_train_writes_hash_split_observed_schema_reports(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    split_strategy: str,
+) -> None:
+    experiment = _make_experiment(tmp_path)
+    dataset_path = tmp_path / "train.parquet"
+    schema_path = tmp_path / "schema.json"
+    run_dir = tmp_path / "outputs"
+    _write_observed_schema_fixture(schema_path, dataset_path)
+
+    monkeypatch.setattr(
+        experiment_module,
+        "train_pcvr_model",
+        lambda **kwargs: {
+            "run_dir": str(run_dir.resolve()),
+            "checkpoint_root": str(run_dir.resolve()),
+            "schema_path": str(schema_path.resolve()),
+            "train_ratio": 1.0,
+            "valid_ratio": 0.5,
+            "split_strategy": split_strategy,
+            "split_seed": 17,
+        },
+    )
+
+    payload = experiment.train(
+        TrainRequest(
+            dataset_path=dataset_path,
+            schema_path=schema_path,
+            run_dir=run_dir,
+        )
+    )
+
+    train_filter = payload["data_split"]["train_hash_filter"]
+    valid_filter = payload["data_split"]["valid_hash_filter"]
+    assert train_filter == {
+        "strategy": split_strategy,
+        "role": "train",
+        "valid_ratio": 0.5,
+        "train_ratio": 1.0,
+        "seed": 17,
+    }
+    assert valid_filter == {**train_filter, "role": "valid"}
+    assert payload["row_group_split"]["train_rows"] + payload["row_group_split"]["valid_rows"] == 2
+    assert payload["data_split"]["is_disjoint"] is True
+    expected_l1_ready = (
+        payload["row_group_split"]["train_rows"] > 0
+        and payload["row_group_split"]["valid_rows"] > 0
+    )
+    assert payload["data_split"]["is_l1_ready"] is expected_l1_ready
 
 
 def test_train_defaults_missing_dataset_to_hf_sample(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

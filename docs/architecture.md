@@ -105,6 +105,7 @@ src/taac2026/
     │   ├── batches.py
     │   ├── cache.py
     │   ├── dataset.py
+    │   ├── hash_split.py
     │   ├── observation.py
     │   ├── pipeline.py
     │   ├── sample_dataset.py
@@ -152,20 +153,28 @@ experiments/
 ├── baseline/
 │   ├── __init__.py            # HyFormer 干净参照的 EXPERIMENT 与 TRAIN_DEFAULTS
 │   └── model.py
-├── baseline_plus/
-│   ├── __init__.py            # cache / augmentation / TileLang backend 默认配置
-│   └── model.py
 ├── interformer/
 │   ├── __init__.py
-│   ├── layers.py
 │   └── model.py
 ├── onetrans/
 │   ├── __init__.py
-│   ├── layers.py
+│   └── model.py
+├── tokenformer/
+│   ├── __init__.py
 │   └── model.py
 ├── symbiosis/
 │   ├── __init__.py            # V2/V3 配置扩展（SymbiosisModelConfig）与消融默认值
+│   ├── config.py
+│   └── model.py
+├── dualq/
+│   ├── __init__.py
+│   ├── config.py
+│   ├── hyformer.py
 │   ├── layers.py
+│   └── model.py
+├── queryformer/
+│   ├── __init__.py
+│   ├── config.py
 │   └── model.py
 ├── host_device_info/
 │   ├── __init__.py            # 维护实验：采集线上机器环境
@@ -228,16 +237,20 @@ domain/ -> 标准库 / 轻量类型，不依赖 application 或 infrastructure
 
 ## 数据切分策略
 
-PCVR 训练入口支持四种验证切分策略，统一由 `PCVRDataConfig.split_strategy` 和训练 CLI 的 `--split-strategy` 控制：
+PCVR 训练入口支持四种验证切分策略，统一由 `PCVRDataConfig.split_strategy` 和训练 CLI 的 `--data.split_strategy` 控制：
 
 | 策略 | 用途 | 说明 |
 | ---- | ---- | ---- |
 | `row_group_tail` | 本地 smoke 和兼容默认 | 使用尾部 row group 做 valid，启动成本最低 |
 | `timestamp_auto` | 首选线上泛化验证 | 根据 `timestamp` 自动把最新一段样本切为 valid，用户只需要配置 `valid_ratio` |
-| `user_hash` | 用户级泛化验证 | 按首个 user sparse 特征稳定 hash 分桶，train/valid 用户尽量互斥；缺失 user key 时回退到样本位置 |
-| `sample_hash` | 样本级稳定验证 | 按文件、row group、行位置稳定 hash 分桶，适合没有可靠 user key 或时间窗的场景 |
+| `user_hash` | 用户级泛化验证 | 按原始 `user_id` 稳定 hash 分桶，train/valid 用户互斥；空 ID 时回退到样本位置 |
+| `sample_hash` | 样本级稳定验证 | 按 parquet 文件名、row group、行位置稳定 hash 分桶，适合没有可靠 user key 或时间窗的场景 |
 
 `timestamp_auto`、`user_hash` 和 `sample_hash` 都是 row-level filter。为了避免随机取 batch 后被过滤为空，训练数据加载会把 `step_random` 自动降级为 `row_group_sweep`。隐藏评测出现 train/infer drift 时，优先使用 `timestamp_auto`；没有可靠时间列时，再用 `user_hash` 或 `sample_hash` 作为比随机切分更稳的验证口径。
+
+两种 hash 策略共享 `infrastructure/data/hash_split.py` 的唯一选择实现，训练 loader 与 observed-schema 报告不能各自解释分桶。`optimizer.seed` 同时作为 `split_seed`；`valid_ratio` 先确定 valid 桶，`train_ratio` 再从剩余桶中确定实际训练子集，所以 `train_ratio < 1` 时会有一部分样本既不参与训练也不参与验证。sample hash 只使用文件名而不是绝对父目录，同一数据复制到另一台机器不会改变划分；user hash 对非空原始 `user_id` 只使用 ID 与 seed，同一用户跨文件和 row group 仍落在同一侧，空 ID 才回退到 sample hash。
+
+训练启动时显示的 hash 行数是比例估算。训练结束后，`train_split_observed_schema.json` 与 `valid_split_observed_schema.json` 使用完全相同的 filter 重新扫描，并记录精确 `row_count` 和完整 `hash_split_filter`（strategy、role、valid/train ratio、seed）。`train_ratio`、`valid_ratio` 在类型化配置边界分别约束为 `(0, 1]` 与 `(0, 1)`；很小的数据集仍可能因 hash 随机性得到空侧，应扩大数据而不是静默复用样本。
 
 ## 边界契约与 Pydantic
 

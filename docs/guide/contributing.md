@@ -21,7 +21,7 @@ experiments/my_experiment/
 | 你要做什么                 | 建议起点                                                   |
 | -------------------------- | ---------------------------------------------------------- |
 | HyFormer 小改              | `experiments/baseline`                                     |
-| HyFormer + 增强 / TileLang | `experiments/baseline_plus`                                |
+| HyFormer 小改或训练增强    | `experiments/baseline`（用类型化配置隔离训练变量）          |
 | 用户-物品交互结构          | `experiments/interformer`                                  |
 | 统一 Transformer 结构      | `experiments/onetrans`                                     |
 | 多组件消融                 | `experiments/symbiosis`（V2/V3 配置扩展和消融默认值）      |

@@ -80,7 +80,14 @@ def test_dualq_train_defaults_cover_source_switches() -> None:
     assert model.use_time_gap_domain_gates is True
     assert model.use_fid87_token_residual is True
     assert model.use_time_decay_summary is True
+    assert model.compress_high_cardinality is True
+    assert model.use_fm_highway is True
     assert model.use_time_aligned_interleave is True
+    loss_terms = package.EXPERIMENT.train_defaults.loss.terms
+    assert [(term.name, term.kind, term.weight) for term in loss_terms] == [
+        ("bce", "bce", 1.0),
+        ("pairwise_auc", "pairwise_auc", 0.05),
+    ]
     assert package.EXPERIMENT.train_defaults.data.split_strategy == "timestamp_auto"
     assert model.ns.grouping_strategy == "explicit"
     assert model.ns.tokenizer_type == "rankmixer"
@@ -110,6 +117,9 @@ def test_dualq_train_config_sidecar_round_trips_package_specific_keys(tmp_path: 
     assert loaded.model.seq_interest_ratios == "1.0,0.7"
     assert loaded.model.pair_feature_fids == "62,63,64,65,66,89,90,91"
     assert loaded.model.use_time_decay_summary is True
+    assert loaded.model.compress_high_cardinality is True
+    assert loaded.model.use_fm_highway is True
+    assert [term.kind for term in loaded.loss.terms] == ["bce", "pairwise_auc"]
     assert loaded.model.ns.user_tokens == 14
     assert loaded.model.ns.item_tokens == 3
     assert loaded.model.ns.user_groups == experiment.train_defaults.model.ns.user_groups

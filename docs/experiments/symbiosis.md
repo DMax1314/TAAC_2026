@@ -135,9 +135,11 @@ SymbiosisV2/tokens/active_ratio/<phase>
 SymbiosisV2/tokens/count/<phase>
 SymbiosisV2/tokens/high_risk_ratio/<phase>
 SymbiosisV2/embedding/norm_mean/<phase>
+SymbiosisV2/representation/effective_rank_input/<phase>
+SymbiosisV2/representation/effective_rank_output/<phase>
 ```
 
-这些指标用于判断 token 是否被过度 dropout、风险 token 比例是否异常、embedding norm 是否漂移。
+这些指标用于判断 token 是否被过度 dropout、风险 token 比例是否异常、embedding norm 是否漂移，以及 backbone 前后的表示是否发生低秩坍塌。有效秩由共享 `masked_effective_rank` primitive 计算，padding token 不参与中心化或奇异值分解。
 
 ## 八、参数面
 

@@ -42,11 +42,12 @@
 > 以促进社区在统一序列建模与特征交互方向上的研究和创新。  
 > 
 > 比赛已正式结束，推荐关注的前排开源方案：  
-> - [zzhlkw-ai/TAAC2026](https://github.com/zzhlkw-ai/TAAC2026)（统一模块创新奖，学术赛道初赛 Top 1 / 复赛 Top 17，Test AUC 0.8358）  
-> - [PixelCookie-zyf/TAAC-2026-SeRankMixer](https://github.com/PixelCookie-zyf/TAAC-2026-SeRankMixer)（学术赛道 Rank 9）  
-> - [yuemingyue/2026-taac](https://github.com/yuemingyue/2026-taac)（学术赛道初赛 TOP9）  
-> - [Lambert-vsziii/TAAC-2026-Tencent-KDD](https://github.com/Lambert-vsziii/TAAC-2026-Tencent-KDD)（HyFormer 增强，0.823689）  
-> - [jbdcia321vw/TAAC-2026-SIGKDD-0.8316](https://github.com/jbdcia321vw/TAAC-2026-SIGKDD-0.8316)（HyFormer 增强，0.8316）  
+> - [AIzealotwu/taac_26_academic_rank2_firstround_rank11_secondround](https://github.com/AIzealotwu/taac_26_academic_rank2_firstround_rank11_secondround)（学术赛道初赛 Rank 2 / 复赛 Rank 11，Test AUC 0.836546）
+> - [zzhlkw-ai/TAAC2026](https://github.com/zzhlkw-ai/TAAC2026)（统一模块创新奖，学术赛道初赛 Rank 1 / 复赛 Rank 17，Test AUC 0.835598）
+> - [zhYao07/TAAC2026-academic-Rank33](https://github.com/zhYao07/TAAC2026-academic-Rank33)（仓库自报学术赛道复赛 Rank 33，公开榜 AUC 0.833641）
+> - [linrongc/kdd26_unidot](https://github.com/linrongc/kdd26_unidot)（工业赛道复赛 Rank 2，Test AUC 0.83217）
+> - [nsarang/TAAC-2026-Mad-Scientists](https://github.com/nsarang/TAAC-2026-Mad-Scientists)（工业赛道复赛 Rank 6，Test AUC 0.83036）
+> - [PixelCookie-zyf/TAAC-2026-SeRankMixer](https://github.com/PixelCookie-zyf/TAAC-2026-SeRankMixer)（工业赛道复赛 Rank 9，Test AUC 0.828814）
 
 ## 比赛简介
 
@@ -69,7 +70,7 @@
 **实验与模型**
 
 - **两文件接入新模型** — `__init__.py` + `model.py` 即可挂载实验，钩子覆写只替换差异部分
-- **8 个模型实验包一行切换** — Baseline、Baseline+、InterFormer、OneTrans、TokenFormer、UniRec、Symbiosis、RankUp 共享数据管线与评估流程
+- **7 个模型实验包一行切换** — Baseline、InterFormer、OneTrans、TokenFormer、Symbiosis、DualQ、QueryFormer 共享数据管线与评估流程
 - **一键打包上线** — `taac-package-train` 产出 `code_package.zip`，平台契约校验确保线上线下一致
 
 </td>
@@ -190,17 +191,15 @@ uv run zensical serve
 
 ## 当前支持实验包
 
-| 实验包      | 目录                                                   | 公开来源                                                                                                             |
-| ----------- | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
-| Baseline    | [experiments/baseline](experiments/baseline)           | 官方 DHyFormer baseline                                                                                              |
-| Baseline+   | [experiments/baseline_plus](experiments/baseline_plus) | HyFormer 增强训练 recipe：OPT cache、轻量增强、Muon 和 accelerator backend                                           |
-| Symbiosis   | [experiments/symbiosis](experiments/symbiosis)         | 本仓库维护的比赛用融合实验模型                                                                                       |
-| RankUp      | [experiments/rankup](experiments/rankup)               | 高有效秩表征实验包，验证随机稀疏重组、多 embedding 和 effective-rank 诊断                                            |
-| DualQ       | [experiments/dualq](experiments/dualq)                 | TAAC2026 Round-2 Top-17（统一模块创新奖）round2best 变体，多域序列 + pair 交互 + 全局时间 token 的统一 HyFormer 迁移 |
-| InterFormer | [experiments/interformer](experiments/interformer)     | [InterFormer paper](https://arxiv.org/abs/2411.09852)                                                                |
-| OneTrans    | [experiments/onetrans](experiments/onetrans)           | [OneTrans paper](https://arxiv.org/abs/2510.26104)                                                                   |
-| TokenFormer | [experiments/tokenformer](experiments/tokenformer)     | BFTS 分层注意力与 NLIR 门控交互的统一 token-stream 实验包                                                            |
-| UniRec      | [experiments/unirec](experiments/unirec)               | UniRec 融合实验包，将 Hybrid SiLU attention、MoT、target-aware interest 和 BlockAttnRes 接入共享 PCVR runtime        |
+| 实验包      | 目录                                               | 公开来源                                                                                                             |
+| ----------- | -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Baseline    | [experiments/baseline](experiments/baseline)       | 官方 DHyFormer baseline                                                                                              |
+| Symbiosis   | [experiments/symbiosis](experiments/symbiosis)     | 本仓库维护的比赛用融合实验模型                                                                                       |
+| DualQ       | [experiments/dualq](experiments/dualq)             | TAAC2026 Round-2 Top-17（统一模块创新奖）round2best 变体，多域序列 + pair 交互 + 全局时间 token 的统一 HyFormer 迁移 |
+| QueryFormer | [experiments/queryformer](experiments/queryformer) | TAAC × KDD Cup 2026 工业赛冠军公开技术描述的 clean-room 实现：四类 Query attention、DCNv2 与多列 embedding           |
+| InterFormer | [experiments/interformer](experiments/interformer) | [InterFormer paper](https://arxiv.org/abs/2411.09852)                                                                |
+| OneTrans    | [experiments/onetrans](experiments/onetrans)       | [OneTrans paper](https://arxiv.org/abs/2510.26104)                                                                   |
+| TokenFormer | [experiments/tokenformer](experiments/tokenformer) | BFTS 分层注意力与 NLIR 门控交互的统一 token-stream 实验包                                                            |
 
 ------
 
@@ -337,13 +336,21 @@ data/sample_1000_raw/
 
 ## 相关工作
 以下按公开可访问资料整理，优先保留能直接借鉴代码、EDA、方法说明和赛事资料的链接，持续补充。比赛已正式结束，官方结果已于 2026-07-15 公布；赛后已有更多前排方案陆续开源，本段会随新仓库出现继续更新。
-调查时间: 2026-07-04
+调查时间: 2026-08-20
 
 **2026届：公开仓库 / 方案**  
 
+### 复赛公开方案（榜单匹配）
+以下仓库已用[官方公开榜](https://algo.qq.com/leaderboard)和仓库披露的赛道、名次或分数交叉核对。当前公开榜包含 48 支有有效成绩的学术队伍和 20 支工业队伍。`zhYao07` 仓库自报复赛 Rank 33，但其比赛分数 `0.833641` 与当前公开榜 Rank 32 的 `0.83364` 对应，可能来自最终复核或榜单口径差异，因此保留仓库自报名次并显式标注。
+- [AIzealotwu/taac_26_academic_rank2_firstround_rank11_secondround](https://github.com/AIzealotwu/taac_26_academic_rank2_firstround_rank11_secondround) — 学术赛道初赛 Rank 2 / 复赛 Rank 11，Test AUC 0.836546；包含复赛最终代码和从 baseline、InfoNCE、全局时间、dense token、DIN 到 EMA 的上分路径。
+- [zzhlkw-ai/TAAC2026](https://github.com/zzhlkw-ai/TAAC2026) — 学术赛道初赛 Rank 1 / 复赛 Rank 17，Test AUC 0.835598，统一模块创新奖；包含 `round2best`、DualQ 和 MaskRec / TopoMask 统一骨干。
+- [zhYao07/TAAC2026-academic-Rank33](https://github.com/zhYao07/TAAC2026-academic-Rank33) — 仓库自报学术赛道复赛 Rank 33，比赛公开榜 AUC 0.833641；包含初复赛代码、compact Word2Vec 高基数恢复、SupCon、target-aware query 和 EMA。
+- [linrongc/kdd26_unidot](https://github.com/linrongc/kdd26_unidot) — 工业赛道复赛 Rank 2，Test AUC 0.83217；UniDot 双总线统一架构、FM Highway、Muon 与多路径互学习，附论文、训练/推理入口和 MIT 许可证。
+- [nsarang/TAAC-2026-Mad-Scientists](https://github.com/nsarang/TAAC-2026-Mad-Scientists) — 工业赛道复赛 Rank 6，Test AUC 0.83036；Conv1D Local Context Writer、Windowed-DIN、行为预训练和分路证据融合，附 CPU 集成 smoke test、样例数据与 MIT 许可证。
+- [PixelCookie-zyf/TAAC-2026-SeRankMixer](https://github.com/PixelCookie-zyf/TAAC-2026-SeRankMixer) — 工业赛道复赛 Rank 9，Test weighted-AUC 0.828814；单模型 RankMixer + DIN + group-wise bilinear fusion，Muon / SWA / SAM 训练。
+
 ### 高分单模型与赛后复盘
 比赛结束后公开的代表性高分单模型与复盘仓库，README 通常包含完整提交记录、消融路径和checkpoint选择经验。
-- [PixelCookie-zyf/TAAC-2026-SeRankMixer](https://github.com/PixelCookie-zyf/TAAC-2026-SeRankMixer) — 学术赛道 Rank 9，Test weighted-AUC 0.828814；单模型 RankMixer + DIN + group-wise bilinear fusion，Muon / SWA / SAM 训练。
 - [yuemingyue/2026-taac](https://github.com/yuemingyue/2026-taac) — 学术赛道初赛 TOP9，AUC 0.833830；含最终提交配置与赛后复盘。
 - [bwzhaocodes/TAAC-Tencent-2026](https://github.com/bwzhaocodes/TAAC-Tencent-2026) — 学术赛道初赛 30 名（单人队伍），AUC 0.833050；完整单兵方案与训练流程。
 - [YodesYang/KDDCup2026-TencentAds-UniRec](https://github.com/YodesYang/KDDCup2026-TencentAds-UniRec) — 工业赛道 Rank 35/689（Top 5.1%），Public AUC 0.851365；含时间桶修正、public-tail 验证、点击/转化多任务目标、辅助验证窗口与终盘消融记录。

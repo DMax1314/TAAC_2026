@@ -14,8 +14,8 @@ icon: lucide/refresh-cw
 
 ```bash
 bash run.sh train \
-  --experiment experiments/baseline_plus \
-  --run-dir outputs/baseline_plus_gc \
+  --experiment experiments/baseline \
+  --run-dir outputs/baseline_gc \
   --model.gradient_checkpointing
 ```
 
@@ -67,10 +67,12 @@ def maybe_gradient_checkpoint(function, *args, enabled: bool = False, **kwargs):
 | 实验            | 当前 checkpoint 的模块                                          |
 | --------------- | --------------------------------------------------------------- |
 | `baseline`      | HyFormer block 循环                                             |
-| `baseline_plus` | HyFormer block 循环                                             |
 | `interformer`   | InterFormer block 循环                                          |
 | `onetrans`      | OneTrans block 循环                                             |
-| `symbiosis`     | user/item graph blocks、unified blocks、context exchange blocks |
+| `tokenformer`   | TokenFormer block 循环                                          |
+| `symbiosis`     | unified interaction block 循环                                  |
+| `dualq`         | DualQ HyFormer block 循环                                       |
+| `queryformer`   | CoTransformer block 循环                                        |
 
 Embedding lookup、输入构造、最终 classifier、loss 计算和 optimizer step 不在这套 helper 的覆盖范围内。
 
@@ -96,8 +98,8 @@ Embedding lookup、输入构造、最终 classifier、loss 计算和 optimizer s
 
 ```bash
 bash run.sh train \
-  --experiment experiments/baseline_plus \
-  --run-dir outputs/baseline_plus_mem \
+  --experiment experiments/baseline \
+  --run-dir outputs/baseline_mem \
   --optimizer.device cuda \
   --runtime.amp \
   --runtime.amp_dtype bfloat16 \

@@ -16,7 +16,7 @@ icon: lucide/settings-2
 | Muon                  | `muon`             | 使用仓库内 `Muon` 实现；矩阵参数走 Muon 更新，非矩阵参数回退到 AdamW 风格更新     |
 | Sparse embedding 优化 | 不由此字段控制     | `get_sparse_params()` 返回的 embedding 参数走 `torch.optim.Adagrad`               |
 
-目前各实验包默认值如下：`baseline_plus`、`unirec`、`symbiosis` 默认使用 `muon`；`baseline`、`interformer`、`onetrans`、`tokenformer`、`rankup` 默认使用 `adamw`。
+目前 `symbiosis`、`queryformer` 默认使用 `muon`；`baseline`、`interformer`、`onetrans`、`tokenformer`、`dualq` 默认使用 `adamw`。
 
 ## 快速启用 Muon
 
@@ -24,8 +24,8 @@ icon: lucide/settings-2
 
 ```bash
 bash run.sh train \
-  --experiment experiments/baseline_plus \
-  --run-dir outputs/baseline_plus_muon \
+  --experiment experiments/baseline \
+  --run-dir outputs/baseline_muon \
   --optimizer.dense_optimizer_type muon \
   --optimizer.max_steps 10000
 ```
@@ -77,7 +77,9 @@ CLI 参数会覆盖实验默认值。线上训练 bundle 也会走同一套训�
 
 行为边界：
 
-- `parameter.ndim >= 2` 的 dense 参数走 Muon 矩阵更新。
+- 普通 `parameter.ndim >= 2` dense 参数走 Muon 矩阵更新。
+- 通过 `mark_muon_batched_matrix()` 声明的 `[batch, rows, cols]` 参数会在一次 batched Newton-Schulz 中逐矩阵独立更新；它用于 QueryFormer 的 H 列 Linear 等参数，避免把列维展平后相互耦合。
+- 通过 `mark_muon_adamw()` 声明的高维 affine 参数走 AdamW 分支；它用于列批处理后的 LayerNorm 和 bias，保持与 H 个独立一维参数相同的更新语义。
 - bias、标量等非矩阵 dense 参数走 AdamW 风格更新。
 - sparse gradient 不受 Muon 支持；当前 PCVR 模型通过 sparse / dense 参数分组避免把 embedding sparse gradient 交给 Muon。
 - 学习率 warmup 和 scheduler 仍由 trainer 统一设置，只作用在 dense optimizer 参数组上。

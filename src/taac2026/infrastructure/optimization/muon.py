@@ -8,6 +8,24 @@ from collections.abc import Iterable
 import torch
 
 
+_MUON_BATCHED_MATRIX_ATTRIBUTE = "_taac_muon_batched_matrix"
+_MUON_ADAMW_ATTRIBUTE = "_taac_muon_adamw"
+
+
+def mark_muon_batched_matrix(parameter: torch.nn.Parameter) -> torch.nn.Parameter:
+    """Mark ``[batch, rows, cols]`` matrices for independent Muon updates."""
+    if parameter.ndim != 3:
+        raise ValueError("Muon batched-matrix parameters must be three-dimensional")
+    setattr(parameter, _MUON_BATCHED_MATRIX_ATTRIBUTE, True)
+    return parameter
+
+
+def mark_muon_adamw(parameter: torch.nn.Parameter) -> torch.nn.Parameter:
+    """Force a dense parameter to use Muon's AdamW branch."""
+    setattr(parameter, _MUON_ADAMW_ATTRIBUTE, True)
+    return parameter
+
+
 def _orthogonalize_update(
     update: torch.Tensor,
     *,
@@ -74,7 +92,9 @@ def _orthogonalize_updates_batched(
         batched = 1.5 * batched - 0.5 * torch.bmm(gram, batched)
 
     results: list[torch.Tensor] = []
-    for index, (update, _shape, transposed) in enumerate(zip(updates, shapes, transposed_flags, strict=True)):
+    for index, (update, _shape, transposed) in enumerate(
+        zip(updates, shapes, transposed_flags, strict=True)
+    ):
         if not finite_mask[index]:
             results.append(torch.zeros_like(update))
             continue
@@ -83,6 +103,30 @@ def _orthogonalize_updates_batched(
             matrix = matrix.t()
         results.append(matrix.reshape_as(update).to(original_dtypes[index]))
     return results
+
+
+def _orthogonalize_batched_matrix_update(
+    update: torch.Tensor,
+    *,
+    steps: int,
+    eps: float = 1e-12,
+) -> torch.Tensor:
+    """Orthogonalize each matrix in one ``[batch, rows, cols]`` tensor."""
+    original_dtype = update.dtype
+    matrices = update.float()
+    transposed = matrices.shape[1] > matrices.shape[2]
+    if transposed:
+        matrices = matrices.transpose(1, 2)
+    norms = torch.linalg.vector_norm(matrices, dim=(1, 2), keepdim=True)
+    finite = torch.isfinite(norms) & (norms > eps)
+    matrices = matrices / norms.clamp_min(eps)
+    for _ in range(max(1, steps)):
+        gram = torch.bmm(matrices, matrices.transpose(1, 2))
+        matrices = 1.5 * matrices - 0.5 * torch.bmm(gram, matrices)
+    matrices = torch.where(finite, matrices, torch.zeros_like(matrices))
+    if transposed:
+        matrices = matrices.transpose(1, 2)
+    return matrices.to(original_dtype)
 
 
 class Muon(torch.optim.Optimizer):
@@ -139,22 +183,60 @@ class Muon(torch.optim.Optimizer):
             beta1, beta2 = group["adamw_betas"]
             adamw_eps = float(group["adamw_eps"])
 
-            matrix_params = [p for p in group["params"] if p.grad is not None and p.ndim >= 2]
-            vector_params = [p for p in group["params"] if p.grad is not None and p.ndim < 2]
+            matrix_params = [
+                p
+                for p in group["params"]
+                if p.grad is not None
+                and p.ndim >= 2
+                and not bool(getattr(p, _MUON_ADAMW_ATTRIBUTE, False))
+            ]
+            vector_params = [
+                p
+                for p in group["params"]
+                if p.grad is not None
+                and (p.ndim < 2 or bool(getattr(p, _MUON_ADAMW_ATTRIBUTE, False)))
+            ]
 
             prepared: list[tuple[torch.Tensor, torch.Tensor, float]] = []
+            batched_prepared: list[tuple[torch.Tensor, torch.Tensor, float]] = []
             for parameter in matrix_params:
                 grad = parameter.grad
                 if grad.is_sparse:
                     raise RuntimeError("Muon does not support sparse gradients")
 
                 state = self.state[parameter]
-                momentum_buffer = state.setdefault("momentum_buffer", torch.zeros_like(parameter))
+                momentum_buffer = state.setdefault(
+                    "momentum_buffer", torch.zeros_like(parameter)
+                )
                 momentum_buffer.mul_(momentum).add_(grad)
-                update = grad.add(momentum_buffer, alpha=momentum) if nesterov else momentum_buffer
+                update = (
+                    grad.add(momentum_buffer, alpha=momentum)
+                    if nesterov
+                    else momentum_buffer
+                )
+                if bool(getattr(parameter, _MUON_BATCHED_MATRIX_ATTRIBUTE, False)):
+                    if parameter.ndim != 3:
+                        raise RuntimeError(
+                            "Muon batched-matrix parameters must remain three-dimensional"
+                        )
+                    update_scale = math.sqrt(
+                        max(1.0, parameter.shape[1] / max(1, parameter.shape[2]))
+                    )
+                    batched_prepared.append((parameter, update, update_scale))
+                    continue
                 matrix = update.reshape(update.shape[0], -1)
-                update_scale = math.sqrt(max(1.0, matrix.shape[0] / max(1, matrix.shape[1])))
+                update_scale = math.sqrt(
+                    max(1.0, matrix.shape[0] / max(1, matrix.shape[1]))
+                )
                 prepared.append((parameter, update, update_scale))
+
+            for parameter, update, update_scale in batched_prepared:
+                orthogonal_update = _orthogonalize_batched_matrix_update(
+                    update, steps=ns_steps
+                )
+                if weight_decay != 0.0:
+                    parameter.mul_(1.0 - lr * weight_decay)
+                parameter.add_(orthogonal_update, alpha=-lr * update_scale)
 
             # Batch Newton-Schulz iterations by matrix shape: same-shaped updates
             # run as one bmm chain, single-shaped groups stay per-matrix.
@@ -172,7 +254,9 @@ class Muon(torch.optim.Optimizer):
                         group_updates[0], steps=ns_steps
                     )
                 else:
-                    results = _orthogonalize_updates_batched(group_updates, steps=ns_steps)
+                    results = _orthogonalize_updates_batched(
+                        group_updates, steps=ns_steps
+                    )
                     for index, result in zip(indices, results, strict=True):
                         orthogonal_updates[index] = result
 
@@ -212,16 +296,20 @@ class Muon(torch.optim.Optimizer):
             torch._foreach_mul_(exp_avg_list, beta1)
             torch._foreach_add_(exp_avg_list, grad_list, alpha=1.0 - beta1)
             torch._foreach_mul_(exp_avg_sq_list, beta2)
-            torch._foreach_addcmul_(exp_avg_sq_list, grad_list, grad_list, value=1.0 - beta2)
+            torch._foreach_addcmul_(
+                exp_avg_sq_list, grad_list, grad_list, value=1.0 - beta2
+            )
 
             bias_correction1 = 1.0 - beta1**step
             bias_correction2 = 1.0 - beta2**step
             denom_list = [exp_avg_sq.sqrt() for exp_avg_sq in exp_avg_sq_list]
             torch._foreach_div_(denom_list, math.sqrt(bias_correction2))
             torch._foreach_add_(denom_list, adamw_eps)
-            torch._foreach_addcdiv_(vector_params, exp_avg_list, denom_list, value=-lr / bias_correction1)
+            torch._foreach_addcdiv_(
+                vector_params, exp_avg_list, denom_list, value=-lr / bias_correction1
+            )
 
         return loss
 
 
-__all__ = ["Muon"]
+__all__ = ["Muon", "mark_muon_adamw", "mark_muon_batched_matrix"]

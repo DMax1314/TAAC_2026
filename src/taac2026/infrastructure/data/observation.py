@@ -11,6 +11,11 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from numpy.typing import NDArray
 
+from taac2026.infrastructure.data.hash_split import (
+    PCVRHashSplitFilter,
+    pcvr_hash_split_filter_to_dict,
+    pcvr_hash_split_mask,
+)
 from taac2026.infrastructure.io.json import read_path
 from taac2026.infrastructure.logging import logger
 
@@ -258,9 +263,12 @@ def build_pcvr_observed_schema_report(
     *,
     row_group_range: tuple[int, int] | None = None,
     timestamp_range: PCVRTimestampRange | None = None,
+    hash_split_filter: PCVRHashSplitFilter | None = None,
     batch_size: int = DEFAULT_PCVR_OBSERVED_SCHEMA_BATCH_SIZE,
     dataset_role: str = "dataset",
 ) -> dict[str, Any]:
+    if timestamp_range is not None and hash_split_filter is not None:
+        raise ValueError("timestamp_range and hash_split_filter are mutually exclusive")
     resolved_dataset_path = Path(data_dir).expanduser().resolve()
     resolved_schema_path = Path(schema_path).expanduser().resolve()
     raw_schema = read_path(resolved_schema_path)
@@ -344,6 +352,8 @@ def build_pcvr_observed_schema_report(
     requested_columns.extend(spec["column"] for spec in user_dense_specs)
     for config in seq_specs.values():
         requested_columns.extend(feature["column"] for feature in config["features"])
+    if hash_split_filter is not None and hash_split_filter.strategy == "user_hash":
+        requested_columns.append("user_id")
     if timestamp_range is not None and "timestamp" not in requested_columns:
         requested_columns.append("timestamp")
 
@@ -356,14 +366,32 @@ def build_pcvr_observed_schema_report(
             current_parquet_file = pq.ParquetFile(file_path)
         if current_parquet_file is None:
             continue
+        batch_start_row = 0
         for batch in current_parquet_file.iter_batches(
             batch_size=batch_size,
             row_groups=[row_group_index],
             columns=requested_columns,
         ):
+            raw_row_count = batch.num_rows
             batch = filter_pcvr_record_batch_by_timestamp_range(batch, timestamp_range)
             if batch is None:
+                batch_start_row += raw_row_count
                 continue
+            if hash_split_filter is not None:
+                user_values = _user_hash_values(batch)
+                mask = pcvr_hash_split_mask(
+                    range(batch_start_row, batch_start_row + raw_row_count),
+                    file_path=file_path,
+                    row_group_index=row_group_index,
+                    split_filter=hash_split_filter,
+                    user_values=user_values,
+                )
+                if not any(mask):
+                    batch_start_row += raw_row_count
+                    continue
+                if not all(mask):
+                    batch = batch.filter(pa.array(mask))
+            batch_start_row += raw_row_count
             observed_row_count += batch.num_rows
             column_index = {name: index for index, name in enumerate(batch.schema.names)}
 
@@ -438,10 +466,11 @@ def build_pcvr_observed_schema_report(
         "schema_path": str(resolved_schema_path),
         "row_group_range": [start_index, end_index],
         "timestamp_range": pcvr_timestamp_range_to_dict(timestamp_range),
+        "hash_split_filter": pcvr_hash_split_filter_to_dict(hash_split_filter),
         "row_group_count": len(selected_row_groups),
         "row_count": int(
             observed_row_count
-            if timestamp_range is not None
+            if timestamp_range is not None or hash_split_filter is not None
             else sum(num_rows for _file_path, _rg_index, num_rows in selected_row_groups)
         ),
         "schema": observed_schema,
@@ -453,6 +482,13 @@ def build_pcvr_observed_schema_report(
         report["row_count"],
     )
     return report
+
+
+def _user_hash_values(batch: pa.RecordBatch) -> tuple[object, ...] | None:
+    column_index = batch.schema.get_field_index("user_id")
+    if column_index < 0:
+        return None
+    return tuple(batch.column(column_index).to_pylist())
 
 
 def collect_pcvr_row_groups(data_dir: str | Path) -> list[tuple[str, int, int]]:

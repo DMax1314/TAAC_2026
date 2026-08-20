@@ -243,6 +243,19 @@ def test_symbiosis_v2_tokenizer_outputs_unified_metadata() -> None:
     assert not hasattr(model, "_sparse_tokens")
 
 
+def test_symbiosis_reports_shared_effective_rank_diagnostics() -> None:
+    experiment_case = get_experiment_case("experiments/symbiosis")
+    model_module = load_model_module(experiment_case)
+    model = _make_model(experiment_case, model_module)
+    model.set_training_diagnostics_enabled(True)
+
+    model(_sample_model_input(model_module))
+    scalars = model.consume_training_scalars(phase="train")
+
+    assert scalars["SymbiosisV2/representation/effective_rank_input/train"] > 0.0
+    assert scalars["SymbiosisV2/representation/effective_rank_output/train"] > 0.0
+
+
 def test_symbiosis_v2_sparse_missing_changes_unified_tokens() -> None:
     experiment_case = get_experiment_case("experiments/symbiosis")
     model_module = load_model_module(experiment_case)

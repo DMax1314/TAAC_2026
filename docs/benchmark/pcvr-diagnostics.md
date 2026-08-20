@@ -6,6 +6,26 @@ icon: lucide/activity
 
 本地只有 `demo_1000.parquet` 时，AUC 只能作为 smoke signal。更可靠的图应该看运行成本、预测行为、模型间差异和 seed 稳定性。
 
+## 2026-08-20 模型保留检查
+
+为了判断 TokenFormer 是否还有独立维护价值，在 commit `41e1d38` 的工作树上对 7 个现存模型做了同口径的 3-seed smoke。环境为 NVIDIA A30、driver `595.71.05`、PyTorch `2.13.0+cu132`；数据为本地 `demo_1000.parquet`，使用 `timestamp_auto` 划分、`valid_ratio=0.2`、seed `17/42/97`，每次训练 20 step。统一使用 AdamW、`lr=1e-4`、torch Flash/RMS backend，关闭 AMP、compile、EMA 和模型私有数据增强；模型自身结构宽度保持默认值。
+
+下表 AUC/LogLoss 来自训练过程中未参与优化的 201 行留出集，时间和显存是 20 step 训练均值。独立 `val` 跑遍 1000 行，只用于预测相关性，不用于质量排名。
+
+| 模型 | AUC（mean ± sample sd） | LogLoss（mean ± sample sd） | 参数量 | 训练时间 | CUDA peak |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Baseline | 0.7318 ± 0.0176 | 0.3198 ± 0.0053 | 160.9M | 8.96s | 1766 MiB |
+| InterFormer | 0.7110 ± 0.0294 | 0.3485 ± 0.0070 | 159.2M | 10.09s | 1728 MiB |
+| OneTrans | 0.7240 ± 0.0103 | 0.3395 ± 0.0076 | 544.7M | 17.54s | 4332 MiB |
+| **TokenFormer** | **0.7422 ± 0.0020** | **0.3112 ± 0.0017** | **159.0M** | **8.71s** | **1705 MiB** |
+| Symbiosis | 0.7721 ± 0.0067 | 0.3185 ± 0.0019 | 85.0M | 10.48s | 1280 MiB |
+| DualQ | 0.7591 ± 0.0103 | 0.2842 ± 0.0041 | 546.7M | 17.69s | 5248 MiB |
+| QueryFormer | 0.7546 ± 0.0043 | 0.3175 ± 0.0034 | 2190.8M | 46.79s | 17681 MiB |
+
+**结论：保留 TokenFormer。** 它不是本次最高 AUC 的模型，但在 3 个 seed 上方差最小，LogLoss 仅次于 DualQ，并处于最低延迟、最低显存的一档。它和 DualQ、QueryFormer 的同 seed 全量预测 Pearson 相关系数分别为 `0.934`、`0.939`，独特排序信号有限；但以约 1/3 和 1/14 的参数量提供接近的质量，仍然是有价值的高效结构对照。这个 1000 行、20 step 结果只能支持仓库保留决策，不能外推为正式榜单结论。
+
+原始 run、逐样本预测和生成图保存在本地 `outputs/model_selection_20260820/`；该目录是可再生输出，不提交到仓库。
+
 ## 生成方式
 
 先发现当前仓库支持的 PCVR 模型实验包。`host_device_info`、`online_dataset_eda` 这类 maintenance/EDA 包不会产出 PCVR 预测文件，不纳入这组图。
@@ -31,7 +51,7 @@ PY
 export CUDA_VISIBLE_DEVICES=0
 SCHEMA="outputs/perf/pcvr_synthetic_300x/schema.json"
 
-for exp in baseline baseline_plus interformer onetrans tokenformer unirec symbiosis rankup; do
+for exp in baseline interformer onetrans tokenformer symbiosis dualq queryformer; do
   run_dir="outputs/smoke/${exp}_seed42"
   bash run.sh train \
     --experiment "experiments/${exp}" \
@@ -67,13 +87,12 @@ done
 ```bash
 uv run taac-plot-pcvr-diagnostics \
   --run baseline=outputs/smoke/baseline_seed42 \
-  --run baseline_plus=outputs/smoke/baseline_plus_seed42 \
   --run interformer=outputs/smoke/interformer_seed42 \
   --run onetrans=outputs/smoke/onetrans_seed42 \
   --run tokenformer=outputs/smoke/tokenformer_seed42 \
-  --run unirec=outputs/smoke/unirec_seed42 \
   --run symbiosis=outputs/smoke/symbiosis_seed42 \
-  --run rankup=outputs/smoke/rankup_seed42 \
+  --run dualq=outputs/smoke/dualq_seed42 \
+  --run queryformer=outputs/smoke/queryformer_seed42 \
   --output-dir figures/pcvr_diagnostics
 ```
 
@@ -102,6 +121,8 @@ uv run taac-plot-pcvr-diagnostics \
 - `inference_telemetry.json`
 
 `bash run.sh train` 会写 `training_summary.json` 和 `training_telemetry.json`。`bash run.sh val` 会写 `evaluation.json`、`validation_predictions.jsonl` 和 `evaluation_telemetry.json`。`bash run.sh infer` 会在 result dir 写 `predictions.json` 和 `inference_telemetry.json`。
+
+稳定性图和 summary 中的质量指标优先读取 `training_summary.json` 的 `validation_metrics` 与 `validation_score_diagnostics`，其 `metric_source` 为 `training_validation`。只有训练摘要没有留出集指标时，才回退到 `evaluation.json.metrics`，并标记为 `evaluation`。预测分布、相关性和分歧图始终来自 `validation_predictions.jsonl`，所以应确认生成该文件的 `val` 命令使用了预期的数据范围。
 
 如果你只是想检查路径或预览占位图，可以加 `--allow-partial`，但这种输出不应该用于分析：
 

@@ -26,7 +26,12 @@ from tests.support.experiment_matrix import get_experiment_case
 
 @pytest.mark.parametrize(
     "experiment_path",
-    ["experiments/baseline", "experiments/symbiosis", "experiments/dualq"],
+    [
+        "experiments/baseline",
+        "experiments/symbiosis",
+        "experiments/dualq",
+        "experiments/queryformer",
+    ],
 )
 def test_checkpoint_roundtrip_rebuilds_model_and_predicts(
     experiment_path: str,

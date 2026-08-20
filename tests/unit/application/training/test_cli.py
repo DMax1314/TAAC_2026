@@ -27,11 +27,29 @@ from taac2026.domain.experiment import FunctionExperiment
 from taac2026.infrastructure.experiments.module_loader import load_module_from_path
 from taac2026.infrastructure.io.json import loads
 import taac2026.application.training.workflow as workflow_module
-from taac2026.application.training.workflow import PCVRTrainDataBundle, build_train_model
+from taac2026.application.training.workflow import (
+    PCVRTrainDataBundle,
+    build_train_model,
+    build_train_summary,
+)
 from taac2026.application.training.args import parse_pcvr_train_config
 
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("train_ratio", 0.0),
+        ("train_ratio", 1.1),
+        ("valid_ratio", 0.0),
+        ("valid_ratio", 1.0),
+    ],
+)
+def test_pcvr_data_config_rejects_invalid_split_ratios(field: str, value: float) -> None:
+    with pytest.raises(ValueError):
+        PCVRDataConfig(**{field: value})
 
 
 def _minimal_experiment(*, requires_dataset: bool, kind: str = "maintenance") -> FunctionExperiment:
@@ -222,6 +240,27 @@ def test_parse_pcvr_train_config_uses_runtime_progress_log_interval_default(tmp_
     config = parse_pcvr_train_config([], config_type=PCVRTrainConfig, defaults=defaults)
 
     assert config.runtime.progress_log_interval_steps == 77
+
+
+def test_build_train_summary_includes_last_validation_results(tmp_path: Path) -> None:
+    context = SimpleNamespace(
+        config=PCVRTrainConfig(),
+        ckpt_dir=tmp_path / "run",
+        schema_path=tmp_path / "schema.json",
+    )
+    trainer = SimpleNamespace(
+        train_loader=SimpleNamespace(dataset=None),
+        last_eval_metrics={"auc": 0.75, "logloss": 0.42},
+        last_eval_diagnostics={"sample_count": 20, "score_std": 0.1},
+        last_eval_model_scalars={"Model/effective_rank/valid": 3.5},
+    )
+
+    summary = build_train_summary(context, trainer)
+
+    assert summary["validation_metrics"] == {"auc": 0.75, "logloss": 0.42}
+    assert summary["split_seed"] == 42
+    assert summary["validation_score_diagnostics"] == {"sample_count": 20, "score_std": 0.1}
+    assert summary["validation_model_scalars"] == {"Model/effective_rank/valid": 3.5}
 
 
 def test_build_train_model_configures_shared_flash_runtime(

@@ -140,8 +140,8 @@ outputs/quickstart_infer/
 
 ```bash
 bash run.sh train \
-  --experiment experiments/baseline_plus \
-  --run-dir outputs/quickstart_baseline_plus \
+  --experiment experiments/interformer \
+  --run-dir outputs/quickstart_interformer \
   --optimizer.device cpu \
   --data.num_workers 0 \
   --data.batch_size 8 \

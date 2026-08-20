@@ -46,6 +46,8 @@ from taac2026.api import (
     PCVRSchema,
     build_pcvr_model_specs,
     compute_sequence_time_buckets,
+    hash_compress_ids,
+    masked_mean,
     maybe_gradient_checkpoint,
 )
 
@@ -79,6 +81,56 @@ _USER_DENSE_GROUPS = {
     "g_stat": [118, 120, 121],  # quantiles + ratios + counts
     "g_float": [123, 130, 131, 132],  # float values + mixed
 }
+
+
+class FMHighway(nn.Module):
+    """Route explicit user-item and sequence-item dot products to the head."""
+
+    def __init__(
+        self,
+        *,
+        d_model: int,
+        num_user_tokens: int,
+        num_item_tokens: int,
+        num_sequences: int,
+    ) -> None:
+        super().__init__()
+        self.num_user_tokens = int(num_user_tokens)
+        self.num_item_tokens = int(num_item_tokens)
+        self.num_sequences = int(num_sequences)
+        self.output_dim = self.num_item_tokens * (
+            self.num_user_tokens + self.num_sequences
+        )
+        self.user_norm = nn.LayerNorm(d_model)
+        self.item_norm = nn.LayerNorm(d_model)
+        self.sequence_norm = nn.LayerNorm(d_model)
+        self.output_norm = nn.LayerNorm(self.output_dim)
+
+    def forward(
+        self,
+        user_tokens: torch.Tensor,
+        item_tokens: torch.Tensor,
+        sequence_tokens: list[torch.Tensor],
+        sequence_masks: list[torch.Tensor],
+    ) -> torch.Tensor:
+        batch_size = user_tokens.shape[0]
+        user = self.user_norm(user_tokens)
+        item = self.item_norm(item_tokens)
+        user_item = torch.matmul(user, item.transpose(-2, -1)).reshape(batch_size, -1)
+
+        sequence_summaries = torch.stack(
+            [
+                masked_mean(tokens, mask)
+                for tokens, mask in zip(sequence_tokens, sequence_masks, strict=True)
+            ],
+            dim=1,
+        )
+        sequence_summaries = self.sequence_norm(sequence_summaries)
+        sequence_item = torch.matmul(
+            sequence_summaries,
+            item.transpose(-2, -1),
+        ).reshape(batch_size, -1)
+        return self.output_norm(torch.cat([user_item, sequence_item], dim=-1))
 
 
 def _remap_user_groups(
@@ -174,6 +226,8 @@ class PCVRDualQ(EmbeddingParameterMixin, nn.Module):
         self.gradient_checkpointing = bool(config.gradient_checkpointing)
         self.use_fid87_token_residual = bool(config.use_fid87_token_residual)
         self.use_time_decay_summary = bool(config.use_time_decay_summary)
+        self.compress_high_cardinality = bool(config.compress_high_cardinality)
+        self.use_fm_highway = bool(config.use_fm_highway)
 
         # ---- user int side: pair fids diverted into the cross tokenizer ----
         schema_fid_to_vocab = {column.fid: column.vocab_size for column in schema.user_int}
@@ -204,6 +258,7 @@ class PCVRDualQ(EmbeddingParameterMixin, nn.Module):
                 emb_dim=config.emb_dim,
                 d_model=config.d_model,
                 emb_skip_threshold=self.emb_skip_threshold,
+                compress_high_cardinality=self.compress_high_cardinality,
             )
             num_user_ns = len(config.ns.user_groups)
             self.item_ns_tokenizer = GroupNSTokenizer(
@@ -212,6 +267,7 @@ class PCVRDualQ(EmbeddingParameterMixin, nn.Module):
                 emb_dim=config.emb_dim,
                 d_model=config.d_model,
                 emb_skip_threshold=self.emb_skip_threshold,
+                compress_high_cardinality=self.compress_high_cardinality,
             )
             num_item_ns = len(specs.item_ns_groups)
         elif self.ns_tokenizer_type == "rankmixer":
@@ -244,6 +300,7 @@ class PCVRDualQ(EmbeddingParameterMixin, nn.Module):
                 num_ns_tokens=user_ns_tokens,
                 emb_skip_threshold=self.emb_skip_threshold,
                 extra_emb_dim=pair_emb_dim,
+                compress_high_cardinality=self.compress_high_cardinality,
             )
             num_user_ns = user_ns_tokens
 
@@ -254,6 +311,7 @@ class PCVRDualQ(EmbeddingParameterMixin, nn.Module):
                 d_model=config.d_model,
                 num_ns_tokens=item_ns_tokens,
                 emb_skip_threshold=self.emb_skip_threshold,
+                compress_high_cardinality=self.compress_high_cardinality,
             )
             num_item_ns = item_ns_tokens
         else:
@@ -366,6 +424,12 @@ class PCVRDualQ(EmbeddingParameterMixin, nn.Module):
             + num_item_ns
             + self.num_item_dense_tokens
         )
+        self.num_user_tokens = (
+            num_user_ns
+            + num_user_dense_tokens
+            + (1 if self.use_global_time_token else 0)
+        )
+        self.num_item_tokens = num_item_ns + self.num_item_dense_tokens
 
         # ================== Check d_model % T == 0 constraint (full mode only) ==================
         T = self.num_queries * self.num_sequences
@@ -386,15 +450,29 @@ class PCVRDualQ(EmbeddingParameterMixin, nn.Module):
         def _make_seq_embs(vocab_sizes):
             """Build a per-feature ``nn.Embedding`` ladder for one seq domain."""
             kept_embs: list[nn.Embedding | None] = []
+            compressed_flags: list[bool] = []
             for vs in vocab_sizes:
                 vsz = int(vs)
-                drop_this = vsz <= 0 or (
+                high_cardinality = (
                     self.emb_skip_threshold > 0 and vsz > self.emb_skip_threshold
+                )
+                drop_this = vsz <= 0 or (
+                    high_cardinality and not self.compress_high_cardinality
                 )
                 if drop_this:
                     kept_embs.append(None)
+                    compressed_flags.append(False)
                     continue
-                kept_embs.append(nn.Embedding(vsz + 1, self.emb_dim, padding_idx=0, sparse=True))
+                effective_vocab = self.emb_skip_threshold if high_cardinality else vsz
+                kept_embs.append(
+                    nn.Embedding(
+                        effective_vocab + 1,
+                        self.emb_dim,
+                        padding_idx=0,
+                        sparse=True,
+                    )
+                )
+                compressed_flags.append(high_cardinality)
 
             module_list = nn.ModuleList([e for e in kept_embs if e is not None])
             index_map: list[int] = []
@@ -406,22 +484,24 @@ class PCVRDualQ(EmbeddingParameterMixin, nn.Module):
                     index_map.append(cursor)
                     cursor += 1
             is_id = [int(vs) > self.seq_id_threshold for vs in vocab_sizes]
-            return module_list, index_map, is_id
+            return module_list, index_map, is_id, compressed_flags
 
         # ================== Dynamic Sequence Embeddings ==================
         self._seq_embs = nn.ModuleDict()
         self._seq_proj = nn.ModuleDict()
         self._seq_ts_float_proj = nn.ModuleDict()
         self._seq_emb_index: dict[str, list[int]] = {}
+        self._seq_emb_compressed: dict[str, list[bool]] = {}
         self._seq_is_id: dict[str, list[bool]] = {}
         self._seq_vocab_sizes: dict[str, list[int]] = {}
 
         for domain in self.raw_seq_domains:
             domain_vocabs = specs.seq_vocab_sizes[domain]
-            embs, idx_map, is_id_flags = _make_seq_embs(domain_vocabs)
+            embs, idx_map, is_id_flags, compressed_flags = _make_seq_embs(domain_vocabs)
 
             self._seq_embs[domain] = embs
             self._seq_emb_index[domain] = idx_map
+            self._seq_emb_compressed[domain] = compressed_flags
             self._seq_is_id[domain] = is_id_flags
             self._seq_vocab_sizes[domain] = domain_vocabs
 
@@ -499,8 +579,21 @@ class PCVRDualQ(EmbeddingParameterMixin, nn.Module):
             nn.LayerNorm(self.d_model),
         )
         self.emb_dropout = nn.Dropout(config.dropout_rate)
+        self.fm_highway = (
+            FMHighway(
+                d_model=self.d_model,
+                num_user_tokens=self.num_user_tokens,
+                num_item_tokens=self.num_item_tokens,
+                num_sequences=self.num_sequences,
+            )
+            if self.use_fm_highway
+            else None
+        )
+        classifier_input_dim = self.d_model + (
+            self.fm_highway.output_dim if self.fm_highway is not None else 0
+        )
         self.clsfier = nn.Sequential(
-            nn.Linear(self.d_model, self.d_model),
+            nn.Linear(classifier_input_dim, self.d_model),
             nn.LayerNorm(self.d_model),
             nn.SiLU(),
             nn.Dropout(config.dropout_rate),
@@ -529,10 +622,16 @@ class PCVRDualQ(EmbeddingParameterMixin, nn.Module):
             for domain in self.raw_seq_domains:
                 idx_map = self._seq_emb_index[domain]
                 skipped = sum(1 for idx in idx_map if idx == -1)
+                compressed = sum(self._seq_emb_compressed[domain])
                 if skipped > 0:
                     logger.info(
                         f"emb_skip_threshold={self.emb_skip_threshold}: "
                         f"{domain} skipped {skipped}/{len(idx_map)} features"
+                    )
+                if compressed > 0:
+                    logger.info(
+                        f"emb_skip_threshold={self.emb_skip_threshold}: "
+                        f"{domain} hash-compressed {compressed}/{len(idx_map)} features"
                     )
             for tag, tokenizer in (
                 ("user_ns", self.user_ns_tokenizer),
@@ -577,6 +676,7 @@ class PCVRDualQ(EmbeddingParameterMixin, nn.Module):
         proj: nn.Module,
         is_id: list[bool],
         emb_index: list[int],
+        compressed: list[bool],
         time_bucket_ids: torch.Tensor,
         gap_bucket_ids: torch.Tensor | None,
         ts_float_feats: torch.Tensor,
@@ -593,7 +693,13 @@ class PCVRDualQ(EmbeddingParameterMixin, nn.Module):
                 # feature filtered by emb_skip_threshold → zeros preserve cat shape
                 side_embs.append(seq.new_zeros(B, L, self.emb_dim, dtype=torch.float))
                 continue
-            slot = sideinfo_embs[real_idx](seq[:, i, :])  # (B, L, emb_dim)
+            values = seq[:, i, :]
+            if i < len(compressed) and compressed[i]:
+                values = hash_compress_ids(
+                    values,
+                    sideinfo_embs[real_idx].num_embeddings - 1,
+                )
+            slot = sideinfo_embs[real_idx](values)  # (B, L, emb_dim)
             if is_id[i] and self.training:
                 slot = self.seq_id_emb_dropout(slot)
             side_embs.append(slot)
@@ -854,6 +960,7 @@ class PCVRDualQ(EmbeddingParameterMixin, nn.Module):
                 self._seq_proj[domain],
                 self._seq_is_id[domain],
                 self._seq_emb_index[domain],
+                self._seq_emb_compressed[domain],
                 time_buckets[domain],
                 gap_buckets.get(domain) if gap_buckets is not None else None,
                 ts_float[domain],
@@ -965,7 +1072,16 @@ class PCVRDualQ(EmbeddingParameterMixin, nn.Module):
             q_per_seq, dom_token_seqs, dom_pad_masks, apply_dropout=apply_dropout,
             seq_ts_float_feats=seq_ts_float_feats,
         )
-        return self.clsfier(embedding), embedding
+        classifier_input = embedding
+        if self.fm_highway is not None:
+            highway = self.fm_highway(
+                user_ns_seq,
+                item_ns_seq,
+                dom_token_seqs,
+                dom_pad_masks,
+            )
+            classifier_input = torch.cat([embedding, highway], dim=-1)
+        return self.clsfier(classifier_input), embedding
 
     def forward(self, inputs: PCVRModelInput) -> torch.Tensor:
         """Runs the forward pass of the PCVRDualQ model."""

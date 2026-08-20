@@ -117,6 +117,30 @@ def test_run_diagnostics_accepts_cwd_relative_prediction_path(tmp_path: Path, mo
     assert summary["runs"][0]["prediction_count"] == 4
 
 
+def test_run_diagnostics_prefers_training_validation_metrics(tmp_path: Path) -> None:
+    run_dir = tmp_path / "baseline_seed1"
+    _write_run(run_dir, experiment="pcvr_baseline", scores=[0.1, 0.8, 0.2, 0.7], seed=1)
+    (run_dir / "training_summary.json").write_text(
+        dumps(
+            {
+                "validation_metrics": {"auc": 0.73, "logloss": 0.42},
+                "validation_score_diagnostics": {"score_std": 0.08},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = run_diagnostics(parse_args(["--run", f"baseline={run_dir}", "--output-dir", str(tmp_path / "figures")]))
+
+    run_summary = summary["runs"][0]
+    assert run_summary["metric_source"] == "training_validation"
+    assert run_summary["metrics"] == {
+        "auc": 0.73,
+        "logloss": 0.42,
+        "score_diagnostics": {"score_std": 0.08},
+    }
+
+
 def test_run_diagnostics_rejects_missing_validation_outputs(tmp_path: Path) -> None:
     run_dir = tmp_path / "baseline_seed42"
     run_dir.mkdir()

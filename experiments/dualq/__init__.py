@@ -69,7 +69,15 @@ TRAIN_DEFAULTS = DualQTrainConfig(
         progress_log_interval_steps=100,
     ),
     loss=PCVRLossConfig(
-        terms=(PCVRLossTermConfig(name="bce", kind="bce", weight=1.0),),
+        terms=(
+            PCVRLossTermConfig(name="bce", kind="bce", weight=1.0),
+            PCVRLossTermConfig(
+                name="pairwise_auc",
+                kind="pairwise_auc",
+                weight=0.05,
+                temperature=1.0,
+            ),
+        ),
     ),
     sparse_optimizer=PCVRSparseOptimizerConfig(
         sparse_lr=0.05,
@@ -102,6 +110,8 @@ TRAIN_DEFAULTS = DualQTrainConfig(
         use_time_gap_domain_gates=True,
         use_fid87_token_residual=True,
         use_time_decay_summary=True,
+        compress_high_cardinality=True,
+        use_fm_highway=True,
         user_q_tokens=4,
         item_q_tokens=2,
         use_time_aligned_interleave=True,

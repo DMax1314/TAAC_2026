@@ -97,12 +97,14 @@ def write_observed_schema_report(
     dataset_role: str,
     row_group_range: tuple[int, int] | None = None,
     timestamp_range: pcvr_data.PCVRTimestampRange | None = None,
+    hash_split_filter: pcvr_data.PCVRHashSplitFilter | None = None,
 ) -> Path:
     report = pcvr_data.build_pcvr_observed_schema_report(
         dataset_path,
         schema_path,
         row_group_range=row_group_range,
         timestamp_range=timestamp_range,
+        hash_split_filter=hash_split_filter,
         dataset_role=dataset_role,
     )
     write_json(output_path, report)
@@ -118,25 +120,18 @@ def write_train_split_observed_schema_reports(
     valid_ratio: float,
     train_ratio: float,
     split_strategy: str = "row_group_tail",
+    split_seed: int = 42,
 ) -> dict[str, Any]:
     rg_info = pcvr_data.collect_pcvr_row_groups(dataset_path)
-    split_plan = pcvr_data.plan_pcvr_row_group_split(
-        rg_info,
-        valid_ratio=valid_ratio,
-        train_ratio=train_ratio,
-    )
-    train_timestamp_range = None
-    valid_timestamp_range = None
-    if split_strategy == "timestamp_auto":
-        split_plan, train_timestamp_range, valid_timestamp_range = (
-            pcvr_data.plan_pcvr_timestamp_tail_split(
-                rg_info,
-                valid_ratio=valid_ratio,
-                train_ratio=train_ratio,
-            )
+    split_plan, train_timestamp_range, valid_timestamp_range, train_hash_filter, valid_hash_filter = (
+        pcvr_data.resolve_pcvr_split_plan(
+            rg_info,
+            split_strategy=split_strategy,
+            valid_ratio=valid_ratio,
+            train_ratio=train_ratio,
+            seed=split_seed,
         )
-    elif split_strategy != "row_group_tail":
-        raise ValueError(f"unsupported split_strategy={split_strategy!r}")
+    )
     observed_schema_paths = {
         "train_split": str(
             write_observed_schema_report(
@@ -146,6 +141,7 @@ def write_train_split_observed_schema_reports(
                 dataset_role="train_split",
                 row_group_range=split_plan.train_row_group_range,
                 timestamp_range=train_timestamp_range,
+                hash_split_filter=train_hash_filter,
             )
         ),
         "valid_split": str(
@@ -156,30 +152,49 @@ def write_train_split_observed_schema_reports(
                 dataset_role="valid_split",
                 row_group_range=split_plan.valid_row_group_range,
                 timestamp_range=valid_timestamp_range,
+                hash_split_filter=valid_hash_filter,
             )
         ),
     }
+    train_report = read_json(Path(observed_schema_paths["train_split"]))
+    valid_report = read_json(Path(observed_schema_paths["valid_split"]))
+    data_split = {
+        "split_strategy": split_strategy,
+        "train_timestamp_range": pcvr_data.pcvr_timestamp_range_to_dict(
+            train_timestamp_range,
+        ),
+        "valid_timestamp_range": pcvr_data.pcvr_timestamp_range_to_dict(
+            valid_timestamp_range,
+        ),
+    }
+    if train_hash_filter is not None and valid_hash_filter is not None:
+        data_split["train_hash_filter"] = train_report["hash_split_filter"]
+        data_split["valid_hash_filter"] = valid_report["hash_split_filter"]
+    train_rows = int(train_report["row_count"])
+    valid_rows = int(valid_report["row_count"])
+    uses_row_filter = (
+        train_timestamp_range is not None
+        or valid_timestamp_range is not None
+        or train_hash_filter is not None
+        or valid_hash_filter is not None
+    )
+    is_disjoint = True if uses_row_filter else split_plan.is_disjoint
+    is_l1_ready = is_disjoint and train_rows > 0 and valid_rows > 0
+    data_split["is_disjoint"] = is_disjoint
+    data_split["is_l1_ready"] = is_l1_ready
     return {
         "observed_schema_paths": observed_schema_paths,
-        "data_split": {
-            "split_strategy": split_strategy,
-            "train_timestamp_range": pcvr_data.pcvr_timestamp_range_to_dict(
-                train_timestamp_range,
-            ),
-            "valid_timestamp_range": pcvr_data.pcvr_timestamp_range_to_dict(
-                valid_timestamp_range,
-            ),
-        },
+        "data_split": data_split,
         "row_group_split": {
             "train_row_groups": split_plan.train_row_groups,
             "valid_row_groups": split_plan.valid_row_groups,
             "train_row_group_range": list(split_plan.train_row_group_range),
             "valid_row_group_range": list(split_plan.valid_row_group_range),
-            "train_rows": split_plan.train_rows,
-            "valid_rows": split_plan.valid_rows,
+            "train_rows": train_rows,
+            "valid_rows": valid_rows,
             "reuse_train_for_valid": split_plan.reuse_train_for_valid,
-            "is_disjoint": split_plan.is_disjoint,
-            "is_l1_ready": split_plan.is_l1_ready,
+            "is_disjoint": is_disjoint,
+            "is_l1_ready": is_l1_ready,
         },
     }
 

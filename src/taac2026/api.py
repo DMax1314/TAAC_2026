@@ -20,7 +20,11 @@ from taac2026.domain.config import (
 )
 from taac2026.infrastructure.data.batches import PCVRModelInput
 from taac2026.infrastructure.modeling.model_contract import build_pcvr_model_specs
-from taac2026.domain.runtime_config import PCVRLossConfig, PCVRLossTermConfig, RuntimeExecutionConfig
+from taac2026.domain.runtime_config import (
+    PCVRLossConfig,
+    PCVRLossTermConfig,
+    RuntimeExecutionConfig,
+)
 from taac2026.domain.experiment import FunctionExperiment
 from taac2026.domain.requests import EvalRequest, InferRequest, TrainRequest
 from taac2026.domain.schema import PCVRSchema
@@ -35,18 +39,25 @@ from taac2026.infrastructure.modeling import (
     causal_valid_attention_mask,
     choose_num_heads,
     deduplicate_sequence_events,
+    hash_compress_ids,
     make_padding_mask,
+    masked_effective_rank,
     masked_last,
     masked_mean,
     maybe_gradient_checkpoint,
     safe_key_padding_mask,
     scaled_dot_product_attention,
     sinusoidal_positions,
+    sparse_embedding_bag_mean,
 )
 from taac2026.infrastructure.modeling.time_features import (
     NUM_TIME_BUCKETS,
     compute_sequence_stats,
     compute_sequence_time_buckets,
+)
+from taac2026.infrastructure.optimization.muon import (
+    mark_muon_adamw,
+    mark_muon_batched_matrix,
 )
 
 
@@ -88,11 +99,16 @@ __all__ = [
     "compute_sequence_time_buckets",
     "create_pcvr_experiment",
     "deduplicate_sequence_events",
+    "hash_compress_ids",
     "make_padding_mask",
+    "mark_muon_adamw",
+    "mark_muon_batched_matrix",
+    "masked_effective_rank",
     "masked_last",
     "masked_mean",
     "maybe_gradient_checkpoint",
     "safe_key_padding_mask",
     "scaled_dot_product_attention",
     "sinusoidal_positions",
+    "sparse_embedding_bag_mean",
 ]

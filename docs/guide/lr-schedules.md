@@ -14,8 +14,8 @@ icon: lucide/trending-up
 
 ```bash
 bash run.sh train \
-  --experiment experiments/baseline_plus \
-  --run-dir outputs/baseline_plus_cosine \
+  --experiment experiments/baseline \
+  --run-dir outputs/baseline_cosine \
   --optimizer.max_steps 10000 \
   --data.eval_every_n_steps 5000 \
   --optimizer.patience_steps 25000 \
@@ -110,8 +110,8 @@ bash run.sh train \
 
 ```bash
 bash run.sh train \
-  --experiment experiments/baseline_plus \
-  --run-dir outputs/baseline_plus_linear \
+  --experiment experiments/baseline \
+  --run-dir outputs/baseline_linear \
   --optimizer.max_steps 10000 \
   --optimizer.scheduler_type linear \
   --optimizer.warmup_steps 500 \
@@ -127,10 +127,12 @@ bash run.sh train \
 | 实验            | 默认调度                                                           |
 | --------------- | ------------------------------------------------------------------ |
 | `baseline`      | `scheduler_type="none"`，`warmup_steps=0`                          |
-| `baseline_plus` | `scheduler_type="none"`，`warmup_steps=0`                          |
 | `interformer`   | `scheduler_type="none"`，`warmup_steps=0`                          |
 | `onetrans`      | `scheduler_type="none"`，`warmup_steps=0`                          |
+| `tokenformer`   | `scheduler_type="none"`，`warmup_steps=0`                          |
 | `symbiosis`     | `scheduler_type="none"`，`warmup_steps=0`                          |
+| `dualq`         | `scheduler_type="none"`，`warmup_steps=0`                          |
+| `queryformer`   | `scheduler_type="cosine"`，`warmup_steps=0`                        |
 
 ## 源码入口
 

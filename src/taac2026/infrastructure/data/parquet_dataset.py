@@ -5,7 +5,6 @@ import pickle
 import zlib
 from collections import OrderedDict
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +19,10 @@ from taac2026.infrastructure.data.batch_converter import (
     build_pcvr_column_plan,
 )
 from taac2026.infrastructure.data.batches import PCVRBatch, take_pcvr_rows
+from taac2026.infrastructure.data.hash_split import (
+    PCVRHashSplitFilter,
+    pcvr_hash_split_mask,
+)
 from taac2026.infrastructure.data.observation import (
     PCVRTimestampRange,
     count_pcvr_rows_in_timestamp_range,
@@ -38,17 +41,6 @@ from taac2026.infrastructure.data.pipeline import (
 from taac2026.infrastructure.data.schema_layout import load_pcvr_schema_layout
 from taac2026.infrastructure.io.json import dumps
 from taac2026.infrastructure.logging import logger
-
-
-_HASH_SPLIT_DENOMINATOR = 1_000_003
-
-
-@dataclass(frozen=True, slots=True)
-class PCVRHashSplitFilter:
-    strategy: str
-    role: str
-    valid_ratio: float
-    seed: int = 0
 
 
 class PCVRParquetDataset(IterableDataset):
@@ -595,39 +587,19 @@ def _hash_split_mask(
         dtype=torch.long,
         device=device,
     )
-    sample_salt = int(split_filter.seed) ^ int(batch_context.path_crc) ^ (int(batch_context.row_group_index) << 32)
-    if split_filter.strategy == "user_hash":
-        user_int_values = batch.inputs.user.int_values
-        if user_int_values.ndim == 2 and user_int_values.shape[1] > 0:
-            user_values = user_int_values[:, 0].to(torch.long)
-            values = torch.where(user_values > 0, user_values, sample_values)
-            salt = int(split_filter.seed)
-        else:
-            values = sample_values
-            salt = sample_salt
-    else:
-        values = sample_values
-        salt = sample_salt
-    scores = torch.tensor(
-        [_stable_hash_score(int(value), salt) for value in values.detach().cpu().tolist()],
-        dtype=torch.long,
+    user_values = batch.user_id if split_filter.strategy == "user_hash" else None
+    mask = pcvr_hash_split_mask(
+        sample_values.detach().cpu().tolist(),
+        file_path=batch_context.cache_key[0],
+        row_group_index=batch_context.row_group_index,
+        split_filter=split_filter,
+        user_values=user_values,
+    )
+    return torch.tensor(
+        mask,
+        dtype=torch.bool,
         device=device,
     )
-    threshold = max(1, min(_HASH_SPLIT_DENOMINATOR - 1, round(float(split_filter.valid_ratio) * _HASH_SPLIT_DENOMINATOR)))
-    is_valid = scores < threshold
-    if split_filter.role == "valid":
-        return is_valid
-    return ~is_valid
-
-
-def _stable_hash_score(value: int, salt: int) -> int:
-    mixed = (int(value) ^ int(salt)) & 0xFFFFFFFFFFFFFFFF
-    mixed ^= mixed >> 30
-    mixed = (mixed * 0xBF58476D1CE4E5B9) & 0xFFFFFFFFFFFFFFFF
-    mixed ^= mixed >> 27
-    mixed = (mixed * 0x94D049BB133111EB) & 0xFFFFFFFFFFFFFFFF
-    mixed ^= mixed >> 31
-    return int(mixed % _HASH_SPLIT_DENOMINATOR)
 
 
 def _cached_parquet_file(

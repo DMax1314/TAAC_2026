@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 from torch.utils.data import DataLoader, IterableDataset
 
 import taac2026.infrastructure.data.dataset as pcvr_data
@@ -21,6 +22,11 @@ from taac2026.infrastructure.data.step_dataset import (
     PCVRStepIndexSampler,
 )
 from taac2026.infrastructure.data.batch_converter import pad_list_offsets_values
+from taac2026.infrastructure.data.hash_split import (
+    PCVRHashSplitFilter,
+    pcvr_hash_split_mask,
+)
+from taac2026.infrastructure.data.parquet_dataset import PCVRParquetDataset
 
 
 class _FakeDataset(IterableDataset):
@@ -118,7 +124,7 @@ def _write_single_row_group_multi_batch_fixture(schema_path: Path, parquet_path:
             {
                 "timestamp": [100, 101, 102, 103],
                 "label_type": [2, 0, 2, 0],
-                "user_id": ["u0", "u1", "u2", "u3"],
+                "user_id": ["shared-a", "shared-a", "shared-b", "shared-b"],
                 "user_int_feats_1": [1, 2, 3, 4],
                 "user_int_feats_2": [[1, 2], [2, 3], [3, 4], [4, 5]],
                 "item_int_feats_3": [10, 11, 12, 13],
@@ -343,6 +349,123 @@ def test_get_pcvr_data_supports_sample_hash_split(monkeypatch, tmp_path: Path) -
 
     assert train_loader.dataset.hash_split_filter.strategy == "sample_hash"
     assert valid_loader.dataset.hash_split_filter.strategy == "sample_hash"
+
+
+def test_hash_split_is_disjoint_honors_train_ratio_and_ignores_parent_path() -> None:
+    positions = range(10_000)
+    train_filter = PCVRHashSplitFilter(
+        strategy="sample_hash",
+        role="train",
+        valid_ratio=0.2,
+        train_ratio=0.5,
+        seed=17,
+    )
+    valid_filter = PCVRHashSplitFilter(
+        strategy="sample_hash",
+        role="valid",
+        valid_ratio=0.2,
+        train_ratio=0.5,
+        seed=17,
+    )
+
+    train_mask = pcvr_hash_split_mask(
+        positions,
+        file_path="/machine-a/data/demo.parquet",
+        row_group_index=3,
+        split_filter=train_filter,
+    )
+    valid_mask = pcvr_hash_split_mask(
+        positions,
+        file_path="/machine-b/cache/demo.parquet",
+        row_group_index=3,
+        split_filter=valid_filter,
+    )
+    relocated_train_mask = pcvr_hash_split_mask(
+        positions,
+        file_path="/machine-b/cache/demo.parquet",
+        row_group_index=3,
+        split_filter=train_filter,
+    )
+
+    assert train_mask == relocated_train_mask
+    assert not any(train and valid for train, valid in zip(train_mask, valid_mask, strict=True))
+    assert 1_800 < sum(valid_mask) < 2_200
+    assert 3_800 < sum(train_mask) < 4_200
+    assert sum(train_mask) + sum(valid_mask) < len(train_mask)
+
+
+def test_user_hash_keeps_repeated_users_in_one_role() -> None:
+    positions = range(6)
+    users = ["user-11", "user-11", "user-23", "user-23", None, None]
+    split_filter = PCVRHashSplitFilter(
+        strategy="user_hash",
+        role="valid",
+        valid_ratio=0.5,
+        seed=97,
+    )
+
+    mask = pcvr_hash_split_mask(
+        positions,
+        file_path="demo.parquet",
+        row_group_index=0,
+        split_filter=split_filter,
+        user_values=users,
+    )
+
+    assert mask[0] == mask[1]
+    assert mask[2] == mask[3]
+
+
+@pytest.mark.parametrize("strategy", ["user_hash", "sample_hash"])
+def test_observed_schema_hash_split_matches_runtime_rows(
+    tmp_path: Path,
+    strategy: str,
+) -> None:
+    schema_path = tmp_path / "schema.json"
+    parquet_path = tmp_path / "demo.parquet"
+    _write_single_row_group_multi_batch_fixture(schema_path, parquet_path)
+    observed_counts: dict[str, int] = {}
+    runtime_counts: dict[str, int] = {}
+    runtime_users: dict[str, set[str]] = {}
+
+    for role in ("train", "valid"):
+        split_filter = PCVRHashSplitFilter(
+            strategy=strategy,
+            role=role,
+            valid_ratio=0.5,
+            seed=42,
+        )
+        report = pcvr_data.build_pcvr_observed_schema_report(
+            parquet_path,
+            schema_path,
+            hash_split_filter=split_filter,
+            batch_size=2,
+            dataset_role=f"{role}_split",
+        )
+        dataset = PCVRParquetDataset(
+            parquet_path=str(parquet_path),
+            schema_path=str(schema_path),
+            batch_size=2,
+            shuffle=False,
+            buffer_batches=0,
+            hash_split_filter=split_filter,
+            dataset_role=role,
+        )
+        batches = list(dataset)
+        observed_counts[role] = report["row_count"]
+        runtime_counts[role] = sum(int(batch.label.shape[0]) for batch in batches)
+        runtime_users[role] = {
+            str(user_id)
+            for batch in batches
+            for user_id in batch.user_id
+        }
+        assert report["hash_split_filter"]["strategy"] == strategy
+        assert report["hash_split_filter"]["role"] == role
+
+    assert observed_counts == runtime_counts
+    assert observed_counts["train"] + observed_counts["valid"] == 4
+    if strategy == "user_hash":
+        assert runtime_users["train"].isdisjoint(runtime_users["valid"])
 
 
 def test_get_pcvr_data_applies_augmentation_only_to_train_dataset(

@@ -23,7 +23,8 @@ from taac2026.infrastructure.data.observation import (
     plan_pcvr_row_group_split,
     plan_pcvr_timestamp_tail_split,
 )
-from taac2026.infrastructure.data.parquet_dataset import PCVRHashSplitFilter, PCVRParquetDataset
+from taac2026.infrastructure.data.hash_split import PCVRHashSplitFilter
+from taac2026.infrastructure.data.parquet_dataset import PCVRParquetDataset
 from taac2026.infrastructure.logging import logger
 
 
@@ -62,7 +63,7 @@ def get_pcvr_data(
     _validate_get_pcvr_data_args(split_strategy, sampling_strategy)
 
     row_groups = collect_pcvr_row_groups(data_dir)
-    split_plan, train_timestamp_range, valid_timestamp_range, train_hash_filter, valid_hash_filter = _resolve_split_plan(
+    split_plan, train_timestamp_range, valid_timestamp_range, train_hash_filter, valid_hash_filter = resolve_pcvr_split_plan(
         row_groups,
         split_strategy=split_strategy,
         valid_ratio=valid_ratio,
@@ -78,7 +79,11 @@ def get_pcvr_data(
         buffer_batches,
         sampling_strategy=effective_sampling_strategy,
     )
-    _log_split_plan(split_plan, train_ratio=train_ratio)
+    _log_split_plan(
+        split_plan,
+        train_ratio=train_ratio,
+        split_strategy=split_strategy,
+    )
 
     train_pipeline_config = data_pipeline_config or PCVRDataPipelineConfig()
     valid_pipeline_config = PCVRDataPipelineConfig(cache=train_pipeline_config.cache)
@@ -131,11 +136,13 @@ def get_pcvr_data(
 
     train_loader = _make_loader(train_dataset, num_workers=num_workers)
     valid_loader = _make_loader(valid_dataset, num_workers=0)
+    row_count_kind = "estimated" if train_hash_filter is not None else "exact"
     logger.info(
-        "Parquet train: {} rows, valid: {} rows, batch_size={}, "
+        "Parquet train: {} rows, valid: {} rows ({}), batch_size={}, "
         "buffer_batches={}, sampling_strategy={}",
         split_plan.train_rows,
         split_plan.valid_rows,
+        row_count_kind,
         batch_size,
         effective_buffer_batches,
         effective_sampling_strategy,
@@ -150,7 +157,7 @@ def _validate_get_pcvr_data_args(split_strategy: str, sampling_strategy: str) ->
         raise ValueError(f"unsupported sampling_strategy={sampling_strategy!r}")
 
 
-def _resolve_split_plan(
+def resolve_pcvr_split_plan(
     row_groups: list[tuple[str, int, int]],
     *,
     split_strategy: str,
@@ -205,7 +212,13 @@ def _hash_split_plan(
         raise ValueError("hash split strategies require 0 < valid_ratio < 1")
     total_rows = sum(row_count for _path, _row_group_index, row_count in row_groups)
     estimated_valid_rows = max(1, round(total_rows * valid_ratio))
-    estimated_train_rows = max(1, round((total_rows - estimated_valid_rows) * max(0.0, min(1.0, train_ratio))))
+    estimated_train_rows = max(
+        1,
+        round(
+            (total_rows - estimated_valid_rows)
+            * max(0.0, min(1.0, train_ratio))
+        ),
+    )
     split_plan = PCVRRowGroupSplitPlan(
         total_row_groups=len(row_groups),
         train_row_groups=len(row_groups),
@@ -225,8 +238,20 @@ def _hash_split_plan(
     )
     return (
         split_plan,
-        PCVRHashSplitFilter(strategy=split_strategy, role="train", valid_ratio=valid_ratio, seed=seed),
-        PCVRHashSplitFilter(strategy=split_strategy, role="valid", valid_ratio=valid_ratio, seed=seed),
+        PCVRHashSplitFilter(
+            strategy=split_strategy,
+            role="train",
+            valid_ratio=valid_ratio,
+            train_ratio=train_ratio,
+            seed=seed,
+        ),
+        PCVRHashSplitFilter(
+            strategy=split_strategy,
+            role="valid",
+            valid_ratio=valid_ratio,
+            train_ratio=train_ratio,
+            seed=seed,
+        ),
     )
 
 
@@ -258,7 +283,20 @@ def _effective_buffer_batches(buffer_batches: int, *, sampling_strategy: str) ->
     return _STEP_RANDOM_BUFFER_BATCHES
 
 
-def _log_split_plan(split_plan: PCVRRowGroupSplitPlan, *, train_ratio: float) -> None:
+def _log_split_plan(
+    split_plan: PCVRRowGroupSplitPlan,
+    *,
+    train_ratio: float,
+    split_strategy: str,
+) -> None:
+    if split_strategy in {"user_hash", "sample_hash"}:
+        logger.info(
+            "Hash split estimate: {} train rows, {} valid rows; exact counts are "
+            "written after row filtering",
+            split_plan.train_rows,
+            split_plan.valid_rows,
+        )
+        return
     if train_ratio < 1.0 and not split_plan.reuse_train_for_valid:
         logger.info(
             "train_ratio={}: using {} train Row Groups",
@@ -331,6 +369,7 @@ def _make_loader(dataset: Any, *, num_workers: int) -> DataLoader:
 
 
 __all__ = [
+    "PCVRHashSplitFilter",
     "PCVRParquetDataset",
     "PCVRRowGroupSplitPlan",
     "PCVRTimestampRange",
@@ -342,4 +381,5 @@ __all__ = [
     "pcvr_timestamp_range_to_dict",
     "plan_pcvr_row_group_split",
     "plan_pcvr_timestamp_tail_split",
+    "resolve_pcvr_split_plan",
 ]

@@ -270,6 +270,11 @@ def test_dualq_model_forward_backward_and_predict() -> None:
     )
 
     assert model.num_ns > 0
+    assert model.fm_highway is not None
+    assert model.fm_highway.output_dim == model.num_item_tokens * (
+        model.num_user_tokens + model.num_sequences
+    )
+    assert model.clsfier[0].in_features == 24 + model.fm_highway.output_dim
     model_input = dualq_contract_model_input()
 
     logits = model(model_input)
@@ -289,6 +294,75 @@ def test_dualq_model_forward_backward_and_predict() -> None:
     sparse_params = model.get_sparse_params()
     assert sparse_params
     assert all(parameter.requires_grad for parameter in sparse_params)
+
+
+def test_dualq_hash_compresses_high_cardinality_features() -> None:
+    module = _load_module()
+    model = module.PCVRDualQ(
+        schema=_schema(),
+        config=module.DualQModelConfig(
+            d_model=24,
+            emb_dim=8,
+            emb_skip_threshold=4,
+            compress_high_cardinality=True,
+            num_queries=6,
+            num_blocks=1,
+            num_heads=2,
+            hidden_mult=2,
+            dropout_rate=0.0,
+            action_num=1,
+            ns=module.PCVRNSConfig(
+                grouping_strategy="singleton",
+                tokenizer_type="rankmixer",
+                user_tokens=2,
+                item_tokens=1,
+            ),
+        ),
+    )
+
+    assert any(model.user_ns_tokenizer._emb_compressed)
+    assert any(model.item_ns_tokenizer._emb_compressed)
+    assert all(any(flags) for flags in model._seq_emb_compressed.values())
+    assert all(
+        embedding.num_embeddings == 5
+        for domain in model.raw_seq_domains
+        for embedding in model._seq_embs[domain]
+    )
+
+    with torch.no_grad():
+        logits = model(dualq_contract_model_input())
+    assert logits.shape == (2, 1)
+    assert torch.isfinite(logits).all()
+
+
+def test_dualq_can_ablate_fm_highway() -> None:
+    module = _load_module()
+    model = module.PCVRDualQ(
+        schema=_schema(),
+        config=module.DualQModelConfig(
+            d_model=24,
+            emb_dim=8,
+            num_queries=6,
+            num_blocks=1,
+            num_heads=2,
+            hidden_mult=2,
+            dropout_rate=0.0,
+            action_num=1,
+            use_fm_highway=False,
+            ns=module.PCVRNSConfig(
+                grouping_strategy="singleton",
+                tokenizer_type="rankmixer",
+                user_tokens=2,
+                item_tokens=1,
+            ),
+        ),
+    )
+
+    assert model.fm_highway is None
+    assert model.clsfier[0].in_features == 24
+    with torch.no_grad():
+        logits = model(dualq_contract_model_input())
+    assert logits.shape == (2, 1)
 
 
 def test_dualq_model_dense_split_and_pair_tokenizer_wired() -> None:

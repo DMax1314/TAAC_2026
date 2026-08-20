@@ -13,10 +13,13 @@ from taac2026.infrastructure.modeling import (
     configure_flash_attention_runtime,
     configure_rms_norm_runtime,
     flash_attention_runtime_state,
+    hash_compress_ids,
+    masked_effective_rank,
     rms_norm_runtime_state,
     scaled_dot_product_attention,
 )
 from taac2026.infrastructure.modeling.embeddings import FeatureEmbeddingBank as FeatureEmbeddingBankOwner
+from taac2026.infrastructure.modeling.embeddings import hash_compress_ids as hash_compress_ids_owner
 from taac2026.infrastructure.modeling.normalization import LayerNorm as LayerNormOwner
 from taac2026.infrastructure.modeling.normalization import RMSNorm as RMSNormOwner
 from taac2026.infrastructure.modeling import sequence as sequence_ops
@@ -29,6 +32,7 @@ def test_modeling_submodules_own_shared_primitives() -> None:
     assert LayerNormOwner is LayerNorm
     assert RMSNormOwner is RMSNorm
     assert SequenceTokenizerOwner is SequenceTokenizer
+    assert hash_compress_ids_owner is hash_compress_ids
     assert make_padding_mask(torch.tensor([1, 3]), 4).tolist() == [
         [False, True, True, True],
         [False, False, False, True],
@@ -167,3 +171,28 @@ def test_high_cardinality_sequence_ids_are_hash_compressed() -> None:
     assert len(sequence.embeddings) == 0
     assert len(sequence.compressed_embeddings) == 1
     assert sequence.compressed_embeddings[0].num_embeddings == 17
+
+
+def test_masked_effective_rank_ignores_padding_and_handles_degenerate_inputs() -> None:
+    tokens = torch.tensor(
+        [
+            [[1.0, 0.0], [0.0, 1.0], [999.0, 999.0]],
+            [[2.0, 2.0], [2.0, 2.0], [2.0, 2.0]],
+        ]
+    )
+    padding_mask = torch.tensor([[False, False, True], [False, False, False]])
+
+    rank = masked_effective_rank(tokens, padding_mask)
+    rank_without_padding_value = masked_effective_rank(tokens[:, :2], padding_mask[:, :2])
+
+    assert torch.isfinite(rank)
+    assert rank.item() == pytest.approx(0.5)
+    assert rank_without_padding_value.item() == pytest.approx(rank.item())
+    assert masked_effective_rank(torch.zeros(1, 0, 2)).item() == 0.0
+
+
+def test_masked_effective_rank_validates_shapes() -> None:
+    with pytest.raises(ValueError, match="tokens must have shape"):
+        masked_effective_rank(torch.zeros(2, 3))
+    with pytest.raises(ValueError, match="padding_mask must match"):
+        masked_effective_rank(torch.zeros(2, 3, 4), torch.zeros(2, 2, dtype=torch.bool))

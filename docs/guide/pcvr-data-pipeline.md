@@ -10,7 +10,7 @@ PCVR 数据管道负责把 parquet 数据变成训练 batch，并在需要时叠
 
 ## 什么时候看这页
 
-- 你要解释 Baseline 和 Baseline+ 为什么数据侧行为不同。
+- 你要隔离模型结构、数据增强与 cache 对结果的影响。
 - 你想给新实验加数据增强或 cache。
 - 你在排查吞吐、内存或线上数据分布问题。
 
@@ -95,6 +95,29 @@ PCVRDomainDropoutConfig(
 
 验证和推理不应该启用随机增强。训练增强通过实验包默认配置进入，不应该在评估入口临时拼出来。
 
+## 行级切分与 observed schema
+
+`timestamp_auto`、`user_hash` 和 `sample_hash` 在 row group 内继续过滤行。它们与默认 `step_random` 不兼容时，loader 会显式切换为 `row_group_sweep`。
+
+两种 hash 策略的稳定输入如下：
+
+| 策略 | hash key | 路径与缺失语义 |
+| ---- | -------- | -------------- |
+| `user_hash` | 原始 `user_id` + `optimizer.seed` | 非空 ID 跨文件保持同侧；null 或空字符串时回退到 sample key |
+| `sample_hash` | parquet 文件名 + row group index + row-group 内行位置 + `optimizer.seed` | 忽略绝对父目录，因此数据缓存位置变化不改变划分 |
+
+先按 `valid_ratio` 选 valid 桶，再从剩余桶按 `train_ratio` 选 train 桶。默认 `train_ratio=1` 时 train/valid 互补且互斥；低于 1 时未选中的剩余行不会进入任一侧。两个比例在配置解析时校验，`train_ratio` 必须处于 `(0, 1]`，`valid_ratio` 必须处于 `(0, 1)`。
+
+训练启动日志里的 hash 行数是按比例估算的快速提示。训练完成后，应用层会用训练 loader 的同一 hash primitive 写出精确报告：
+
+```text
+<run-dir>/
+├── train_split_observed_schema.json
+└── valid_split_observed_schema.json
+```
+
+每份报告的 `row_count` 是实际入选行数，`hash_split_filter` 记录 `strategy`、`role`、`valid_ratio`、`train_ratio` 和 `seed`。训练返回的 `data_split.is_disjoint` 描述行级切分是否互斥，`is_l1_ready` 还要求 train/valid 都非空；不要用两侧 row group 范围是否重叠来判断行级 filter。判断切分是否复现时应检查这组字段和两份精确行数，不要使用启动阶段的估算值。小数据可能把某一侧 hash 成空集；这是无统计意义的输入，应扩大样本或更换 seed，不会回退成 train/valid 复用。
+
 ## Transform 语义
 
 `PCVRSequenceCropTransform` 会对每个序列域裁剪窗口：
@@ -132,9 +155,9 @@ cache 存的是增强前的基础 batch。
 
 cache 返回 batch clone，因此后续 transform 不会修改缓存里的基础样本。
 
-## Baseline 和 Baseline+
+## 模型与训练 recipe 分离
 
-Baseline 关闭数据增强和 cache：
+Baseline 默认关闭数据增强和 cache，作为模型结构的干净参照：
 
 ```python
 PCVRDataPipelineConfig(
@@ -143,7 +166,7 @@ PCVRDataPipelineConfig(
 )
 ```
 
-Baseline+ 默认打开更激进的组合：
+需要更激进的 recipe 时，在目标实验的类型化 `PCVRTrainConfig.data_pipeline` 中显式声明，例如：
 
 ```python
 PCVRDataPipelineConfig(
@@ -157,7 +180,7 @@ PCVRDataPipelineConfig(
 )
 ```
 
-做消融时不要只比较实验名；先确认模型、数据增强、cache 和 backend 哪些同时变了。
+训练 recipe 不再通过另一个模型包隐式表达。做消融时分别记录模型、数据增强、cache、optimizer、backend 和 seed；只改变当前要回答的变量。数据管道本身的吞吐比较优先使用 `taac-benchmark-pcvr-data-pipeline` 的 `none`、`opt`、`augment` 和 `opt-augment` preset。
 
 ## 改配置的位置
 
@@ -174,6 +197,8 @@ experiments/<name>/__init__.py
 - cache：`src/taac2026/infrastructure/data/cache.py`
 - 训练 step dataset：`src/taac2026/infrastructure/data/step_dataset.py`
 - scan 数据读取和 batch 转换：`src/taac2026/infrastructure/data/dataset.py`
+- hash 行级切分：`src/taac2026/infrastructure/data/hash_split.py`
+- observed schema 扫描：`src/taac2026/infrastructure/data/observation.py`
 - batch 类型：`src/taac2026/infrastructure/data/batches.py`
 
 如果只是调整某个实验的增强策略，改实验包的 `TRAIN_DEFAULTS`。如果要新增一种 transform，再改 `domain/config.py` 和 `infrastructure/data/transforms.py`，并补测试。

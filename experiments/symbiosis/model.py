@@ -17,6 +17,7 @@ from taac2026.api import (
     RMSNorm,
     build_pcvr_model_specs,
     choose_num_heads,
+    masked_effective_rank,
     maybe_gradient_checkpoint,
 )
 
@@ -292,9 +293,19 @@ class PCVRSymbiosis(EmbeddingParameterMixin, nn.Module):
 
     def _embed(self, inputs: PCVRModelInput) -> torch.Tensor:
         batch = self._apply_high_risk_dropout(self.tokenizer(inputs))
+        if self._should_collect_diagnostics():
+            self._put_scalar(
+                "representation/effective_rank_input",
+                masked_effective_rank(batch.tokens, batch.padding_mask),
+            )
         attention_mask = self.attention_mask(batch)
         runner = self._compiled_backbone if self._compiled_backbone is not None else self._run_backbone
         tokens = runner(batch.tokens, batch.padding_mask, attention_mask)
+        if self._should_collect_diagnostics():
+            self._put_scalar(
+                "representation/effective_rank_output",
+                masked_effective_rank(tokens, batch.padding_mask),
+            )
         embedding = self.pooler(tokens, batch)
         self._put_scalar("tokens/active_ratio", (~batch.padding_mask).float().mean())
         self._put_scalar("tokens/count", float(batch.tokens.shape[1]))

@@ -218,8 +218,8 @@ def _run_warnings(run: DiagnosticRun) -> list[str]:
         warnings.append("training telemetry missing")
     if not run.evaluation_telemetry:
         warnings.append("evaluation telemetry missing")
-    if not _dict_value(run.evaluation, "metrics"):
-        warnings.append("evaluation metrics missing")
+    if not _comparison_metrics(run):
+        warnings.append("validation metrics missing")
     return warnings
 
 
@@ -310,11 +310,30 @@ def _telemetry(run: DiagnosticRun, phase: str) -> dict[str, Any]:
 
 
 def _metric(run: DiagnosticRun, name: str) -> float | None:
-    return _nested_float(run.evaluation, "metrics", name)
+    return _nested_float(_comparison_metrics(run), name)
 
 
 def _score_diagnostic(run: DiagnosticRun, name: str) -> float | None:
-    return _nested_float(run.evaluation, "metrics", "score_diagnostics", name)
+    return _nested_float(_comparison_metrics(run), "score_diagnostics", name)
+
+
+def _comparison_metrics(run: DiagnosticRun) -> dict[str, Any]:
+    validation_metrics = _dict_value(run.training_summary, "validation_metrics")
+    if validation_metrics:
+        metrics = dict(validation_metrics)
+        score_diagnostics = _dict_value(run.training_summary, "validation_score_diagnostics")
+        if score_diagnostics:
+            metrics["score_diagnostics"] = score_diagnostics
+        return metrics
+    return _dict_value(run.evaluation, "metrics")
+
+
+def _comparison_metric_source(run: DiagnosticRun) -> str | None:
+    if _dict_value(run.training_summary, "validation_metrics"):
+        return "training_validation"
+    if _dict_value(run.evaluation, "metrics"):
+        return "evaluation"
+    return None
 
 
 def _configure_axes(ax: plt.Axes) -> None:
@@ -819,7 +838,8 @@ def _run_summary(run: DiagnosticRun) -> dict[str, Any]:
         "prediction_count": len(run.predictions),
         "missing_required_inputs": _run_missing_required_inputs(run),
         "warnings": _run_warnings(run),
-        "metrics": _dict_value(run.evaluation, "metrics"),
+        "metrics": _comparison_metrics(run),
+        "metric_source": _comparison_metric_source(run),
         "telemetry": {
             "training": run.training_telemetry,
             "evaluation": run.evaluation_telemetry,

@@ -98,7 +98,7 @@ Baseline 最适合回答这些问题：
 
 - 改 batch、optimizer、NS tokenizer 或数据配置：改 `experiments/baseline/__init__.py`。
 - 改 HyFormer block、query generator、序列 embedding 或 classifier：改 `experiments/baseline/model.py`。
-- 想评估增强、Muon 或 TileLang：优先改 [Baseline+](baseline-plus.md)，保留 Baseline 干净。
+- 想评估增强、Muon 或 TileLang：通过训练配置或 benchmark 单独覆盖变量，保留 Baseline 默认值干净。
 - 改模型构造参数后，确认评估/推理能通过 `train_config.json` 和 `schema.json` 重建。
 
 ## 七、运行与验收

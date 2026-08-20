@@ -127,6 +127,7 @@ def build_train_summary(
         "train_ratio": float(data_config.train_ratio),
         "valid_ratio": float(data_config.valid_ratio),
         "split_strategy": str(data_config.split_strategy),
+        "split_seed": int(context.config.optimizer.seed),
         "sampling_strategy": str(data_config.sampling_strategy),
         "train_steps_per_sweep": int(data_config.train_steps_per_sweep),
     }
@@ -137,6 +138,15 @@ def build_train_summary(
     stats_fn = getattr(cache, "stats", None)
     if callable(stats_fn):
         summary["data_cache_stats"] = stats_fn()
+    validation_metrics = dict(getattr(trainer, "last_eval_metrics", {}) or {})
+    if validation_metrics:
+        summary["validation_metrics"] = validation_metrics
+    validation_score_diagnostics = dict(getattr(trainer, "last_eval_diagnostics", {}) or {})
+    if validation_score_diagnostics:
+        summary["validation_score_diagnostics"] = validation_score_diagnostics
+    validation_model_scalars = dict(getattr(trainer, "last_eval_model_scalars", {}) or {})
+    if validation_model_scalars:
+        summary["validation_model_scalars"] = validation_model_scalars
     return summary
 
 
