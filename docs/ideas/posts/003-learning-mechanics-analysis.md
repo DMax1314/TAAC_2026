@@ -110,13 +110,82 @@ Learning Mechanics 的另一个主线是普适行为：不同架构和数据集�
 
 ## 我们的看法
 
-*（待补充）*
+Learning Mechanics 对本项目最直接的价值不是创造另一个模型包，而是解释总体指标背后的样本分化。第一版实现选择验证集逐样本 checkpoint trace，而不是直接做全参数 SVD：前者复用现有 checkpoint 和数据划分，成本较低，也能为后续梯度聚类与表征分析提供固定样本索引。
+
+### 已实现：固定验证样本 learning trace
+
+`taac-analysis-learning-trace` 会发现一个训练 run 下所有 `global_step*/model.safetensors`，读取 checkpoint 的 `train_config.json`，严格重建当时的验证划分，并让同一批样本依次通过所有 checkpoint。它输出每个 checkpoint 的 AUC/LogLoss、逐样本概率与 BCE、首次持续学会的 step、遗忘次数、学习类别，以及类别级序列长度和缺失率画像。
+
+这里的“学会”使用 `opposite_class_median` 相对排序规则：正样本分数高于当期负样本中位数，或负样本分数低于当期正样本中位数。它比固定 `0.5` 阈值更适合低正例率 PCVR，但仍是分析 proxy，不应解释成线上分类阈值。
+
+```bash
+uv run taac-analysis-learning-trace \
+  --experiment experiments/tokenformer \
+  --run-dir outputs/learning_mechanics/tokenformer_seed42 \
+  --dataset-path outputs/sample_data/demo_1000.parquet \
+  --schema-path docs/archive/files/schema/sample_1000_raw.schema.json \
+  --batch-size 32 \
+  --device cuda \
+  --no-amp
+```
+
+run 目录必须至少包含两个 step checkpoint。训练时用 `--data.eval_every_n_steps` 控制 checkpoint 观察间隔；如果它不小于 `--optimizer.max_steps`，通常只会得到最终 checkpoint，分析入口会直接拒绝这种输入。
+
+输出位于 `<run-dir>/learning_trace/`：
+
+| 文件 | 内容 |
+| --- | --- |
+| `learning_trace.json` | checkpoint 指标、类别计数、结构画像、数据和判定口径 |
+| `learning_trace_samples.jsonl` | 逐样本 score、BCE、learned states、遗忘次数、类别和结构特征 |
+| `learning_trace.svg` | AUC/LogLoss、类别 BCE 轨迹和正负样本类别分布 |
+| `learning_trace.log` | checkpoint 加载与验证划分重建日志 |
+
+学习类别定义如下：
+
+- `early`：在观测区间前 1/3 内进入学会状态，并保持到最后。
+- `late`：更晚进入学会状态，并保持到最后。
+- `unstable`：至少发生一次从学会到未学会的遗忘事件。
+- `unlearned`：截至最后一个 checkpoint 仍未持续学会，且没有先学会再遗忘。
+
+### 2026-08-23 TokenFormer 首次验收
+
+在 NVIDIA A30 上使用 `demo_1000.parquet`、`timestamp_auto` 80/20 划分、seed 42，训练 TokenFormer 100 step，每 20 step 保存一次 checkpoint。201 个固定验证样本中有 22 个正样本。
+
+| Step | AUC | LogLoss |
+| ---: | ---: | ---: |
+| 20 | 0.7590 | 0.3120 |
+| 40 | **0.7862** | 0.3057 |
+| 60 | 0.7821 | 0.2683 |
+| 80 | 0.7765 | **0.2634** |
+| 100 | 0.7676 | 0.2690 |
+
+样本分类为 `early=181`、`late=0`、`unstable=12`、`unlearned=8`。稳定早学组的 BCE 从 step 20 到 100 平均改善约 `0.124`；unstable 和 unlearned 组却分别平均恶化约 `0.471`、`1.016`。AUC 在 step 40 达峰后回落，而总体 LogLoss 继续改善到 step 80，说明大多数样本的概率拟合收益掩盖了少量样本的排序遗忘。这次只有 5 个、且最早为 step 20 的观测点，因此 `late=0` 不能证明模型没有晚学样本；更密集的早期 checkpoint 是下一次实验需要补的口径。
+
+原始 checkpoint 和生成结果保存在本地 `outputs/learning_mechanics_20260823/tokenformer_seed42/`，属于可再生输出，不提交仓库。
+
+### 从诊断到干预：增加序列保留量
+
+首次验收暴露了一个可操作的信号：seed 42 的 unstable 样本平均总序列长度约为 `688`，高于 early 样本的 `632`，而 TokenFormer 默认每个序列域只取最近 `64` 条。于是做了最小干预，把 `seq_top_k` 从 `64` 提高到 `96`，其余训练设置保持一致，并用 seed 17、42、97 做配对复验。
+
+| Step | Baseline AUC | `top_k=96` AUC | 配对差值 | Baseline LogLoss | `top_k=96` LogLoss | 配对差值 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 20 | 0.7562 ± 0.0051 | 0.7637 ± 0.0045 | **+0.00745** | 0.3108 ± 0.0017 | 0.3107 ± 0.0012 | -0.00013 |
+| 40 | 0.7773 ± 0.0083 | 0.7818 ± 0.0028 | **+0.00449** | 0.3024 ± 0.0031 | 0.3022 ± 0.0036 | -0.00023 |
+| 60 | 0.7771 ± 0.0052 | 0.7832 ± 0.0016 | **+0.00609** | 0.2710 ± 0.0024 | 0.2704 ± 0.0016 | -0.00058 |
+| 80 | 0.7756 ± 0.0048 | 0.7850 ± 0.0009 | **+0.00940** | 0.2652 ± 0.0039 | 0.2627 ± 0.0037 | **-0.00250** |
+| 100 | 0.7722 ± 0.0068 | 0.7779 ± 0.0073 | **+0.00567** | 0.2695 ± 0.0029 | 0.2679 ± 0.0052 | -0.00155 |
+
+表中是三个 seed 的均值 ± 样本标准差。所有观测 step 的平均 AUC 都提高，尤其第 80 步三个 seed 均为正增益；每个 run 的最佳 AUC 均值从 `0.7793` 提高到 `0.7853`，最佳 LogLoss 均值从 `0.2652` 降到 `0.2627`。这支持“增加行为上下文能够减缓后期排序遗忘”的假设。
+
+但样本分类给出了一条重要反证：三个 seed 合计的 unlearned 从 `24` 降至 `18`，unstable 却从 `29` 增至 `37`。对 baseline 中原本 `53` 个 problematic 样本做同样本配对，`top_k=96` 只把 `6` 个迁移到 early/late，不过三个 seed 的这组样本最终 BCE 都下降，降幅分别为 `0.0694`、`0.0318`、`0.0375`。因此当前结论是：该改动提高了整体指标和难样本概率质量，但没有消除样本级波动。
+
+这次样本规模只有 201、正样本 22，三个 seed 只能作为方向性证据。A30 训练遥测显示峰值已分配显存从 `1705 MiB` 增至 `1887 MiB`，约增加 `10.7%`；并行运行使用了不同 GPU，耗时不能作严格对比。暂不修改 TokenFormer 默认值；下一步应在正式数据切片上复验，并以同卡串行基准测吞吐、峰值显存和按序列长度分桶的指标，再决定收益是否覆盖线上算力成本。
 
 ## 实施清单
 
-- [ ] 先实现 `analysis trace`：从训练 checkpoint 和 validation slice 导出结构化轨迹。
+- [x] 先实现 `analysis trace`：从训练 checkpoint 和 validation slice 导出结构化轨迹。
 - [ ] 再实现 `analysis spectra`：权重和权重增量 SVD，输出低秩指标。
 - [ ] 再实现 `analysis scaling-fit`：读取多个 run summary，拟合简单幂律。
-- [ ] 再实现 `analysis sample-curves`：固定样本跨 checkpoint 的 loss 曲线。
+- [x] `analysis sample-curves` 已并入 trace：保存固定样本跨 checkpoint 的 score、loss 和 learned states。
 - [ ] 再实现 `analysis gradient-clusters`：小样本单样本梯度相似性聚类。
 - [ ] 最后实现 `analysis representation-similarity`：跨实验包表征收敛分析。
