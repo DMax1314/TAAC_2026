@@ -13,11 +13,6 @@
   <img src="https://img.shields.io/badge/Task-Recommendation-brightgreen.svg" alt="Task">
 </p>
 
-<p align="center">
-  <a href="https://oosmetrics.com/repo/Puiching-Memory/TAAC_2026"><img src="https://api.oosmetrics.com/api/v1/badge/achievement/477fdd09-66c5-46ad-af96-35542587200d.svg" alt="oosmetrics"></a>
-</p>
-
-
 
 <p align="center">
   <a href="https://algo.qq.com/#intro">Competition</a> ·
@@ -328,9 +323,9 @@ data/sample_1000_raw/
 
 <a href="https://www.star-history.com/?repos=Puiching-Memory%2FTAAC_2026&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=Puiching-Memory/TAAC_2026&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=Puiching-Memory/TAAC_2026&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=Puiching-Memory/TAAC_2026&type=date&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=Puiching-Memory/TAAC_2026&type=date&theme=dark&legend=top-left&sealed_token=StGuo-uKGCCseonhFW92H9RzyBXaeF-7vYfCYW7KVnVnQ6RYkv1xbm-OOd8BmQeW3PFKFEUWA_iFAo6oF23J6MO_9f3f6VcSiuIunG6vVB48cC54fPBbPn31gzNh-FZm-X-0_Hh95UYNPpYgFJ6lhLQ_BXj3lO4EYeidNn2fOoxVsvyj-98Xlax-13u_" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=Puiching-Memory/TAAC_2026&type=date&legend=top-left&sealed_token=StGuo-uKGCCseonhFW92H9RzyBXaeF-7vYfCYW7KVnVnQ6RYkv1xbm-OOd8BmQeW3PFKFEUWA_iFAo6oF23J6MO_9f3f6VcSiuIunG6vVB48cC54fPBbPn31gzNh-FZm-X-0_Hh95UYNPpYgFJ6lhLQ_BXj3lO4EYeidNn2fOoxVsvyj-98Xlax-13u_" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=Puiching-Memory/TAAC_2026&type=date&legend=top-left&sealed_token=StGuo-uKGCCseonhFW92H9RzyBXaeF-7vYfCYW7KVnVnQ6RYkv1xbm-OOd8BmQeW3PFKFEUWA_iFAo6oF23J6MO_9f3f6VcSiuIunG6vVB48cC54fPBbPn31gzNh-FZm-X-0_Hh95UYNPpYgFJ6lhLQ_BXj3lO4EYeidNn2fOoxVsvyj-98Xlax-13u_" />
  </picture>
 </a>
 
