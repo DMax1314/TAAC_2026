@@ -313,10 +313,6 @@ def _metric(run: DiagnosticRun, name: str) -> float | None:
     return _nested_float(_comparison_metrics(run), name)
 
 
-def _score_diagnostic(run: DiagnosticRun, name: str) -> float | None:
-    return _nested_float(_comparison_metrics(run), "score_diagnostics", name)
-
-
 def _comparison_metrics(run: DiagnosticRun) -> dict[str, Any]:
     validation_metrics = _dict_value(run.training_summary, "validation_metrics")
     if validation_metrics:
@@ -378,64 +374,75 @@ def _message_figure(output_path: Path, title: str, message: str) -> None:
     _save(fig, output_path)
 
 
+def _grouped_runs(runs: list[DiagnosticRun]) -> list[tuple[str, list[DiagnosticRun]]]:
+    groups: dict[str, list[DiagnosticRun]] = {}
+    for run in runs:
+        groups.setdefault(run.group or run.label, []).append(run)
+    return list(groups.items())
+
+
+def _group_means(grouped_runs: list[tuple[str, list[DiagnosticRun]]], getter) -> np.ndarray:
+    means = []
+    for _label, group_runs in grouped_runs:
+        values = [value for run in group_runs if (value := getter(run)) is not None and np.isfinite(value)]
+        means.append(float(np.mean(values)) if values else float("nan"))
+    return np.asarray(means, dtype=float)
+
+
+def _run_peak(run: DiagnosticRun, key: str) -> float | None:
+    values = [
+        value
+        for phase in ("training", "evaluation", "inference")
+        if (value := _nested_float(_telemetry(run, phase), key)) is not None and np.isfinite(value)
+    ]
+    return max(values) if values else None
+
+
 def plot_runtime_resources(runs: list[DiagnosticRun], output_path: Path) -> None:
-    labels = [run.label for run in runs]
-    if not labels:
+    grouped_runs = _grouped_runs(runs)
+    if not grouped_runs:
         _message_figure(output_path, "Runtime / Resource", "no run outputs were provided")
         return
+    labels = [label for label, _group_runs in grouped_runs]
+    train_elapsed = _group_means(grouped_runs, lambda run: _nested_float(run.training_telemetry, "elapsed_sec"))
+    eval_elapsed = _group_means(grouped_runs, lambda run: _nested_float(run.evaluation_telemetry, "elapsed_sec"))
+    infer_elapsed = _group_means(grouped_runs, lambda run: _nested_float(run.inference_telemetry, "elapsed_sec"))
+    eval_throughput = _group_means(grouped_runs, lambda run: _nested_float(run.evaluation_telemetry, "rows_per_sec"))
+    infer_throughput = _group_means(grouped_runs, lambda run: _nested_float(run.inference_telemetry, "rows_per_sec"))
+    cpu_peak = _group_means(grouped_runs, lambda run: _run_peak(run, "cpu_peak_rss_mb")) / 1024.0
+    cuda_peak = _group_means(grouped_runs, lambda run: _run_peak(run, "cuda_peak_allocated_mb")) / 1024.0
+    parameter_counts = _group_means(
+        grouped_runs,
+        lambda run: (_nested_float(run.training_telemetry, "model_parameters") or float("nan")) / 1_000_000.0,
+    )
 
-    phases = ["training", "evaluation", "inference"]
-    elapsed = {
-        phase: np.asarray([float(_telemetry(run, phase).get("elapsed_sec") or 0.0) for run in runs], dtype=float)
-        for phase in phases
-    }
-    throughput = {
-        "eval": np.asarray([float(run.evaluation_telemetry.get("rows_per_sec") or 0.0) for run in runs], dtype=float),
-        "infer": np.asarray([float(run.inference_telemetry.get("rows_per_sec") or 0.0) for run in runs], dtype=float),
-    }
-    cpu_peak = np.asarray(
-        [max(float(_telemetry(run, phase).get("cpu_peak_rss_mb") or 0.0) for phase in phases) for run in runs],
-        dtype=float,
-    )
-    cuda_peak = np.asarray(
-        [max(float(_telemetry(run, phase).get("cuda_peak_allocated_mb") or 0.0) for phase in phases) for run in runs],
-        dtype=float,
-    )
-    parameter_counts = np.asarray(
-        [float(run.training_telemetry.get("model_parameters") or 0.0) / 1_000_000.0 for run in runs],
-        dtype=float,
-    )
-    runtime_total = elapsed["training"] + elapsed["evaluation"] + elapsed["inference"]
+    metric_specs = [
+        ("train s", train_elapsed, True, lambda value: f"{value:.1f}"),
+        ("eval s", eval_elapsed, True, lambda value: f"{value:.1f}"),
+        ("eval r/s", eval_throughput, False, lambda value: f"{value:.0f}"),
+        ("CPU GB", cpu_peak, True, lambda value: f"{value:.1f}"),
+        ("CUDA GB", cuda_peak, True, lambda value: f"{value:.1f}"),
+        ("params M", parameter_counts, True, lambda value: f"{value:.0f}"),
+    ]
+    has_inference = np.isfinite(infer_elapsed).all() and np.isfinite(infer_throughput).all()
+    if has_inference:
+        metric_specs.insert(2, ("infer s", infer_elapsed, True, lambda value: f"{value:.1f}"))
+        metric_specs.insert(4, ("infer r/s", infer_throughput, False, lambda value: f"{value:.0f}"))
 
-    scorecard_labels = ["train s", "eval s", "infer s", "eval r/s", "infer r/s", "CPU GB", "CUDA GB"]
-    scorecard = np.column_stack(
-        [
-            elapsed["training"],
-            elapsed["evaluation"],
-            elapsed["inference"],
-            throughput["eval"],
-            throughput["infer"],
-            cpu_peak / 1024.0,
-            cuda_peak / 1024.0,
-        ]
-    )
-    lower_is_better = np.asarray([True, True, True, False, False, True, True], dtype=bool)
+    scorecard_labels = [label for label, _values, _lower, _formatter in metric_specs]
+    scorecard = np.column_stack([values for _label, values, _lower, _formatter in metric_specs])
+    lower_is_better = np.asarray([lower for _label, _values, lower, _formatter in metric_specs], dtype=bool)
     formatted = np.column_stack(
         [
-            [f"{value:.1f}" for value in elapsed["training"]],
-            [f"{value:.1f}" for value in elapsed["evaluation"]],
-            [f"{value:.1f}" for value in elapsed["inference"]],
-            [f"{value:.0f}" for value in throughput["eval"]],
-            [f"{value:.0f}" for value in throughput["infer"]],
-            [f"{value:.1f}" for value in cpu_peak / 1024.0],
-            [f"{value:.1f}" for value in cuda_peak / 1024.0],
+            [formatter(value) if np.isfinite(value) else "-" for value in values]
+            for _label, values, _lower, formatter in metric_specs
         ]
     )
     heatmap = np.column_stack(
         [_normalized_metric(scorecard[:, index], lower_is_better=bool(lower_is_better[index])) for index in range(scorecard.shape[1])]
     )
 
-    fig = _new_figure(13.8, 8.4)
+    fig = _new_figure(12.8, 7.8)
     grid = GridSpec(2, 2, figure=fig, height_ratios=[1.1, 1.0], width_ratios=[1.0, 1.0])
     ax_scorecard = fig.add_subplot(grid[0, :])
     ax_train_tradeoff = fig.add_subplot(grid[1, 0])
@@ -445,38 +452,25 @@ def plot_runtime_resources(runs: list[DiagnosticRun], output_path: Path) -> None
     _plot_tradeoff_scatter(
         ax_train_tradeoff,
         labels,
-        x=elapsed["training"],
-        y=cuda_peak / 1024.0,
+        x=train_elapsed,
+        y=cuda_peak,
         sizes=parameter_counts,
-        title="Training Cost Tradeoff",
+        title="Training Cost Tradeoff (bubble area ~= parameters)",
         xlabel="train runtime (s)",
         ylabel="peak CUDA allocated (GB)",
-        x_reference="left is faster",
-        y_reference="lower uses less GPU memory",
-        size_note="bubble size ~= parameter count",
     )
+    efficiency_phase = "Inference" if has_inference else "Evaluation"
     _plot_tradeoff_scatter(
         ax_infer_tradeoff,
         labels,
-        x=throughput["infer"],
-        y=elapsed["inference"],
-        sizes=cuda_peak / 1024.0,
-        title="Inference Efficiency Tradeoff",
-        xlabel="infer throughput (rows/s)",
-        ylabel="infer runtime (s)",
-        x_reference="right is faster",
-        y_reference="lower latency",
-        size_note="bubble size ~= peak CUDA GB",
+        x=infer_throughput if has_inference else eval_throughput,
+        y=infer_elapsed if has_inference else eval_elapsed,
+        sizes=cuda_peak,
+        title=f"{efficiency_phase} Efficiency Tradeoff (bubble area ~= peak CUDA)",
+        xlabel=f"{efficiency_phase.lower()} throughput (rows/s)",
+        ylabel=f"{efficiency_phase.lower()} runtime (s)",
     )
-    fig.text(
-        0.5,
-        0.025,
-        f"Runtime total range: {runtime_total.min():.1f}s - {runtime_total.max():.1f}s.",
-        ha="center",
-        va="bottom",
-        color=SUBTEXT,
-        fontsize=9,
-    )
+    fig.suptitle("Model-Level Runtime / Resource Comparison", color=TEXT, fontsize=15, fontweight="bold")
     _save(fig, output_path)
 
 
@@ -512,7 +506,7 @@ def _plot_runtime_scorecard(
         spine.set_color(GRID)
     for row in range(formatted.shape[0]):
         for col in range(formatted.shape[1]):
-            text_color = "#101418" if heatmap[row, col] > 0.68 else "#f8f9fb"
+            text_color = "#101418" if np.isfinite(heatmap[row, col]) and heatmap[row, col] > 0.68 else "#f8f9fb"
             ax.text(col, row, formatted[row, col], ha="center", va="center", color=text_color, fontsize=9, fontweight="bold")
     ax.set_xlabel("brighter is better within each column", color=SUBTEXT, labelpad=10)
 
@@ -527,97 +521,191 @@ def _plot_tradeoff_scatter(
     title: str,
     xlabel: str,
     ylabel: str,
-    x_reference: str,
-    y_reference: str,
-    size_note: str,
 ) -> None:
     _configure_axes(ax)
     ax.grid(True, color=GRID, linewidth=0.7, alpha=0.75)
-    marker_sizes = np.clip(sizes, 20.0, None) * 1.2
-    ax.scatter(
-        x,
-        y,
-        s=marker_sizes,
-        c=[MODEL_COLORS[index % len(MODEL_COLORS)] for index in range(len(labels))],
-        edgecolors="#f8f9fb",
-        linewidths=0.55,
-        alpha=0.88,
-        zorder=3,
-    )
+    finite = np.isfinite(x) & np.isfinite(y)
+    if not finite.any():
+        ax.text(0.5, 0.5, "no data", ha="center", va="center", color=SUBTEXT, transform=ax.transAxes)
+        ax.set_title(title)
+        return
+    labels = [label for label, keep in zip(labels, finite, strict=True) if keep]
+    x = x[finite]
+    y = y[finite]
+    sizes = sizes[finite]
+    finite_sizes = sizes[np.isfinite(sizes) & (sizes > 0.0)]
+    size_scale = float(finite_sizes.max()) if finite_sizes.size else 1.0
+    marker_sizes = 90.0 + 430.0 * np.sqrt(np.nan_to_num(sizes, nan=0.0) / size_scale)
     for row, label in enumerate(labels):
-        ax.annotate(label, (x[row], y[row]), xytext=(6, 5), textcoords="offset points", color=TEXT, fontsize=8)
+        ax.scatter(
+            [x[row]],
+            [y[row]],
+            s=[marker_sizes[row]],
+            color=MODEL_COLORS[row % len(MODEL_COLORS)],
+            edgecolors="#f8f9fb",
+            linewidths=0.55,
+            alpha=0.88,
+            label=label,
+            zorder=3,
+        )
     ax.set_title(title)
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
-    ax.text(0.03, 0.08, f"{x_reference}; {y_reference}", transform=ax.transAxes, color=SUBTEXT, fontsize=8)
-    ax.text(0.03, 0.035, size_note, transform=ax.transAxes, color=SUBTEXT, fontsize=8)
-
-
-def plot_prediction_distribution(runs: list[DiagnosticRun], output_path: Path, *, bins: int) -> None:
-    runs_with_predictions = [run for run in runs if run.predictions]
-    if not runs_with_predictions:
-        _message_figure(output_path, "Prediction Distribution", "no validation_predictions.jsonl files were found")
-        return
-    ncols = 2 if len(runs_with_predictions) > 1 else 1
-    nrows = int(np.ceil(len(runs_with_predictions) / ncols))
-    fig = _new_figure(6.5 * ncols, 3.6 * nrows)
-    bin_edges = np.linspace(0.0, 1.0, max(2, bins) + 1)
-    for index, run in enumerate(runs_with_predictions, start=1):
-        ax = fig.add_subplot(nrows, ncols, index)
-        _configure_axes(ax)
-        scores = np.asarray([record.score for record in run.predictions], dtype=float)
-        targets = np.asarray([record.target if record.target is not None else np.nan for record in run.predictions], dtype=float)
-        has_labels = np.isfinite(targets).any() and len(set(targets[np.isfinite(targets)].astype(int).tolist())) > 1
-        if has_labels:
-            ax.hist(scores[targets < 0.5], bins=bin_edges, color=COLORS[3], alpha=0.68, label="negative")
-            ax.hist(scores[targets >= 0.5], bins=bin_edges, color=COLORS[1], alpha=0.68, label="positive")
-            ax.legend(frameon=False, labelcolor=SUBTEXT, fontsize=8)
-        else:
-            ax.hist(scores, bins=bin_edges, color=COLORS[index % len(COLORS)], alpha=0.82)
-        ax.set_title(f"{run.label} | mean={scores.mean():.4f}, std={scores.std():.4f}")
-        ax.set_xlabel("predicted probability")
-        ax.set_ylabel("samples")
-    _save(fig, output_path)
+    legend = ax.legend(frameon=False, labelcolor=SUBTEXT, fontsize=7, ncols=2, loc="best")
+    for handle in legend.legend_handles:
+        handle.set_sizes([55.0])
 
 
 def _prediction_maps(runs: list[DiagnosticRun]) -> list[tuple[DiagnosticRun, dict[str, PredictionRecord]]]:
     return [(run, {record.key: record for record in run.predictions}) for run in runs if run.predictions]
 
 
-def _pairwise_correlation(left: dict[str, PredictionRecord], right: dict[str, PredictionRecord]) -> tuple[float, int]:
+def _grouped_prediction_maps(runs: list[DiagnosticRun]) -> list[tuple[str, dict[str, PredictionRecord]]]:
+    grouped_maps = []
+    for label, group_runs in _grouped_runs(runs):
+        run_maps = [records for _run, records in _prediction_maps(group_runs)]
+        if not run_maps:
+            continue
+        common_keys = sorted(set.intersection(*(set(records) for records in run_maps)))
+        aggregated = {}
+        for key in common_keys:
+            source = run_maps[0][key]
+            target = next((records[key].target for records in run_maps if records[key].target is not None), None)
+            aggregated[key] = PredictionRecord(
+                key=key,
+                score=float(np.mean([records[key].score for records in run_maps])),
+                target=target,
+                user_id=source.user_id,
+                sample_index=source.sample_index,
+            )
+        grouped_maps.append((label, aggregated))
+    return grouped_maps
+
+
+def plot_prediction_distribution(runs: list[DiagnosticRun], output_path: Path, *, bins: int) -> None:
+    maps = _grouped_prediction_maps(runs)
+    if not maps:
+        _message_figure(output_path, "Prediction Distribution", "no validation_predictions.jsonl files were found")
+        return
+    all_scores = np.asarray([record.score for _label, records in maps for record in records.values()], dtype=float)
+    x_max = min(1.0, max(0.25, float(all_scores.max()) * 1.05))
+    bin_edges = np.linspace(0.0, x_max, max(2, bins) + 1)
+    ncols = 2 if len(maps) > 1 else 1
+    nrows = int(np.ceil(len(maps) / ncols))
+    fig = _new_figure(11.5 if ncols == 2 else 6.0, 2.7 * nrows + 0.8)
+    grid = GridSpec(nrows, 4 if ncols == 2 else 1, figure=fig)
+    fig.suptitle("Class-Conditional Prediction Profiles", color=TEXT, fontsize=15, fontweight="bold")
+    for index, (label, records) in enumerate(maps, start=1):
+        row = (index - 1) // ncols
+        if ncols == 2 and len(maps) % 2 == 1 and index == len(maps):
+            ax = fig.add_subplot(grid[row, 1:3])
+        elif ncols == 2:
+            column = ((index - 1) % 2) * 2
+            ax = fig.add_subplot(grid[row, column : column + 2])
+        else:
+            ax = fig.add_subplot(grid[row, 0])
+        _configure_axes(ax)
+        scores = np.asarray([record.score for record in records.values()], dtype=float)
+        targets = np.asarray(
+            [record.target if record.target is not None else np.nan for record in records.values()],
+            dtype=float,
+        )
+        negative_scores = scores[targets < 0.5]
+        positive_scores = scores[targets >= 0.5]
+        has_labels = negative_scores.size > 0 and positive_scores.size > 0
+        if has_labels:
+            ax.hist(
+                negative_scores,
+                bins=bin_edges,
+                weights=np.full(negative_scores.size, 1.0 / negative_scores.size),
+                color=COLORS[3],
+                alpha=0.58,
+                label="target=0",
+            )
+            ax.hist(
+                positive_scores,
+                bins=bin_edges,
+                weights=np.full(positive_scores.size, 1.0 / positive_scores.size),
+                color=COLORS[1],
+                alpha=0.62,
+                label="target=1",
+            )
+            margin = float(positive_scores.mean() - negative_scores.mean())
+            ax.set_title(f"{label} | mean margin={margin:+.3f}")
+            if index == 1:
+                ax.legend(frameon=False, labelcolor=SUBTEXT, fontsize=8)
+        else:
+            ax.hist(scores, bins=bin_edges, weights=np.full(scores.size, 1.0 / scores.size), color=COLORS[0], alpha=0.8)
+            ax.set_title(label)
+        ax.set_xlim(0.0, x_max)
+        ax.set_xlabel("seed-mean predicted probability")
+        ax.set_ylabel("within-class share")
+    _save(fig, output_path)
+
+
+def _rankdata(values: np.ndarray) -> np.ndarray:
+    order = np.argsort(values, kind="mergesort")
+    sorted_values = values[order]
+    ranks = np.empty(values.size, dtype=float)
+    start = 0
+    while start < values.size:
+        end = start + 1
+        while end < values.size and sorted_values[end] == sorted_values[start]:
+            end += 1
+        ranks[order[start:end]] = (start + end - 1) / 2.0
+        start = end
+    return ranks
+
+
+def _pairwise_spearman(left: dict[str, PredictionRecord], right: dict[str, PredictionRecord]) -> tuple[float, int]:
     keys = sorted(set(left).intersection(right))
     if len(keys) < 2:
         return float("nan"), len(keys)
-    left_scores = np.asarray([left[key].score for key in keys], dtype=float)
-    right_scores = np.asarray([right[key].score for key in keys], dtype=float)
+    left_scores = _rankdata(np.asarray([left[key].score for key in keys], dtype=float))
+    right_scores = _rankdata(np.asarray([right[key].score for key in keys], dtype=float))
     if left_scores.std() == 0.0 or right_scores.std() == 0.0:
         return float("nan"), len(keys)
     return float(np.corrcoef(left_scores, right_scores)[0, 1]), len(keys)
 
 
+def _within_group_seed_agreement(runs: list[DiagnosticRun]) -> list[tuple[str, float, int]]:
+    agreements = []
+    for label, group_runs in _grouped_runs(runs):
+        maps = [records for _run, records in _prediction_maps(group_runs)]
+        correlations = [
+            correlation
+            for left_index, left in enumerate(maps)
+            for right in maps[left_index + 1 :]
+            if np.isfinite(correlation := _pairwise_spearman(left, right)[0])
+        ]
+        agreements.append((label, float(np.mean(correlations)) if correlations else float("nan"), len(maps)))
+    return agreements
+
+
 def plot_prediction_correlation(runs: list[DiagnosticRun], output_path: Path) -> None:
-    maps = _prediction_maps(runs)
+    maps = _grouped_prediction_maps(runs)
     if len(maps) < 2:
-        _message_figure(output_path, "Prediction Correlation", "need at least two runs with validation predictions")
+        _message_figure(output_path, "Prediction Correlation", "need at least two model groups with validation predictions")
         return
-    labels = [run.label for run, _records in maps]
+    labels = [label for label, _records in maps]
     size = len(maps)
     matrix = np.full((size, size), np.nan, dtype=float)
     overlaps = np.zeros((size, size), dtype=int)
-    for i, (_left_run, left_records) in enumerate(maps):
-        for j, (_right_run, right_records) in enumerate(maps):
+    for i, (_left_label, left_records) in enumerate(maps):
+        for j, (_right_label, right_records) in enumerate(maps):
             if i == j:
                 matrix[i, j] = 1.0
                 overlaps[i, j] = len(left_records)
             elif i < j:
-                corr, overlap = _pairwise_correlation(left_records, right_records)
+                corr, overlap = _pairwise_spearman(left_records, right_records)
                 matrix[i, j] = matrix[j, i] = corr
                 overlaps[i, j] = overlaps[j, i] = overlap
-    fig = _new_figure(max(6.0, 1.25 * size + 3.5), max(5.5, 1.15 * size + 2.8))
-    ax = fig.add_subplot(111)
+    fig = _new_figure(12.5, 6.6)
+    grid = GridSpec(1, 2, figure=fig, width_ratios=[1.35, 0.65])
+    ax = fig.add_subplot(grid[0, 0])
     ax.set_facecolor(AX_BG)
     image = ax.imshow(matrix, vmin=-1.0, vmax=1.0, cmap="coolwarm")
-    ax.set_title("Model Prediction Correlation")
+    ax.set_title("Between-Model Ranking Agreement")
     ax.set_xticks(np.arange(size))
     ax.set_yticks(np.arange(size))
     ax.set_xticklabels(labels, rotation=35, ha="right", color=SUBTEXT)
@@ -626,18 +714,40 @@ def plot_prediction_correlation(runs: list[DiagnosticRun], output_path: Path) ->
         for j in range(size):
             value = matrix[i, j]
             text = "nan" if np.isnan(value) else f"{value:.2f}"
-            ax.text(j, i, f"{text}\nn={overlaps[i, j]}", ha="center", va="center", color="#f8f9fb", fontsize=8)
+            ax.text(j, i, text, ha="center", va="center", color="#f8f9fb", fontsize=9, fontweight="bold")
+    common_overlap = int(overlaps[np.triu_indices(size, 1)].min())
+    ax.set_xlabel(f"Spearman rho on seed-mean predictions; common samples >= {common_overlap}", color=SUBTEXT)
     colorbar = fig.colorbar(image, ax=ax, fraction=0.046, pad=0.04)
     colorbar.ax.tick_params(colors=SUBTEXT)
+    ax_agreement = fig.add_subplot(grid[0, 1])
+    _configure_axes(ax_agreement)
+    agreements = _within_group_seed_agreement(runs)
+    agreement_labels = [label for label, _value, _count in agreements]
+    agreement_values = np.asarray([value for _label, value, _count in agreements], dtype=float)
+    y = np.arange(len(agreements))
+    ax_agreement.barh(y, agreement_values, color=MODEL_COLORS[: len(agreements)], alpha=0.86)
+    ax_agreement.set_yticks(y)
+    ax_agreement.set_yticklabels(agreement_labels, color=SUBTEXT)
+    ax_agreement.invert_yaxis()
+    finite_agreements = agreement_values[np.isfinite(agreement_values)]
+    agreement_min = min(0.0, float(finite_agreements.min()) * 1.05) if finite_agreements.size else 0.0
+    ax_agreement.set_xlim(agreement_min, 1.0)
+    ax_agreement.set_title("Within-Model Seed Agreement")
+    ax_agreement.set_xlabel("mean pairwise Spearman rho")
+    for row, (_label, value, count) in enumerate(agreements):
+        text = f"{value:.3f} ({count} seeds)" if np.isfinite(value) else "single seed"
+        text_x = value - 0.02 if np.isfinite(value) else agreement_min + 0.02
+        ax_agreement.text(text_x, row, text, va="center", ha="right", color=TEXT, fontsize=8)
+    fig.suptitle("Seed-Aware Prediction Correlation", color=TEXT, fontsize=15, fontweight="bold")
     _save(fig, output_path)
 
 
 def plot_sample_disagreement(runs: list[DiagnosticRun], output_path: Path, *, top_n: int) -> None:
-    maps = _prediction_maps(runs)
+    maps = _grouped_prediction_maps(runs)
     if len(maps) < 2:
-        _message_figure(output_path, "Sample Disagreement", "need at least two runs with validation predictions")
+        _message_figure(output_path, "Sample Disagreement", "need at least two model groups with validation predictions")
         return
-    common_keys = sorted(set.intersection(*(set(records) for _run, records in maps)))
+    common_keys = sorted(set.intersection(*(set(records) for _label, records in maps)))
     if not common_keys:
         _message_figure(output_path, "Sample Disagreement", "runs do not share prediction sample keys")
         return
@@ -646,14 +756,14 @@ def plot_sample_disagreement(runs: list[DiagnosticRun], output_path: Path, *, to
     std_scores = scores.std(axis=1)
     range_scores = scores.max(axis=1) - scores.min(axis=1)
     targets = np.asarray(
-        [next((records[key].target for _run, records in maps if records[key].target is not None), np.nan) for key in common_keys],
+        [next((records[key].target for _label, records in maps if records[key].target is not None), np.nan) for key in common_keys],
         dtype=float,
     )
-    top_count = min(max(1, top_n), 20)
+    top_count = min(max(1, top_n), 20, len(common_keys))
     order = np.argsort(std_scores)[::-1][:top_count]
-    run_labels = [run.label for run, _records in maps]
+    model_labels = [label for label, _records in maps]
 
-    fig = _new_figure(14.0, max(7.8, 0.3 * top_count + 3.8))
+    fig = _new_figure(12.8, max(7.8, 0.3 * top_count + 3.8))
     grid = GridSpec(2, 2, figure=fig, height_ratios=[0.9, 3.2], width_ratios=[1.0, 1.65])
     ax_hist = fig.add_subplot(grid[0, :])
     ax_scatter = fig.add_subplot(grid[1, 0])
@@ -667,8 +777,8 @@ def plot_sample_disagreement(runs: list[DiagnosticRun], output_path: Path, *, to
     for value, label, color in ((p50, "p50", COLORS[2]), (p90, "p90", COLORS[1]), (p99, "p99", COLORS[3])):
         ax_hist.axvline(value, color=color, linewidth=1.3, alpha=0.9)
         ax_hist.text(value, 0.95, label, color=color, fontsize=8, ha="center", va="top", transform=ax_hist.get_xaxis_transform())
-    ax_hist.set_title("Disagreement Distribution Across Validation Samples")
-    ax_hist.set_xlabel("std across model predictions")
+    ax_hist.set_title("Model Disagreement Across Validation Samples")
+    ax_hist.set_xlabel("std across model-level seed-mean predictions")
     ax_hist.set_ylabel("samples")
 
     _configure_axes(ax_scatter)
@@ -694,8 +804,8 @@ def plot_sample_disagreement(runs: list[DiagnosticRun], output_path: Path, *, to
     heatmap = ax_heatmap.imshow(top_scores, aspect="auto", vmin=0.0, vmax=1.0, cmap="viridis")
     ax_heatmap.set_facecolor(AX_BG)
     ax_heatmap.set_title(f"Top {top_count} Samples: Prediction By Model")
-    ax_heatmap.set_xticks(np.arange(len(run_labels)))
-    ax_heatmap.set_xticklabels(run_labels, rotation=35, ha="right", color=SUBTEXT)
+    ax_heatmap.set_xticks(np.arange(len(model_labels)))
+    ax_heatmap.set_xticklabels(model_labels, rotation=25, ha="right", color=SUBTEXT)
     row_labels = [
         f"{_short_sample_label(common_keys[index])} | y={_target_label(targets[index])} | sd={std_scores[index]:.3f}"
         for index in order
@@ -706,14 +816,17 @@ def plot_sample_disagreement(runs: list[DiagnosticRun], output_path: Path, *, to
     for spine in ax_heatmap.spines.values():
         spine.set_color(GRID)
     for row in range(top_count):
-        for col in range(len(run_labels)):
+        for col in range(len(model_labels)):
             value = top_scores[row, col]
             text_color = "#101418" if value > 0.58 else "#f8f9fb"
             ax_heatmap.text(col, row, f"{value:.2f}", ha="center", va="center", color=text_color, fontsize=7)
     colorbar = fig.colorbar(heatmap, ax=ax_heatmap, fraction=0.035, pad=0.025)
     colorbar.set_label("predicted probability", color=TEXT)
     colorbar.ax.tick_params(colors=SUBTEXT)
-    ax_heatmap.set_xlabel(f"Top samples ranked by std; max range={range_scores[order[0]]:.3f}", color=SUBTEXT)
+    ax_heatmap.set_xlabel(
+        f"Cells are model means across seeds; max model range={range_scores[order[0]]:.3f}",
+        color=SUBTEXT,
+    )
     _save(fig, output_path)
 
 
@@ -738,6 +851,23 @@ def _metric_groups(runs: list[DiagnosticRun], getter) -> list[tuple[str, list[fl
     return list(groups.items())
 
 
+def _prediction_seed_drift_groups(runs: list[DiagnosticRun]) -> tuple[list[tuple[str, list[float]]], dict[str, int]]:
+    groups = []
+    seed_counts = {}
+    for label, group_runs in _grouped_runs(runs):
+        maps = [records for _run, records in _prediction_maps(group_runs)]
+        seed_counts[label] = len(maps)
+        if len(maps) < 2:
+            continue
+        common_keys = sorted(set.intersection(*(set(records) for records in maps)))
+        if not common_keys:
+            continue
+        scores = np.asarray([[records[key].score for records in maps] for key in common_keys], dtype=float)
+        mean_sample_sd = float(np.mean(np.std(scores, axis=1, ddof=1)))
+        groups.append((label, [mean_sample_sd]))
+    return groups, seed_counts
+
+
 def _plot_smoke_metric_panel(
     ax: plt.Axes,
     title: str,
@@ -745,6 +875,7 @@ def _plot_smoke_metric_panel(
     *,
     formatter,
     higher_is_better: bool | None,
+    display_counts: dict[str, int] | None = None,
 ) -> None:
     _configure_axes(ax)
     ax.grid(True, axis="x", color=GRID, linewidth=0.7, alpha=0.75)
@@ -759,7 +890,10 @@ def _plot_smoke_metric_panel(
     metric_values = np.asarray([float(np.mean(values)) for _label, values in ordered], dtype=float)
     metric_mins = np.asarray([float(np.min(values)) for _label, values in ordered], dtype=float)
     metric_maxes = np.asarray([float(np.max(values)) for _label, values in ordered], dtype=float)
-    metric_stds = np.asarray([float(np.std(values)) for _label, values in ordered], dtype=float)
+    metric_stds = np.asarray(
+        [float(np.std(values, ddof=1)) if len(values) > 1 else 0.0 for _label, values in ordered],
+        dtype=float,
+    )
     counts = np.asarray([len(values) for _label, values in ordered], dtype=int)
     y = np.arange(len(ordered))
     colors = [COLORS[0]] * len(ordered)
@@ -788,8 +922,11 @@ def _plot_smoke_metric_panel(
     for row, value in enumerate(metric_values):
         label_x = min(value + label_offset, x_max * 0.985)
         ha = "left" if label_x > value else "right"
+        display_count = display_counts.get(labels[row], counts[row]) if display_counts else counts[row]
         if counts[row] > 1:
-            label = f"{formatter(value)} +/- {formatter(metric_stds[row])} (n={counts[row]})"
+            label = f"{formatter(value)} +/- {formatter(metric_stds[row])} ({display_count} seeds)"
+        elif display_count > 1:
+            label = f"{formatter(value)} ({display_count} seeds)"
         else:
             label = formatter(value)
         ax.text(label_x, row, label, ha=ha, va="center", color=TEXT, fontsize=8, fontweight="bold")
@@ -805,18 +942,38 @@ def plot_stability(runs: list[DiagnosticRun], output_path: Path) -> None:
     if not runs:
         _message_figure(output_path, "Stability", "no run outputs were provided")
         return
+    drift_groups, drift_seed_counts = _prediction_seed_drift_groups(runs)
     panels = [
-        ("AUC", lambda run: _metric(run, "auc"), lambda value: f"{value:.4f}", True),
-        ("LogLoss", lambda run: _metric(run, "logloss"), lambda value: f"{value:.4f}", False),
-        ("Prediction Std", lambda run: _score_diagnostic(run, "score_std"), lambda value: f"{value:.4f}", None),
-        ("Eval Runtime", lambda run: _nested_float(run.evaluation_telemetry, "elapsed_sec"), lambda value: f"{value:.2f}s", False),
+        ("AUC", _metric_groups(runs, lambda run: _metric(run, "auc")), lambda value: f"{value:.4f}", True, None),
+        (
+            "LogLoss",
+            _metric_groups(runs, lambda run: _metric(run, "logloss")),
+            lambda value: f"{value:.4f}",
+            False,
+            None,
+        ),
+        ("Prediction Seed Drift", drift_groups, lambda value: f"{value:.4f}", False, drift_seed_counts),
+        (
+            "Eval Runtime",
+            _metric_groups(runs, lambda run: _nested_float(run.evaluation_telemetry, "elapsed_sec")),
+            lambda value: f"{value:.2f}s",
+            False,
+            None,
+        ),
     ]
-    panel_groups = [(title, _metric_groups(runs, getter), formatter, higher_is_better) for title, getter, formatter, higher_is_better in panels]
-    repeated_groups = any(len(values) > 1 for _title, groups, _formatter, _higher in panel_groups for _label, values in groups)
+    repeated_groups = any(len(values) > 1 for _title, groups, _formatter, _higher, _counts in panels for _label, values in groups)
     fig = _new_figure(12.5, 8.2)
-    title = "Grouped Smoke Stability" if repeated_groups else "Single-Run Smoke Metrics"
+    title = "Three-Seed Smoke Comparison" if repeated_groups else "Single-Run Smoke Metrics"
     fig.suptitle(title, color=TEXT, fontsize=15, fontweight="bold")
-    for index, (title, groups, formatter, higher_is_better) in enumerate(panel_groups, start=1):
+    fig.text(
+        0.5,
+        0.94,
+        "bars = mean; whiskers = min-max; +/- = sample SD",
+        ha="center",
+        color=SUBTEXT,
+        fontsize=9,
+    )
+    for index, (title, groups, formatter, higher_is_better, display_counts) in enumerate(panels, start=1):
         ax = fig.add_subplot(2, 2, index)
         _plot_smoke_metric_panel(
             ax,
@@ -824,6 +981,7 @@ def plot_stability(runs: list[DiagnosticRun], output_path: Path) -> None:
             groups,
             formatter=formatter,
             higher_is_better=higher_is_better,
+            display_counts=display_counts,
         )
     _save(fig, output_path)
 

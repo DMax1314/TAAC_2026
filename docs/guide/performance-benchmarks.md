@@ -103,10 +103,11 @@ uv run taac-plot-pcvr-diagnostics \
   --run tokenformer=outputs/smoke/tokenformer_seed42 \
   --run dualq=outputs/smoke/dualq_seed42 \
   --run queryformer=outputs/smoke/queryformer_seed42 \
+  --group-by label \
   --output-dir figures/pcvr_diagnostics
 ```
 
-如果 run 目录还没有 `evaluation.json` 和 `validation_predictions.jsonl`，先跑对应的 `bash run.sh val ...`；如果还需要推理耗时图，也要先跑 `bash run.sh infer ...`。绘图命令默认会拒绝缺少评估产物的输入，避免生成只有 no-data 的占位图。
+如果 run 目录还没有 `evaluation.json` 和 `validation_predictions.jsonl`，先跑对应的 `bash run.sh val ...`；如果还需要推理耗时对比，也要先跑 `bash run.sh infer ...`。没有 inference telemetry 时资源图会改画 evaluation efficiency，不会把缺失值当成 0。绘图命令默认会拒绝缺少评估产物的输入，避免生成只有 no-data 的占位图。
 
 详细口径见 [PCVR Smoke Diagnostics](../benchmark/pcvr-diagnostics.md)。
 

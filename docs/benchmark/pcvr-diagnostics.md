@@ -22,7 +22,7 @@ icon: lucide/activity
 | DualQ | 0.7591 ± 0.0103 | 0.2842 ± 0.0041 | 546.7M | 17.69s | 5248 MiB |
 | QueryFormer | 0.7546 ± 0.0043 | 0.3175 ± 0.0034 | 2190.8M | 46.79s | 17681 MiB |
 
-**结论：保留 TokenFormer。** 它不是本次最高 AUC 的模型，但在 3 个 seed 上方差最小，LogLoss 仅次于 DualQ，并处于最低延迟、最低显存的一档。它和 DualQ、QueryFormer 的同 seed 全量预测 Pearson 相关系数分别为 `0.934`、`0.939`，独特排序信号有限；但以约 1/3 和 1/14 的参数量提供接近的质量，仍然是有价值的高效结构对照。这个 1000 行、20 step 结果只能支持仓库保留决策，不能外推为正式榜单结论。
+**结论：保留 TokenFormer。** 它不是本次最高 AUC 的模型，但在 3 个 seed 上方差最小，LogLoss 仅次于 DualQ，并处于最低延迟、最低显存的一档。把每个模型的 3-seed 逐样本预测先取均值后，TokenFormer 与 DualQ、QueryFormer 的 Spearman 相关系数分别为 `0.840`、`0.741`：排序信号并非完全独立，但也不能视为同一模型的等价缩放。它以约 1/3 和 1/14 的参数量提供接近的质量，仍然是有价值的高效结构对照。这个 1000 行、20 step 结果只能支持仓库保留决策，不能外推为正式榜单结论。
 
 原始 run、逐样本预测和生成图保存在本地 `outputs/model_selection_20260820/`；该目录是可再生输出，不提交到仓库。
 
@@ -93,6 +93,7 @@ uv run taac-plot-pcvr-diagnostics \
   --run symbiosis=outputs/smoke/symbiosis_seed42 \
   --run dualq=outputs/smoke/dualq_seed42 \
   --run queryformer=outputs/smoke/queryformer_seed42 \
+  --group-by label \
   --output-dir figures/pcvr_diagnostics
 ```
 
@@ -102,11 +103,11 @@ uv run taac-plot-pcvr-diagnostics \
 
 | 文件                               | 含义                                                      |
 | ---------------------------------- | --------------------------------------------------------- |
-| `pcvr_runtime_resources.svg`       | 训练耗时、评估/推理吞吐、CPU / CUDA 峰值资源占用          |
-| `pcvr_prediction_distribution.svg` | 每个模型的预测概率分布，带正负样本对比                    |
-| `pcvr_prediction_correlation.svg`  | 模型间逐样本预测相关性热力图                              |
-| `pcvr_sample_disagreement.svg`     | 样本级模型预测分歧和 top disagreement 样本                |
-| `pcvr_stability.svg`               | 按实验或标签分组的 AUC、LogLoss、预测 std、评估耗时稳定性 |
+| `pcvr_runtime_resources.svg`       | 模型级平均耗时、吞吐、参数量和 CPU / CUDA 峰值资源占用    |
+| `pcvr_prediction_distribution.svg` | seed-mean 预测的类条件分布和正负样本均值间隔              |
+| `pcvr_prediction_correlation.svg`  | 模型间 Spearman 相关性与模型内 seed 一致性                |
+| `pcvr_sample_disagreement.svg`     | 模型级 seed-mean 的样本分歧和 top disagreement 样本       |
+| `pcvr_stability.svg`               | AUC、LogLoss、逐样本 seed drift 和评估耗时稳定性           |
 | `pcvr_diagnostics_summary.json`    | 绘图所用 run、metrics、telemetry 和图路径摘要             |
 
 ## 输入约定
@@ -122,7 +123,11 @@ uv run taac-plot-pcvr-diagnostics \
 
 `bash run.sh train` 会写 `training_summary.json` 和 `training_telemetry.json`。`bash run.sh val` 会写 `evaluation.json`、`validation_predictions.jsonl` 和 `evaluation_telemetry.json`。`bash run.sh infer` 会在 result dir 写 `predictions.json` 和 `inference_telemetry.json`。
 
-稳定性图和 summary 中的质量指标优先读取 `training_summary.json` 的 `validation_metrics` 与 `validation_score_diagnostics`，其 `metric_source` 为 `training_validation`。只有训练摘要没有留出集指标时，才回退到 `evaluation.json.metrics`，并标记为 `evaluation`。预测分布、相关性和分歧图始终来自 `validation_predictions.jsonl`，所以应确认生成该文件的 `val` 命令使用了预期的数据范围。
+稳定性图和 summary 中的质量指标优先读取 `training_summary.json` 的 `validation_metrics`，其 `metric_source` 为 `training_validation`。只有训练摘要没有留出集指标时，才回退到 `evaluation.json.metrics`，并标记为 `evaluation`。图中的 `±` 是同组 run 的 sample SD，误差线表示 min-max；`Prediction Seed Drift` 是同一模型对每个样本跨 seed 计算 sample SD 后再取样本均值。
+
+预测分布、相关性和分歧图始终来自 `validation_predictions.jsonl`。同组有多个 seed 时，先按样本键对齐并取 seed 均值，再比较模型；这样模型差异不会和 seed 噪声混在同一个 21-run 矩阵里。相关性使用 Spearman 而不是 Pearson，因为这里关心的是推荐排序信号，而不是概率刻度是否相同。应确认所有 `val` 命令使用相同的数据范围和样本键。
+
+资源图同样先按组取平均。只有所有模型组都有 inference telemetry 时才显示 inference 列和 inference tradeoff；否则使用 evaluation efficiency，不把缺失值伪装成 0，也不拿不完整的子集做横向比较。
 
 如果你只是想检查路径或预览占位图，可以加 `--allow-partial`，但这种输出不应该用于分析：
 
@@ -147,14 +152,14 @@ uv run taac-plot-pcvr-diagnostics \
   --output-dir figures/pcvr_diagnostics
 ```
 
-`--group-by label-prefix` 会把 `baseline_seed1`、`baseline_seed2` 归到 `baseline`。如果想完全按标签分组，用 `--group-by label`。
+`--group-by label-prefix` 会把 `baseline_seed1`、`baseline_seed2` 归到 `baseline`。分组同时控制资源汇总、预测聚合、相关性、分歧和稳定性，不只影响稳定性图。如果想把每个 run 当成独立模型比较，用 `--group-by label`。
 
 ## 解读原则
 
-- `runtime_resources` 适合回答“这个实验在本地 smoke 中是否太慢、太吃资源”。
-- `prediction_distribution` 适合看输出是否塌缩到 0.5、0 或 1。
-- `prediction_correlation` 适合判断两个模型是否真的给出了不同排序信号。
-- `sample_disagreement` 适合抽样排查模型意见分歧最大的样本。
-- `stability` 在 demo1000 上比单次 AUC 更重要；多 seed 下优先看方差和预测分布是否乱飘。
+- `runtime_resources` 回答“质量接近时，哪个模型更快、更小、更省显存”；不同硬件或运行参数不能放在同一张图里横比。
+- `prediction_distribution` 比较正负样本的 seed-mean 概率形状和均值间隔；它能发现输出塌缩或异常长尾，但不能替代校准曲线。
+- `prediction_correlation` 的左图判断模型是否提供不同排序，右图判断同一模型换 seed 后排序是否稳定。
+- `sample_disagreement` 在模型级均值上定位意见分歧最大的样本，适合回到原始特征做 case study；它不是误差归因。
+- `stability` 同时报告质量指标的 seed 波动和逐样本 prediction drift；demo1000 下应优先看稳定性，不追逐单次最高 AUC。
 
 这些图仍然不是正式 leaderboard 结论。它们的定位是本地 smoke benchmark 的工程诊断面板。

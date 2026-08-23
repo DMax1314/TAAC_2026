@@ -103,6 +103,43 @@ def test_run_diagnostics_generates_all_svg_figures(tmp_path: Path) -> None:
     assert "Top 2 Samples: Prediction By Model" in disagreement_svg
 
 
+def test_multiseed_figures_compare_model_groups_and_omit_missing_inference(tmp_path: Path) -> None:
+    run_specs = []
+    for model, score_sets in {
+        "baseline": ([0.1, 0.8, 0.2, 0.7], [0.15, 0.75, 0.25, 0.65]),
+        "tokenformer": ([0.2, 0.7, 0.35, 0.9], [0.18, 0.72, 0.3, 0.86]),
+    }.items():
+        for seed, scores in enumerate(score_sets, start=1):
+            run_dir = tmp_path / f"{model}_seed{seed}"
+            _write_run(run_dir, experiment=f"pcvr_{model}", scores=list(scores), seed=seed)
+            (run_dir / "inference_telemetry.json").unlink()
+            run_specs.extend(["--run", f"{model}_seed{seed}={run_dir}"])
+
+    output_dir = tmp_path / "figures"
+    summary = run_diagnostics(
+        parse_args([*run_specs, "--group-by", "label-prefix", "--output-dir", str(output_dir)])
+    )
+
+    runtime_svg = Path(summary["figures"]["runtime_resources"]).read_text(encoding="utf-8")
+    distribution_svg = Path(summary["figures"]["prediction_distribution"]).read_text(encoding="utf-8")
+    correlation_svg = Path(summary["figures"]["prediction_correlation"]).read_text(encoding="utf-8")
+    disagreement_svg = Path(summary["figures"]["sample_disagreement"]).read_text(encoding="utf-8")
+    stability_svg = Path(summary["figures"]["stability"]).read_text(encoding="utf-8")
+
+    assert "Evaluation Efficiency Tradeoff" in runtime_svg
+    assert "Inference Efficiency Tradeoff" not in runtime_svg
+    assert "Class-Conditional Prediction Profiles" in distribution_svg
+    assert "Seed-Aware Prediction Correlation" in correlation_svg
+    assert "Within-Model Seed Agreement" in correlation_svg
+    assert "0.80" in correlation_svg
+    assert "model-level seed-mean predictions" in disagreement_svg
+    assert "Prediction Seed Drift" in stability_svg
+    assert "0.0071" in stability_svg
+    for svg in (runtime_svg, distribution_svg, correlation_svg, disagreement_svg):
+        assert "baseline_seed1" not in svg
+        assert "tokenformer_seed1" not in svg
+
+
 def test_run_diagnostics_accepts_cwd_relative_prediction_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     run_dir = tmp_path / "outputs" / "smoke" / "baseline_seed1"
     _write_run(run_dir, experiment="pcvr_baseline", scores=[0.1, 0.8, 0.2, 0.7], seed=1)
