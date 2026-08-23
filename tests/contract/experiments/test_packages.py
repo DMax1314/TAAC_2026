@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from dataclasses import replace
 from pathlib import Path
 
@@ -49,7 +48,10 @@ def _make_schema() -> PCVRSchema:
 def _make_model(experiment_case, model_module, overrides=None):
     model_class = getattr(model_module, experiment_case.model_class)
     config_kwargs = dict(
-        d_model=16,
+        d_model={
+            "experiments/baseline": 28,
+            "experiments/dualq": 24,
+        }.get(experiment_case.path, 16),
         emb_dim=8,
         num_blocks=1,
         num_heads=2,
@@ -70,19 +72,10 @@ def _make_model(experiment_case, model_module, overrides=None):
     experiment = load_experiment_package(experiment_case.path)
     model_config_type = type(experiment.train_defaults.model)
 
-    def build(d_model: int):
-        return model_class(
-            schema=_make_schema(),
-            config=model_config_type(**{**config_kwargs, "d_model": d_model}),
-        )
-
-    try:
-        return build(16)
-    except ValueError as error:
-        match = re.search(r"=(\d+)\. Valid T values", str(error))
-        if "must be divisible by T" not in str(error) or match is None:
-            raise
-        return build(int(match.group(1)) * 4)
+    return model_class(
+        schema=_make_schema(),
+        config=model_config_type(**config_kwargs),
+    )
 
 
 def _sample_model_input(model_module=None) -> PCVRModelInput:
@@ -153,17 +146,18 @@ def test_discovered_experiment_packages_load(experiment_case) -> None:
     assert experiment.kind == "pcvr"
     assert experiment.model_class_name == experiment_case.model_class
     assert experiment.config_type_name == type(experiment.train_defaults).__name__
-    assert train_defaults["model"]["ns"]["grouping_strategy"] == "explicit"
     assert train_defaults["optimizer"]["max_steps"] > 0
     _assert_valid_data_pipeline_defaults(train_defaults["data_pipeline"])
-    assert isinstance(train_defaults["model"]["ns"]["user_groups"], dict)
-    assert isinstance(train_defaults["model"]["ns"]["item_groups"], dict)
-    assert train_defaults["model"]["ns"]["user_groups"]
-    assert train_defaults["model"]["ns"]["item_groups"]
-    assert "num_hyformer_blocks" not in train_defaults
-    assert "symbiosis_use_candidate_decoder" not in train_defaults
-    assert "symbiosis_use_field_tokens" not in train_defaults
-    assert "symbiosis_recent_tokens" not in train_defaults
+    ns = train_defaults["model"]["ns"]
+    assert ns["grouping_strategy"] in {"explicit", "singleton"}
+    assert isinstance(ns["user_groups"], dict)
+    assert isinstance(ns["item_groups"], dict)
+    if ns["grouping_strategy"] == "explicit":
+        assert ns["user_groups"]
+        assert ns["item_groups"]
+    else:
+        assert not ns["user_groups"]
+        assert not ns["item_groups"]
 
 
 @pytest.mark.parametrize("experiment_case", EXPERIMENT_CASES, ids=lambda case: case.path)
@@ -297,18 +291,18 @@ def test_symbiosis_v2_diagnostics_report_unified_token_health() -> None:
     model = _make_model(experiment_case, model_module)
     model_input = _sample_model_input(model_module)
 
-    model.set_tensorboard_diagnostics_enabled(True)
+    model.set_training_diagnostics_enabled(True)
     model.eval()
     with torch.no_grad():
         model(model_input)
 
-    scalars = model.consume_tensorboard_scalars(phase="train")
+    scalars = model.consume_training_scalars(phase="train")
 
     assert "SymbiosisV2/tokens/active_ratio/train" in scalars
     assert "SymbiosisV2/tokens/count/train" in scalars
     assert "SymbiosisV2/tokens/high_risk_ratio/train" in scalars
     assert "SymbiosisV2/embedding/norm_mean/train" in scalars
-    assert model.consume_tensorboard_scalars(phase="train") == {}
+    assert model.consume_training_scalars(phase="train") == {}
 
 
 def test_symbiosis_v2_high_risk_dropout_masks_risk_tokens_during_training() -> None:

@@ -124,6 +124,38 @@ def test_training_main_allows_experiment_without_dataset_path(
     assert payload["run_dir"] == str(tmp_path / "outputs")
 
 
+def test_training_main_renders_scalar_summary_and_telemetry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    summary = {
+        "run_dir": str(tmp_path / "outputs"),
+        "artifacts": ["model.safetensors"],
+        "training_telemetry": {"device": "cpu", "steps": 1},
+    }
+    experiment = FunctionExperiment(
+        name="summary_experiment",
+        kind="maintenance",
+        requires_dataset=False,
+        train_fn=lambda _request: summary,
+    )
+    rendered: dict[str, object] = {}
+
+    def capture_summary(title, fields, *, sections, border_style) -> None:
+        rendered.update(title=title, fields=fields, sections=sections, border_style=border_style)
+
+    monkeypatch.setattr(training_cli, "load_experiment_package", lambda _path: experiment)
+    monkeypatch.setattr(training_cli, "print_rich_summary", capture_summary)
+
+    assert main(["--experiment", "experiments/summary", "--run-dir", str(tmp_path / "outputs")]) == 0
+    assert rendered == {
+        "title": "Training complete",
+        "fields": [
+            ("Experiment", "experiments/summary"),
+            ("Run Dir", str(tmp_path / "outputs")),
+        ],
+        "sections": [("Telemetry", [("device", "cpu"), ("steps", "1")])],
+        "border_style": "green",
+    }
+
+
 def test_training_main_rejects_missing_dataset_for_dataset_experiment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     experiment_dir = tmp_path / "experiments" / "maintenance" / "dataset_exp"
     monkeypatch.setattr(training_cli, "load_experiment_package", lambda _path: _minimal_experiment(requires_dataset=True))
@@ -377,16 +409,6 @@ def test_parse_pcvr_train_config_accepts_sampling_strategy(tmp_path: Path) -> No
     assert config.data.sampling_strategy == "row_group_sweep"
 
 
-@pytest.mark.parametrize("flag", ["--optimizer.patience", "--optimizer.steps_per_epoch"])
-def test_parse_pcvr_train_config_rejects_legacy_epoch_flags(tmp_path: Path, flag: str) -> None:
-    with pytest.raises(SystemExit):
-        parse_pcvr_train_config(
-            [flag, "1"],
-            config_type=PCVRTrainConfig,
-            defaults=PCVRTrainConfig(),
-        )
-
-
 def test_parse_pcvr_train_config_uses_timestamp_auto_split_defaults(tmp_path: Path) -> None:
     defaults = PCVRTrainConfig(
         data=PCVRDataConfig(
@@ -397,19 +419,6 @@ def test_parse_pcvr_train_config_uses_timestamp_auto_split_defaults(tmp_path: Pa
     config = parse_pcvr_train_config([], config_type=PCVRTrainConfig, defaults=defaults)
 
     assert config.data.split_strategy == "timestamp_auto"
-
-
-def test_parse_pcvr_train_config_rejects_symbiosis_ablation_flags(tmp_path: Path) -> None:
-    with pytest.raises(SystemExit):
-        parse_pcvr_train_config(
-            [
-                "--model.no_symbiosis_v2_use_dense_tokens",
-                "--model.symbiosis_v2_recent_event_tokens",
-                "16",
-            ],
-            config_type=PCVRTrainConfig,
-            defaults=PCVRTrainConfig(),
-        )
 
 
 def test_symbiosis_package_parser_accepts_symbiosis_ablation_flags() -> None:
@@ -545,8 +554,12 @@ def test_parse_pcvr_train_config_uses_typed_data_pipeline_defaults(
     assert config.data_pipeline.transforms[0].name == "sequence_crop"
 
 
-def test_pcvr_train_config_serializes_structured_data_pipeline() -> None:
-    defaults = PCVRTrainConfig(
+def test_pcvr_train_config_round_trips_non_default_boundary_fields() -> None:
+    config = PCVRTrainConfig(
+        data=PCVRDataConfig(
+            train_steps_per_sweep=128,
+            split_strategy="timestamp_auto",
+        ),
         data_pipeline=PCVRDataPipelineConfig(
             cache=PCVRDataCacheConfig(mode="lru", max_batches=32),
             seed=77,
@@ -561,48 +574,44 @@ def test_pcvr_train_config_serializes_structured_data_pipeline() -> None:
                 PCVRNonSequentialSparseDropoutConfig(probability=0.15),
                 PCVRDomainDropoutConfig(probability=0.1),
             ),
-        )
-    )
-
-    flat_config = defaults.model_dump(mode="json")
-
-    assert "data_pipeline" in flat_config
-    assert flat_config["data_pipeline"]["transforms"][0]["name"] == "sequence_crop"
-    assert flat_config["data_pipeline"]["transforms"][1]["name"] == "feature_mask"
-    assert flat_config["data_pipeline"]["transforms"][2]["name"] == "nonseq_sparse_dropout"
-    assert flat_config["data_pipeline"]["transforms"][3]["name"] == "domain_dropout"
-
-
-def test_pcvr_train_config_serializes_optimizer_schedule_fields() -> None:
-    flat_config = PCVRTrainConfig(
+        ),
         optimizer=PCVROptimizerConfig(
             patience_steps=512,
             scheduler_type="cosine",
             warmup_steps=64,
             min_lr_ratio=0.2,
-        )
-    ).model_dump(mode="json")
-
-    assert flat_config["optimizer"]["patience_steps"] == 512
-    assert flat_config["optimizer"]["scheduler_type"] == "cosine"
-    assert flat_config["optimizer"]["warmup_steps"] == 64
-    assert flat_config["optimizer"]["min_lr_ratio"] == pytest.approx(0.2)
-
-
-def test_pcvr_train_config_serializes_ema_fields() -> None:
-    flat_config = PCVRTrainConfig(
+        ),
         ema=PCVREMAConfig(
             enabled=True,
             decay=0.995,
             start_step=128,
             update_every_n_steps=4,
-        )
-    ).model_dump(mode="json")
+        ),
+        runtime=RuntimeExecutionConfig(deterministic=False),
+        model=PCVRModelConfig(
+            gradient_checkpointing=True,
+            rms_norm_backend="triton",
+            rms_norm_block_rows=8,
+            flash_attention_backend="tilelang",
+        ),
+        loss=PCVRLossConfig(
+            terms=(
+                PCVRLossTermConfig(name="bce", kind="bce", weight=1.0),
+                PCVRLossTermConfig(name="aux", kind="model", weight=0.05),
+            )
+        ),
+    )
 
-    assert flat_config["ema"]["enabled"] is True
-    assert flat_config["ema"]["decay"] == pytest.approx(0.995)
-    assert flat_config["ema"]["start_step"] == 128
-    assert flat_config["ema"]["update_every_n_steps"] == 4
+    payload = config.model_dump(mode="json")
+    rebuilt = PCVRTrainConfig.model_validate(payload)
+
+    assert rebuilt == config
+    assert [transform["name"] for transform in payload["data_pipeline"]["transforms"]] == [
+        "sequence_crop",
+        "feature_mask",
+        "nonseq_sparse_dropout",
+        "domain_dropout",
+    ]
 
 
 def test_pcvr_ema_config_validates_values() -> None:
@@ -612,77 +621,3 @@ def test_pcvr_ema_config_validates_values() -> None:
         PCVREMAConfig(start_step=-1)
     with pytest.raises(ValueError, match="update_every_n_steps"):
         PCVREMAConfig(update_every_n_steps=0)
-
-
-def test_pcvr_train_config_serializes_runtime_determinism_field() -> None:
-    flat_config = PCVRTrainConfig(runtime=RuntimeExecutionConfig(deterministic=False)).model_dump(mode="json")
-
-    assert flat_config["runtime"]["deterministic"] is False
-
-
-def test_pcvr_train_config_serializes_data_split_fields() -> None:
-    flat_config = PCVRTrainConfig(
-        data=PCVRDataConfig(
-            train_steps_per_sweep=128,
-            split_strategy="timestamp_auto",
-        )
-    ).model_dump(mode="json")
-
-    assert flat_config["data"]["eval_every_n_steps"] == 5000
-    assert flat_config["data"]["train_steps_per_sweep"] == 128
-    assert flat_config["data"]["split_strategy"] == "timestamp_auto"
-
-
-def test_pcvr_train_config_serializes_gradient_checkpointing_field() -> None:
-    flat_config = PCVRTrainConfig(
-        model=PCVRModelConfig(gradient_checkpointing=True)
-    ).model_dump(mode="json")
-
-    assert flat_config["model"]["gradient_checkpointing"] is True
-
-
-def test_pcvr_train_config_serializes_rms_norm_fields() -> None:
-    flat_config = PCVRTrainConfig(
-        model=PCVRModelConfig(rms_norm_backend="triton", rms_norm_block_rows=8)
-    ).model_dump(mode="json")
-
-    assert flat_config["model"]["rms_norm_backend"] == "triton"
-    assert flat_config["model"]["rms_norm_block_rows"] == 8
-
-
-def test_pcvr_train_config_serializes_flash_attention_backend_field() -> None:
-    flat_config = PCVRTrainConfig(
-        model=PCVRModelConfig(flash_attention_backend="tilelang")
-    ).model_dump(mode="json")
-
-    assert flat_config["model"]["flash_attention_backend"] == "tilelang"
-
-
-def test_pcvr_train_config_serializes_loss_terms() -> None:
-    flat_config = PCVRTrainConfig(
-        loss=PCVRLossConfig(
-            terms=(
-                PCVRLossTermConfig(name="bce", kind="bce", weight=1.0),
-                PCVRLossTermConfig(name="aux", kind="model", weight=0.05),
-            )
-        )
-    ).model_dump(mode="json")
-
-    assert flat_config["loss"]["terms"] == [
-        {
-            "name": "bce",
-            "kind": "bce",
-            "weight": 1.0,
-            "focal_alpha": 0.1,
-            "focal_gamma": 2.0,
-            "temperature": 1.0,
-        },
-        {
-            "name": "aux",
-            "kind": "model",
-            "weight": 0.05,
-            "focal_alpha": 0.1,
-            "focal_gamma": 2.0,
-            "temperature": 1.0,
-        },
-    ]

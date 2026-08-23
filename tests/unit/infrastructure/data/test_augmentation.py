@@ -352,7 +352,7 @@ def test_data_pipeline_keeps_explicit_empty_cache_instance() -> None:
     pipeline = PCVRDataPipeline(cache=cache)
 
     assert pipeline.cache is cache
-    assert pipeline.cache._opt_enabled is True
+    assert pipeline.cache.stats()["policy"] == "opt"
 
 
 def test_data_pipeline_materialize_composes_cache_preprocess_and_stages() -> None:
@@ -527,7 +527,8 @@ def test_opt_batch_cache_reconfigures_same_trace() -> None:
     cache.configure_access_trace(trace)
 
     assert cache.get(("file", 0, 0)) is not None
-    assert cache._access_count == 1
+    assert cache.stats()["hits"] == 1
+    assert cache.stats()["misses"] == 1
 
 
 def test_opt_batch_cache_window_restart_keeps_payloads() -> None:
@@ -565,7 +566,6 @@ def test_opt_batch_cache_window_restart_keeps_payloads() -> None:
     assert cache.get(("file", 0, 1)) is not None
     assert cache.get(("file", 0, 2)) is None
     assert cache.stats()["trace_length"] == 3
-    assert cache._trace_positions_by_key == {2: (0,), 1: (1,), 0: (2,)}
 
 
 def test_shared_opt_batch_cache_evicts_farthest_future_key() -> None:

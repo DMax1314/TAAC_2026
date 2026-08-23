@@ -84,7 +84,7 @@
 
 **工程与质量**
 
-- **CI 全覆盖** — lint + 单元 / 契约 / 集成 / 基准测试 + 文档构建
+- **CI 分层门禁** — 跨 Python 单元 / 契约检查，规范版本完整 CPU 测试与分组覆盖率；文档由 Pages 严格构建
 - **分层测试** — `tests/` 按 unit / contract / integration / benchmark / gpu 组织
 - **工具脚本** — `tools/` 提供缓存清理、GitHub 维护等实用工具
 

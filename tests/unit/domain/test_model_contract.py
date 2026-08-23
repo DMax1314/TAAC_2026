@@ -9,6 +9,8 @@ from taac2026.domain.config import PCVRNSConfig
 from taac2026.domain.schema import PCVRSchema
 from taac2026.infrastructure.modeling.model_contract import (
     build_feature_specs,
+    build_pcvr_model_specs,
+    dataset_schema_path,
     load_ns_groups,
     parse_seq_max_lens,
     resolve_checkpoint_schema_path,
@@ -108,6 +110,17 @@ def test_resolve_checkpoint_schema_path_fails_on_missing_explicit(tmp_path) -> N
         resolve_checkpoint_schema_path(checkpoint_dir, missing)
 
 
+def test_dataset_schema_path_uses_dataset_directory_or_file_parent(tmp_path) -> None:
+    dataset_dir = tmp_path / "data"
+    dataset_dir.mkdir()
+    dataset_file = dataset_dir / "train.parquet"
+    dataset_file.touch()
+
+    expected = (dataset_dir / "schema.json").resolve()
+    assert dataset_schema_path(dataset_dir) == expected
+    assert dataset_schema_path(dataset_file) == expected
+
+
 def test_load_ns_groups_maps_feature_ids_to_schema_positions() -> None:
     schema = _make_schema(user_fids=[10, 20], item_fids=[7])
 
@@ -137,6 +150,41 @@ def test_load_ns_groups_explicit_empty_groups_yield_empty_lists() -> None:
         schema,
         PCVRNSConfig(grouping_strategy="explicit", user_groups={}, item_groups={}),
     ) == ([], [])
+
+
+def test_load_ns_groups_rejects_unknown_feature_id() -> None:
+    schema = _make_schema(user_fids=[10], item_fids=[7])
+
+    with pytest.raises(KeyError, match="999"):
+        load_ns_groups(
+            schema,
+            PCVRNSConfig(
+                grouping_strategy="explicit",
+                user_groups={"u": [999]},
+                item_groups={"i": [7]},
+            ),
+        )
+
+
+def test_build_pcvr_model_specs_compiles_schema_derived_inputs() -> None:
+    schema = _make_schema(user_fids=[10, 20], item_fids=[7])
+
+    specs = build_pcvr_model_specs(
+        schema,
+        PCVRNSConfig(
+            grouping_strategy="explicit",
+            user_groups={"u": [20, 10]},
+            item_groups={"i": [7]},
+        ),
+    )
+
+    assert specs.user_int_feature_specs == [(10, 0, 1), (10, 1, 1)]
+    assert specs.item_int_feature_specs == [(10, 0, 1)]
+    assert specs.user_dense_dim == 4
+    assert specs.item_dense_dim == 0
+    assert specs.seq_vocab_sizes == {}
+    assert specs.user_ns_groups == [[1, 0]]
+    assert specs.item_ns_groups == [[0]]
 
 
 def test_compute_sequence_time_buckets_zero_timestamps_map_to_padding_bucket() -> None:

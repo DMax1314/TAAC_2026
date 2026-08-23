@@ -106,15 +106,11 @@ class TensorBoardTrainReporter:
 
     def set_model_diagnostics_enabled(self, model: torch.nn.Module, enabled: bool) -> None:
         set_enabled = getattr(model, "set_training_diagnostics_enabled", None)
-        if not callable(set_enabled):
-            set_enabled = getattr(model, "set_tensorboard_diagnostics_enabled", None)
         if callable(set_enabled):
             set_enabled(enabled)
 
     def consume_model_scalars(self, model: torch.nn.Module, *, phase: str) -> Mapping[str, float]:
         consume_scalars = getattr(model, "consume_training_scalars", None)
-        if not callable(consume_scalars):
-            consume_scalars = getattr(model, "consume_tensorboard_scalars", None)
         if not callable(consume_scalars):
             return {}
         return consume_scalars(phase=phase)

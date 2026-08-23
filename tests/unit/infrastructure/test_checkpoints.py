@@ -10,6 +10,7 @@ from taac2026.infrastructure.io.json import loads
 from taac2026.infrastructure.checkpoints import (
     PRIMARY_CHECKPOINT_FILENAME,
     build_checkpoint_dir_name,
+    checkpoint_step,
     load_checkpoint_state_dict,
     resolve_checkpoint_path,
     save_checkpoint_state_dict,
@@ -29,13 +30,40 @@ def test_resolve_checkpoint_uses_latest_step(tmp_path: Path) -> None:
     assert resolve_checkpoint_path(tmp_path) == new_dir / PRIMARY_CHECKPOINT_FILENAME
 
 
-def test_validate_checkpoint_name_rejects_non_global_step_prefix() -> None:
-    with pytest.raises(ValueError, match="global_step"):
-        validate_checkpoint_dir_name("best")
+@pytest.mark.parametrize("name", ["", "best", "global_step", "global_step1!", "g" * 301])
+def test_validate_checkpoint_name_rejects_invalid_names(name: str) -> None:
+    with pytest.raises(ValueError):
+        validate_checkpoint_dir_name(name)
 
 
-def test_build_checkpoint_dir_name_uses_validation_auc_suffix() -> None:
-    assert build_checkpoint_dir_name(12, {"auc": 0.8123456, "head": 4, "hidden": 64}) == "global_step12.AUC=0.812346"
+@pytest.mark.parametrize(
+    ("step", "params", "expected"),
+    [
+        (0, None, "global_step0"),
+        (1, {"layer": 2}, "global_step1"),
+        (7, {"AUC": "0.912340"}, "global_step7.AUC=0.91234"),
+        (12, {"auc": 0.8123456, "head": 4}, "global_step12.AUC=0.812346"),
+    ],
+)
+def test_build_checkpoint_dir_name(step: int, params: dict[str, object] | None, expected: str) -> None:
+    assert build_checkpoint_dir_name(step, params) == expected
+
+
+def test_build_checkpoint_dir_name_rejects_negative_step() -> None:
+    with pytest.raises(ValueError, match="non-negative"):
+        build_checkpoint_dir_name(-1)
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        (Path("global_step0"), 0),
+        (Path("global_step3.AUC=0.95/model.safetensors"), 3),
+        (Path("best/model.safetensors"), -1),
+    ],
+)
+def test_checkpoint_step(path: Path, expected: int) -> None:
+    assert checkpoint_step(path) == expected
 
 
 def test_write_checkpoint_sidecars_persists_typed_train_config(tmp_path: Path) -> None:

@@ -28,8 +28,11 @@ permissions:
 env:
   CI_CANONICAL_PYTHON_VERSION: "3.13"
   CPU_TEST_MARKERS: "(unit or contract or integration or benchmark_cpu) and not gpu and not benchmark_gpu"
-  COVERAGE_SOURCE: "src/taac2026"
-  COVERAGE_CPU_SAFE_CORE: "src/taac2026/domain/*,src/taac2026/application/bootstrap/*,src/taac2026/application/evaluation/*,src/taac2026/application/experiments/*,src/taac2026/application/packaging/*,src/taac2026/application/training/*,src/taac2026/infrastructure/bundles/*,src/taac2026/infrastructure/data/*,src/taac2026/infrastructure/experiments/*,src/taac2026/infrastructure/modeling/*,src/taac2026/infrastructure/runtime/*"
+  CPU_COMPAT_MARKERS: "(unit or contract) and not gpu and not benchmark_gpu"
+  COVERAGE_SOURCE: "src/taac2026,experiments"
+  COVERAGE_CRITICAL_RUNTIME: "src/taac2026/application/evaluation/*,src/taac2026/application/training/*,src/taac2026/infrastructure/checkpoints.py,src/taac2026/infrastructure/runtime/*"
+  COVERAGE_CPU_SAFE_CORE: "src/taac2026/domain/*,src/taac2026/application/bootstrap/*,src/taac2026/application/evaluation/*,src/taac2026/application/experiments/*,src/taac2026/application/packaging/*,src/taac2026/application/training/*,src/taac2026/infrastructure/bundles/*,src/taac2026/infrastructure/checkpoints.py,src/taac2026/infrastructure/data/*,src/taac2026/infrastructure/experiments/*,src/taac2026/infrastructure/modeling/*,src/taac2026/infrastructure/runtime/*"
+  COVERAGE_MODEL_EXPERIMENTS: "experiments/baseline/*,experiments/dualq/*,experiments/interformer/*,experiments/onetrans/*,experiments/queryformer/*,experiments/symbiosis/*,experiments/tokenformer/*"
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -85,11 +88,11 @@ jobs:
       - name: 同步项目环境
         run: uv sync --locked --extra dev --python "${{ matrix.python-version }}"
 
-      - name: 运行单元测试
+      - name: 运行跨版本单元与契约测试
         if: matrix.python-version != env.CI_CANONICAL_PYTHON_VERSION
-        run: uv run --python "${{ matrix.python-version }}" --with torch==2.13.0 pytest -m "${CPU_TEST_MARKERS}" -v
+        run: uv run --python "${{ matrix.python-version }}" --with torch==2.13.0 pytest -m "${CPU_COMPAT_MARKERS}" -v
 
-      - name: 运行带有覆盖率的单元测试
+      - name: 运行完整 CPU 门禁并采集覆盖率
         if: matrix.python-version == env.CI_CANONICAL_PYTHON_VERSION
         run: >
           uv run --python "${{ matrix.python-version }}" --with torch==2.13.0 --with coverage coverage run
@@ -135,39 +138,40 @@ jobs:
       - name: 恢复覆盖率数据
         run: cp .coverage-artifacts/cpu/.coverage.cpu .coverage
 
-      - name: 汇总覆盖率路径
-        id: coverage-include
-        run: |
-          echo "value=${COVERAGE_CPU_SAFE_CORE}" >> "$GITHUB_OUTPUT"
-
       - name: 总结覆盖率范围
         run: |
           {
             echo "## 覆盖率范围"
             echo
-            echo "- 兼容性检查在 Python 3.12, 3.13, 和 3.14 上运行"
-            echo "- 覆盖率门控从 Python ${CI_CANONICAL_PYTHON_VERSION} 执行"
-            echo "- CPU 测试 marker: ${CPU_TEST_MARKERS}"
+            echo "- Python 3.12 和 3.14 运行跨版本单元与契约测试: ${CPU_COMPAT_MARKERS}"
+            echo "- Python ${CI_CANONICAL_PYTHON_VERSION} 运行完整 CPU 门禁: ${CPU_TEST_MARKERS}"
             echo "- 覆盖率采集 source: ${COVERAGE_SOURCE}"
-            echo "- 只统计 CPU 安全模块:"
-            IFS=',' read -ra coverage_paths <<< "${COVERAGE_CPU_SAFE_CORE}"
-            for coverage_path in "${coverage_paths[@]}"; do
-              echo "  - ${coverage_path}"
-            done
-            echo "- 集成和 GPU 覆盖率在需要时从本地 CUDA CLI 运行中收集"
-            echo "- GPU 测试用 pytest -m gpu 在本地 CUDA 环境运行"
+            echo "- 关键训练 / 推理 runtime 门禁: 80%"
+            echo "- CPU 安全核心门禁: 80%"
+            echo "- PCVR 模型实验门禁: 75%"
+            echo "- GPU / accelerator 行为仍需本地 CUDA 验证"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: 执行 CPU 覆盖率门控
+      - name: 门控关键训练与推理 runtime 覆盖率
         run: >
-          uv run --python "${{ env.CI_CANONICAL_PYTHON_VERSION }}" coverage report --fail-under=70
-          --include="${{ steps.coverage-include.outputs.value }}"
+          uv run --python "${{ env.CI_CANONICAL_PYTHON_VERSION }}" coverage report --fail-under=80
+          --include="${COVERAGE_CRITICAL_RUNTIME}"
 
-      - name: 导出全 src 覆盖率摘要（非门禁）
+      - name: 门控 CPU 安全核心覆盖率
+        run: >
+          uv run --python "${{ env.CI_CANONICAL_PYTHON_VERSION }}" coverage report --fail-under=80
+          --include="${COVERAGE_CPU_SAFE_CORE}"
+
+      - name: 门控 PCVR 模型实验覆盖率
+        run: >
+          uv run --python "${{ env.CI_CANONICAL_PYTHON_VERSION }}" coverage report --fail-under=75
+          --include="${COVERAGE_MODEL_EXPERIMENTS}"
+
+      - name: 导出全源码与实验覆盖率摘要（非门禁）
         if: always()
         run: >
           uv run --python "${{ env.CI_CANONICAL_PYTHON_VERSION }}" coverage report --fail-under=0
-          --include="src/taac2026/*"
+          --include="src/taac2026/*,experiments/*"
 
       - name: 导出 CPU 覆盖率 XML
         if: always()

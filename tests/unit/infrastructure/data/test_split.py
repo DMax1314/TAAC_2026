@@ -7,6 +7,7 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from hypothesis import given, strategies as st
 from torch.utils.data import DataLoader, IterableDataset
 
 import taac2026.infrastructure.data.dataset as pcvr_data
@@ -168,19 +169,30 @@ def _write_multi_row_group_partial_batch_fixture(schema_path: Path, parquet_path
     )
 
 
-def test_pad_list_offsets_values_handles_empty_and_truncated_rows() -> None:
-    values = pa.array([[1, 2, 3], [], [-1, 4], [5]], type=pa.list_(pa.int64()))
+@given(
+    rows=st.lists(st.lists(st.integers(-100, 100), max_size=8), max_size=20),
+    width=st.integers(min_value=0, max_value=8),
+)
+def test_pad_list_offsets_values_preserves_prefixes_and_lengths(
+    rows: list[list[int]],
+    width: int,
+) -> None:
+    values = pa.array(rows, type=pa.list_(pa.int64()))
 
     padded, lengths = pad_list_offsets_values(
         values.offsets.to_numpy(),
         values.values.to_numpy(),
-        row_count=4,
-        width=2,
+        row_count=len(rows),
+        width=width,
         dtype=np.int64,
     )
 
-    assert lengths.tolist() == [2, 0, 2, 1]
-    assert padded.tolist() == [[1, 2], [0, 0], [-1, 4], [5, 0]]
+    assert lengths.tolist() == [min(len(row), width) for row in rows]
+    assert padded.shape == (len(rows), width)
+    for row_index, row in enumerate(rows):
+        used = min(len(row), width)
+        assert padded[row_index, :used].tolist() == row[:used]
+        assert np.count_nonzero(padded[row_index, used:]) == 0
 
 
 def test_get_pcvr_data_reuses_single_row_group_for_validation(
@@ -351,47 +363,56 @@ def test_get_pcvr_data_supports_sample_hash_split(monkeypatch, tmp_path: Path) -
     assert valid_loader.dataset.hash_split_filter.strategy == "sample_hash"
 
 
-def test_hash_split_is_disjoint_honors_train_ratio_and_ignores_parent_path() -> None:
-    positions = range(10_000)
+@given(
+    positions=st.lists(st.integers(min_value=0, max_value=1_000_000), min_size=1, max_size=100, unique=True),
+    valid_ratio=st.floats(min_value=0.01, max_value=0.99, allow_nan=False, allow_infinity=False),
+    train_ratio=st.floats(min_value=0.01, max_value=1.0, allow_nan=False, allow_infinity=False),
+    seed=st.integers(min_value=0, max_value=2**31 - 1),
+    row_group_index=st.integers(min_value=0, max_value=10_000),
+)
+def test_hash_split_is_disjoint_stable_and_ignores_parent_path(
+    positions: list[int],
+    valid_ratio: float,
+    train_ratio: float,
+    seed: int,
+    row_group_index: int,
+) -> None:
     train_filter = PCVRHashSplitFilter(
         strategy="sample_hash",
         role="train",
-        valid_ratio=0.2,
-        train_ratio=0.5,
-        seed=17,
+        valid_ratio=valid_ratio,
+        train_ratio=train_ratio,
+        seed=seed,
     )
     valid_filter = PCVRHashSplitFilter(
         strategy="sample_hash",
         role="valid",
-        valid_ratio=0.2,
-        train_ratio=0.5,
-        seed=17,
+        valid_ratio=valid_ratio,
+        train_ratio=train_ratio,
+        seed=seed,
     )
 
     train_mask = pcvr_hash_split_mask(
         positions,
         file_path="/machine-a/data/demo.parquet",
-        row_group_index=3,
+        row_group_index=row_group_index,
         split_filter=train_filter,
     )
     valid_mask = pcvr_hash_split_mask(
         positions,
         file_path="/machine-b/cache/demo.parquet",
-        row_group_index=3,
+        row_group_index=row_group_index,
         split_filter=valid_filter,
     )
     relocated_train_mask = pcvr_hash_split_mask(
         positions,
         file_path="/machine-b/cache/demo.parquet",
-        row_group_index=3,
+        row_group_index=row_group_index,
         split_filter=train_filter,
     )
 
     assert train_mask == relocated_train_mask
     assert not any(train and valid for train, valid in zip(train_mask, valid_mask, strict=True))
-    assert 1_800 < sum(valid_mask) < 2_200
-    assert 3_800 < sum(train_mask) < 4_200
-    assert sum(train_mask) + sum(valid_mask) < len(train_mask)
 
 
 def test_user_hash_keeps_repeated_users_in_one_role() -> None:

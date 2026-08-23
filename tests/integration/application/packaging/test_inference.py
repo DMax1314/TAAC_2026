@@ -83,7 +83,7 @@ def test_build_inference_bundle_supports_online_dataset_eda(tmp_path: Path) -> N
     "experiment",
     NON_BASELINE_EXPERIMENTS,
 )
-def test_build_inference_bundle_contains_experiment_ns_groups(tmp_path: Path, experiment: str) -> None:
+def test_build_inference_bundle_contains_experiment_without_legacy_ns_file(tmp_path: Path, experiment: str) -> None:
     output_dir = tmp_path / f"{Path(experiment).name}_bundle"
 
     result = build_inference_bundle(experiment, output_dir=output_dir)

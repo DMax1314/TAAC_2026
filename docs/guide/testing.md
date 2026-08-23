@@ -23,6 +23,9 @@ uv run pytest tests/unit -q
 # PR CPU 门禁口径
 uv run pytest -m "(unit or contract or integration or benchmark_cpu) and not gpu and not benchmark_gpu" -q
 
+# 真实 baseline 训练 -> checkpoint -> 推理闭环（CPU，1 step）
+uv run pytest tests/integration/application/test_pcvr_roundtrip.py -q
+
 # 实验包契约
 uv run pytest tests/contract/experiments/test_packages.py -q
 uv run pytest tests/contract/experiments/test_runtime_contract_matrix.py -q
@@ -37,6 +40,16 @@ uv run ruff check .
 # 文档构建
 uv run zensical build --strict
 ```
+
+## 提交前 Ruff 门禁
+
+首次克隆仓库后启用版本化 Git hooks：
+
+```bash
+./tools/install-git-hooks.sh
+```
+
+之后每次执行 `git commit`，`.githooks/pre-commit` 都会通过锁定的 dev 环境运行 `ruff check .`。Ruff 失败或 `uv` 不可用时，提交会被阻止；CI 中的 Ruff 检查仍是远端兜底。
 
 ## Pytest 标记
 
@@ -64,7 +77,7 @@ uv run zensical build --strict
 | 训练 CLI / args                  | `tests/unit/application/training/test_cli.py`                                                             |
 | 评估 / 推理 CLI                  | `tests/unit/application/evaluation`                                                                       |
 | 打包逻辑                         | `tests/integration/application/packaging`，`tests/unit/application/bootstrap`，`tests/integration/application/bootstrap` |
-| checkpoint / sidecar             | `tests/unit/infrastructure/test_checkpoints.py`，`tests/contract/experiments/test_runtime_contract_matrix.py` |
+| checkpoint / sidecar             | `tests/unit/infrastructure/test_checkpoints.py`，`tests/integration/application/test_pcvr_roundtrip.py`     |
 | 数据管道                         | `tests/unit/infrastructure/data`                                                                          |
 | accelerator                      | `tests/unit/infrastructure/accelerators`                                                                  |
 | 文档                             | `uv run zensical build --strict`                                                                          |
@@ -74,8 +87,9 @@ uv run zensical build --strict
 以 `.github/workflows/ci.yml` 为准，当前 CI 主要做三件事：
 
 - Python 3.13 的 Ruff 检查。
-- Python 3.12 到 3.14 的 CPU 测试：`unit`、`contract`、`integration` 和 `benchmark_cpu`，排除 `gpu` / `benchmark_gpu`。
-- 在规范 Python 版本上采集全 `src/taac2026` 覆盖率，并对指定核心模块做覆盖率门控。
+- Python 3.12 到 3.14 均做兼容性验证；边界版本 3.12 和 3.14 运行 `unit` + `contract`，不重复较重的集成与 benchmark 测试。
+- 规范 Python 3.13 运行完整 CPU 门禁：`unit`、`contract`、`integration` 和 `benchmark_cpu`，排除 `gpu` / `benchmark_gpu`。
+- 在 Python 3.13 采集 `src/taac2026` 与 `experiments` 覆盖率，并分别门控关键 runtime、CPU 安全核心和 PCVR 模型实验。
 
 CI 只会被这些路径触发：
 
@@ -94,7 +108,7 @@ uv.lock
 
 ```bash
 uv run --python 3.13 --with torch==2.13.0 --with coverage \
-  coverage run --data-file=.coverage.cpu --source=src/taac2026 \
+  coverage run --data-file=.coverage.cpu --source=src/taac2026,experiments \
   -m pytest -m "(unit or contract or integration or benchmark_cpu) and not gpu and not benchmark_gpu" -v
 ```
 
@@ -102,12 +116,14 @@ uv run --python 3.13 --with torch==2.13.0 --with coverage \
 
 ```bash
 cp .coverage.cpu .coverage
-uv run --python 3.13 --with coverage coverage report --fail-under=70 \
-  --include='src/taac2026/domain/*,src/taac2026/application/training/__init__.py,src/taac2026/application/training/args.py,src/taac2026/application/training/cli.py,src/taac2026/application/training/workflow.py'
+uv run --python 3.13 --with coverage coverage report --fail-under=80 \
+  --include='src/taac2026/application/evaluation/*,src/taac2026/application/training/*,src/taac2026/infrastructure/checkpoints.py,src/taac2026/infrastructure/runtime/*'
+
+uv run --python 3.13 --with coverage coverage report --fail-under=75 \
+  --include='experiments/baseline/*,experiments/dualq/*,experiments/interformer/*,experiments/onetrans/*,experiments/queryformer/*,experiments/symbiosis/*,experiments/tokenformer/*'
 ```
 
-覆盖率门控只覆盖 `domain/` 和 training CLI / workflow 的核心文件。它不是全仓库覆盖率，新增实验模型时仍以契约测试和 smoke 为准。
-CI 也会输出全 `src/taac2026` 覆盖率摘要作为盲区提示，但这份摘要暂不作为 fail-under 门禁。
+关键训练 / 推理 runtime 与 CPU 安全核心的门限均为 80%，七个 PCVR 模型实验的门限为 75%。分组门禁可避免高覆盖模块掩盖训练、推理或模型盲区；具体 include 清单以 workflow 为准。CI 也会输出全 `src/taac2026` + `experiments` 摘要，但 accelerator、平台诊断等环境专用代码不纳入 CPU fail-under。
 
 ## GPU 和 Benchmark
 

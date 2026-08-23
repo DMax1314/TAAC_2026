@@ -66,6 +66,52 @@ def test_main_output_is_compact_single_line(monkeypatch, capsys) -> None:
     assert loads(captured.out) == payload
 
 
+def test_evaluation_main_runs_single_mode_and_renders_metrics(monkeypatch, tmp_path) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeExperiment:
+        kind = "pcvr"
+        requires_dataset = True
+
+        def evaluate(self, request):
+            captured["request"] = request
+            return {
+                "checkpoint_path": str(request.checkpoint_path),
+                "metrics": {"auc": 0.812345, "details": {"folds": 1}},
+            }
+
+    def capture_summary(title, fields, *, sections, border_style) -> None:
+        captured.update(title=title, fields=fields, sections=sections, border_style=border_style)
+
+    monkeypatch.setattr(evaluation_cli, "load_experiment_package", lambda _experiment: FakeExperiment())
+    monkeypatch.setattr(evaluation_cli, "configure_logging", lambda _path: None)
+    monkeypatch.setattr(evaluation_cli, "print_rich_summary", capture_summary)
+
+    run_dir = tmp_path / "evaluation"
+    exit_code = evaluation_cli.main(
+        [
+            "single",
+            "--experiment",
+            "experiments/baseline",
+            "--dataset-path",
+            "/tmp/eval.parquet",
+            "--run-dir",
+            str(run_dir),
+            "--checkpoint",
+            "/tmp/model.safetensors",
+        ]
+    )
+
+    request = captured["request"]
+    assert exit_code == 0
+    assert request.run_dir == run_dir
+    assert request.dataset_path.as_posix() == "/tmp/eval.parquet"
+    assert captured["title"] == "Evaluation complete"
+    assert captured["fields"] == [("Checkpoint Path", "/tmp/model.safetensors")]
+    assert captured["sections"] == [("Metrics", [("auc", "0.81234")])]
+    assert captured["border_style"] == "cyan"
+
+
 def test_evaluation_main_allows_missing_dataset_for_pcvr_kind_experiment(monkeypatch, capsys) -> None:
     payload = {
         "checkpoint_path": "/tmp/model.safetensors",

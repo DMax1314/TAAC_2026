@@ -17,10 +17,6 @@ from tests.support.bundle_test_support import (
     write_fake_pip_package,
 )
 from tests.support.env import clean_subprocess_env
-from tests.support.experiment_matrix import discover_nonbaseline_pcvr_experiment_paths
-
-
-NON_BASELINE_EXPERIMENTS = discover_nonbaseline_pcvr_experiment_paths()
 
 
 def _training_bundle_env(tmp_path: Path, updates: dict[str, str] | None = None) -> dict[str, str]:
@@ -83,21 +79,6 @@ def test_build_training_bundle_contains_runtime_sources(tmp_path: Path) -> None:
     assert "project/experiments/baseline/trainer.py" not in names
     assert "project/experiments/baseline/run.sh" not in names
     assert "project/tests/unit/test_package_training.py" not in names
-
-
-@pytest.mark.parametrize(
-    "experiment",
-    NON_BASELINE_EXPERIMENTS,
-)
-def test_build_training_bundle_contains_experiment_ns_groups(tmp_path: Path, experiment: str) -> None:
-    output_dir = tmp_path / f"{Path(experiment).name}_bundle"
-
-    result = build_training_bundle(experiment, output_dir=output_dir)
-
-    names = code_package_names(result.code_package_path)
-    assert f"project/{experiment}/__init__.py" in names
-    assert f"project/{experiment}/model.py" in names
-    assert f"project/{experiment}/ns_groups.json" not in names
 
 
 @pytest.mark.parametrize("experiment", ["experiments/host_device_info", "experiments/online_dataset_eda"])

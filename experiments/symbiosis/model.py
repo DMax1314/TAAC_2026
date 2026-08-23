@@ -225,14 +225,8 @@ class PCVRSymbiosis(EmbeddingParameterMixin, nn.Module):
         self._training_diagnostics_enabled = False
         self._diagnostic_scalars: dict[str, float] = {}
 
-    def set_tensorboard_diagnostics_enabled(self, enabled: bool) -> None:
-        self.set_training_diagnostics_enabled(enabled)
-
     def set_training_diagnostics_enabled(self, enabled: bool) -> None:
         self._training_diagnostics_enabled = bool(enabled)
-
-    def consume_tensorboard_scalars(self, *, phase: str) -> dict[str, float]:
-        return self.consume_training_scalars(phase=phase)
 
     def consume_training_scalars(self, *, phase: str) -> dict[str, float]:
         clean_phase = str(phase).strip().replace("/", "_") or "train"
