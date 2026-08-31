@@ -14,8 +14,7 @@ same math exclusively with dense-index ops:
 gradient does not need to be coalesced first.
 
 Interface-compatible with ``torch.optim.Optimizer`` for the pieces the PCVR
-trainer uses: ``param_groups``, ``state``, ``step()``, ``zero_grad()``, and
-``load_state_dict``/``state_dict`` for checkpointing parity.
+trainer uses: ``param_groups``, ``state``, ``step()``, and ``zero_grad()``.
 """
 
 from __future__ import annotations
@@ -154,13 +153,6 @@ class PCVRSparseAdagrad:
                 else:
                     self._dense_step(parameter, grad, lr, eps, initial_accumulator_value)
         return loss
-
-    def state_dict(self) -> dict[str, object]:
-        state = {str(id(parameter)): {"sum": value["sum"]} for parameter, value in self.state.items()}
-        return {"state": state, "param_groups": self.param_groups}
-
-    def load_state_dict(self, payload: dict[str, object]) -> None:
-        raise NotImplementedError("PCVRSparseAdagrad does not support load_state_dict")
 
     def __repr__(self) -> str:
         return f"PCVRSparseAdagrad(lr={self.defaults['lr']})"

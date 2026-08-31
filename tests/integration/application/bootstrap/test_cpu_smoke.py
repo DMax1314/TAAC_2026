@@ -36,10 +36,10 @@ def test_run_sh_train_cpu_smoke_uses_repository_runtime(tmp_path: Path) -> None:
     env = clean_subprocess_env(
         {
             "PYTHONPATH": f"{REPO_ROOT / 'src'}:{REPO_ROOT}{os.environ.get('PYTHONPATH', '') and ':' + os.environ['PYTHONPATH']}",
-            "TAAC_RUNNER": "python",
             "TAAC_SKIP_PIP_INSTALL": "1",
         },
         include_platform_paths=True,
+        python_runner=True,
     )
     completed = subprocess.run(
         [
