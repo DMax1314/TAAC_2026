@@ -44,7 +44,7 @@ def _orthogonalize_update(
         return torch.zeros_like(update)
 
     matrix = matrix / norm.clamp_min(eps)
-    for _ in range(max(1, steps)):
+    for _ in range(max(0, steps)):
         gram = matrix @ matrix.t()
         matrix = 1.5 * matrix - 0.5 * gram @ matrix
 
@@ -70,7 +70,7 @@ def _orthogonalize_updates_batched(
     if not updates:
         return []
     if steps <= 0:
-        return [_orthogonalize_update(update, steps=1) for update in updates]
+        return [_orthogonalize_update(update, steps=steps) for update in updates]
 
     original_dtypes = [update.dtype for update in updates]
     shapes = [tuple(update.reshape(update.shape[0], -1).shape) for update in updates]

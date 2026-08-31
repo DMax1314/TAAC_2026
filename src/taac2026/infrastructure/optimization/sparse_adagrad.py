@@ -9,9 +9,9 @@ same math exclusively with dense-index ops:
     state_sum[row]  += sum_d(grad[row, d] ** 2)
     param[row, d]   -= lr * grad[row, d] / sqrt(state_sum[row] + eps)
 
-``index_add_`` accumulates duplicate rows, and ``index_reduce_`` with
-``reduce="sum"`` applies the per-row update exactly once per row, so the
-gradient does not need to be coalesced first.
+``scatter_reduce_`` (small tables) and ``index_add_`` (large tables) merge
+duplicate rows, and ``index_add_`` applies the per-row update exactly once per
+unique row, so the gradient does not need to be coalesced first.
 
 Interface-compatible with ``torch.optim.Optimizer`` for the pieces the PCVR
 trainer uses: ``param_groups``, ``state``, ``step()``, and ``zero_grad()``.
@@ -24,10 +24,13 @@ from collections.abc import Iterable
 import torch
 import torch.nn as nn
 
-# Merge-strategy threshold: full-table scatter+any cost grows linearly with
-# vocab, sorted-segment merge has fixed kernel overhead and wins on big tables
-# (measured 3.4x faster on a 1M-row table, A30).
+# Merge-strategy threshold: full-table scatter+any cost grows with the number
+# of table elements (vocab x dim), while the sorted-segment merge stays at nnz
+# scale and wins on big or wide tables (measured 3.4x faster on a 1M-row table,
+# A30). Keep the small path only for tables within both the vocab and element
+# budgets so wide embeddings do not allocate a full (vocab x dim) dense tensor.
 _SCATTER_MERGE_VOCAB_LIMIT = 100_000
+_SCATTER_MERGE_FULL_TABLE_ELEMENT_LIMIT = 25_600_000
 
 
 class PCVRSparseAdagrad:
@@ -82,7 +85,10 @@ class PCVRSparseAdagrad:
 
         indices = grad._indices()[0]
         grad_values = grad._values().to(parameter.dtype)
-        if parameter.shape[0] <= _SCATTER_MERGE_VOCAB_LIMIT:
+        if (
+            parameter.shape[0] <= _SCATTER_MERGE_VOCAB_LIMIT
+            and parameter.numel() <= _SCATTER_MERGE_FULL_TABLE_ELEMENT_LIMIT
+        ):
             merged = torch.zeros(parameter.shape, device=parameter.device, dtype=parameter.dtype)
             merged.scatter_reduce_(
                 0,

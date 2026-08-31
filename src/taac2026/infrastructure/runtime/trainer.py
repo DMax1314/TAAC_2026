@@ -30,13 +30,13 @@ from taac2026.infrastructure.runtime.checkpoint_io import PCVRTrainerSupportMixi
 from taac2026.infrastructure.runtime.ema import ExponentialMovingAverage
 from taac2026.infrastructure.runtime.execution import (
     EarlyStopping,
+    build_sparse_optimizer,
     compute_pcvr_loss,
     create_grad_scaler,
     maybe_compile_callable,
     maybe_prepare_internal_compile,
     runtime_autocast_context,
     runtime_execution_summary,
-    runtime_grad_scaler_enabled,
 )
 from taac2026.infrastructure.runtime.reporting import NoopTrainReporter, TrainReporter
 from taac2026.infrastructure.checkpoints import preferred_checkpoint_path
@@ -160,20 +160,13 @@ class PCVRPointwiseTrainer(PCVRTrainerSupportMixin):
                     self._dense_optimizer_display_name(),
                     self.base_dense_lr,
                 )
-                self.sparse_optimizer = torch.optim.Adagrad(
-                    sparse_params, lr=sparse_config.sparse_lr, weight_decay=sparse_config.sparse_weight_decay
+                self.sparse_optimizer = build_sparse_optimizer(
+                    sparse_params,
+                    sparse_lr=sparse_config.sparse_lr,
+                    sparse_weight_decay=sparse_config.sparse_weight_decay,
+                    runtime_execution=config.runtime,
+                    device=self.device,
                 )
-                if not runtime_grad_scaler_enabled(config.runtime, self.device):
-                    # Custom index-based sparse Adagrad avoids torch's sparse
-                    # primitives (coalesce/sparse_mask/invariant checks) that
-                    # dominate CPU and GPU time for embedding tables. AMP uses
-                    # torch.optim.Adagrad because GradScaler requires the
-                    # torch optimizer unscale protocol.
-                    from taac2026.infrastructure.optimization.sparse_adagrad import PCVRSparseAdagrad
-
-                    self.sparse_optimizer = PCVRSparseAdagrad(
-                        sparse_params, lr=sparse_config.sparse_lr, weight_decay=sparse_config.sparse_weight_decay
-                    )
                 self.dense_optimizer: torch.optim.Optimizer = self._build_dense_optimizer(self.dense_params, self.base_dense_lr)
         else:
             self.sparse_optimizer = None
