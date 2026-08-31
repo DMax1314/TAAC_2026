@@ -129,6 +129,21 @@ def build_prediction_model(
     )
 
 
+def predict_batch_probabilities(
+    context: PCVRPredictionContext,
+    runner: PCVRPredictionRunner,
+    batch: Any,
+) -> tuple[Any, Any]:
+    """Run one prediction batch and return (user_ids, probabilities) on the host."""
+
+    model_input = batch.inputs.to(context.runtime_device, non_blocking=True)
+    with runtime_autocast_context(context.runtime_execution, context.runtime_device):
+        logits, _embeddings = runner.predict_fn(model_input)
+    probabilities = sigmoid_probabilities_numpy(logits.squeeze(-1))
+    user_ids = batch.user_id or list(range(len(probabilities)))
+    return user_ids, probabilities
+
+
 def prepare_prediction_runner(
     context: PCVRPredictionContext,
     data_bundle: PCVRPredictionDataBundle,
@@ -193,27 +208,24 @@ def run_prediction_loop(
     started_at = time.perf_counter()
     with torch.inference_mode():
         for batch_count, batch in enumerate(data_bundle.loader, start=1):
-            model_input = batch.inputs.to(context.runtime_device)
-            with runtime_autocast_context(context.runtime_execution, context.runtime_device):
-                logits, _embeddings = runner.predict_fn(model_input)
-            batch_probabilities = sigmoid_probabilities_numpy(logits.squeeze(-1))
-            batch_labels = batch.label.detach().cpu().numpy()
-            batch_user_ids = batch.user_id
+            batch_user_ids, batch_probabilities = predict_batch_probabilities(context, runner, batch)
+            batch_labels = batch.label.detach().cpu().numpy().tolist()
             timestamp_values = batch.inputs.request_timestamp.detach().cpu().numpy().tolist()
-            for row_index, probability in enumerate(batch_probabilities.tolist()):
-                label = float(batch_labels[row_index])
-                user_id = batch_user_ids[row_index]
-                labels.append(label)
-                probabilities.append(float(probability))
-                records.append(
-                    {
-                        "sample_index": len(records),
-                        "user_id": str(user_id),
-                        "score": float(probability),
-                        "target": label,
-                        "timestamp": timestamp_values[row_index],
-                    }
+            probability_values = batch_probabilities.tolist()
+            labels.extend(batch_labels)
+            probabilities.extend(probability_values)
+            records.extend(
+                {
+                    "sample_index": processed_rows + row_index,
+                    "user_id": str(user_id),
+                    "score": probability,
+                    "target": label,
+                    "timestamp": timestamp_values[row_index],
+                }
+                for row_index, (user_id, label, probability) in enumerate(
+                    zip(batch_user_ids, batch_labels, probability_values, strict=False)
                 )
+            )
             processed_rows += len(batch_probabilities)
             if total_rows > 0 and processed_rows >= next_progress_log_rows:
                 _log_prediction_progress(
@@ -259,13 +271,8 @@ def _run_inference_prediction_loop(
     started_at = time.perf_counter()
     with torch.inference_mode():
         for batch_count, batch in enumerate(data_bundle.loader, start=1):
-            model_input = batch.inputs.to(context.runtime_device)
-            with runtime_autocast_context(context.runtime_execution, context.runtime_device):
-                logits, _embeddings = runner.predict_fn(model_input)
-            batch_probabilities = sigmoid_probabilities_numpy(logits.squeeze(-1))
-            batch_user_ids = batch.user_id or list(range(len(batch_probabilities)))
-            for user_id, probability in zip(batch_user_ids, batch_probabilities.tolist(), strict=False):
-                predictions[str(user_id)] = float(probability)
+            batch_user_ids, batch_probabilities = predict_batch_probabilities(context, runner, batch)
+            predictions.update(zip(map(str, batch_user_ids), batch_probabilities.tolist(), strict=False))
             processed_rows += len(batch_probabilities)
             if total_rows > 0 and processed_rows >= next_progress_log_rows:
                 _log_prediction_progress(
@@ -300,6 +307,7 @@ __all__ = [
     "_log_prediction_progress",
     "build_prediction_data",
     "build_prediction_model",
+    "predict_batch_probabilities",
     "prepare_prediction_runner",
     "run_prediction_loop",
 ]
