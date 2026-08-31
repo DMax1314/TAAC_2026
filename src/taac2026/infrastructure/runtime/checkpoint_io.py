@@ -158,7 +158,7 @@ class PCVRTrainerSupportMixin:
         old_state: dict[int, Any] = {}
         for group in self.sparse_optimizer.param_groups:
             for parameter in group["params"]:
-                if parameter.data_ptr() in self.sparse_optimizer.state:
+                if parameter in self.sparse_optimizer.state:
                     old_state[parameter.data_ptr()] = self.sparse_optimizer.state[parameter]
 
         reinit_ptrs = self.model.reinit_high_cardinality_params(self.reinit_cardinality_threshold)

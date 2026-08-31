@@ -781,6 +781,9 @@ def test_shared_batch_cache_rejects_user_ids_without_storage_budget() -> None:
     with pytest.raises(ValueError, match="user_id_max_bytes"):
         cache.put(("file", 0, 0), _label_only_batch_with_user_ids([1, 0], ["u0", "u1"]))
 
+    assert cache.get(("file", 0, 0)) is None
+    assert len(cache) == 0
+
 
 def test_shared_batch_cache_rejects_user_ids_exceeding_budget() -> None:
     cache = PCVRSharedBatchCache(
@@ -795,6 +798,9 @@ def test_shared_batch_cache_rejects_user_ids_exceeding_budget() -> None:
 
     with pytest.raises(ValueError, match="exceeds user_id_max_bytes"):
         cache.put(("file", 0, 0), _label_only_batch_with_user_ids([1, 0], ["u0", "u1"]))
+
+    assert cache.get(("file", 0, 0)) is None
+    assert len(cache) == 0
 
 
 def test_shared_batch_cache_discards_payload_when_version_changes(monkeypatch) -> None:

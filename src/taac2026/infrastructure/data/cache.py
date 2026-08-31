@@ -526,11 +526,23 @@ class PCVRSharedBatchCache:
             row_count = self._write_slot(slot_index, batch)
         except Exception:
             with self._lock:
-                self._slot_versions[slot_index] = int(self._slot_versions[slot_index].item()) + 1
+                self._invalidate_slot(slot_index)
             raise
         with self._lock:
             self._row_counts[slot_index] = row_count
             self._slot_versions[slot_index] = int(self._slot_versions[slot_index].item()) + 1
+
+    def _invalidate_slot(self, slot_index: int) -> None:
+        key_id = int(self._slot_to_key[slot_index].item())
+        if 0 <= key_id < self._key_to_slot.numel():
+            self._key_to_slot[key_id] = -1
+        self._slot_to_key[slot_index] = -1
+        self._row_counts[slot_index] = 0
+        self._slot_last_access[slot_index] = 0
+        self._slot_frequency[slot_index] = 0
+        self._slot_insert_order[slot_index] = 0
+        self._slot_user_id_lengths[slot_index].zero_()
+        self._slot_versions[slot_index] = int(self._slot_versions[slot_index].item()) + 1
 
     def _write_slot(self, slot_index: int, batch: PCVRBatch) -> int:
         row_count = pcvr_batch_row_count(batch)

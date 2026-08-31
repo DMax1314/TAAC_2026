@@ -5,11 +5,10 @@ from __future__ import annotations
 import sys
 import time
 import math
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import torch
@@ -44,7 +43,7 @@ from taac2026.infrastructure.runtime.protocols import SparseParameterModel
 
 
 def clip_grad_norms_with_sparse(
-    parameters: Any,
+    parameters: Iterable[nn.Parameter],
     max_norm: float,
     norm_type: float = 2.0,
 ) -> torch.Tensor:
@@ -56,8 +55,9 @@ def clip_grad_norms_with_sparse(
     classic behavior: norms are computed over ``_values()`` for sparse tensors,
     and clipping scales ``_values()`` in place for coalesced sparse gradients.
     """
+    resolved_parameters = tuple(parameters)
     norms: list[torch.Tensor] = []
-    for parameter in parameters:
+    for parameter in resolved_parameters:
         gradient = parameter.grad
         if gradient is None:
             continue
@@ -70,9 +70,12 @@ def clip_grad_norms_with_sparse(
     if not norms:
         return torch.zeros((), dtype=torch.float32)
     total_norm = torch.linalg.vector_norm(torch.stack(norms), norm_type)
-    clip_coef = float(max_norm) / (float(total_norm) + 1e-6)
+    total_norm_value = float(total_norm)
+    if not math.isfinite(total_norm_value):
+        return total_norm
+    clip_coef = float(max_norm) / (total_norm_value + 1e-6)
     if clip_coef < 1.0:
-        for parameter in parameters:
+        for parameter in resolved_parameters:
             gradient = parameter.grad
             if gradient is None:
                 continue
@@ -407,46 +410,49 @@ class PCVRPointwiseTrainer(PCVRTrainerSupportMixin):
             self.last_train_model_scalars = {}
         self._set_model_training_diagnostics_enabled(False)
 
-        optimizer_step_applied = True
+        optimizer_step_applied = False
         if self.grad_scaler is not None:
             self.grad_scaler.scale(loss).backward()
             self.grad_scaler.unscale_(self.dense_optimizer)
             if self.sparse_optimizer is not None:
                 self.grad_scaler.unscale_(self.sparse_optimizer)
 
-            # After unscale, check whether any gradient is inf/nan.  GradScaler
-            # will skip the optimizer step internally when this happens, but we
-            # log it so the event is visible instead of silent.
             scale_before_step = self.grad_scaler.get_scale()
-
-            clip_grad_norms_with_sparse(self.model.parameters(), max_norm=1.0)
-            self._orthogonalize_dense_gradients()
-
-            self.grad_scaler.step(self.dense_optimizer)
-            if self.sparse_optimizer is not None:
-                self.grad_scaler.step(self.sparse_optimizer)
-            self.grad_scaler.update()
-
-            scale_after_update = self.grad_scaler.get_scale()
-            if scale_after_update < scale_before_step:
-                optimizer_step_applied = False
+            gradient_norm = clip_grad_norms_with_sparse(self.model.parameters(), max_norm=1.0)
+            if bool(torch.isfinite(gradient_norm)):
+                self._orthogonalize_dense_gradients()
+                self.grad_scaler.step(self.dense_optimizer)
+                if self.sparse_optimizer is not None:
+                    self.grad_scaler.step(self.sparse_optimizer)
+                self.grad_scaler.update()
+                optimizer_step_applied = True
+            else:
+                self.grad_scaler.update()
                 logger.warning(
-                    "Train step: GradScaler reduced scale {:.1e} -> {:.1e}, "
-                    "indicating inf/nan gradients were found and optimizer step was skipped.",
+                    "Train step skipped: non-finite gradient norm {}; "
+                    "both dense and sparse optimizer steps were skipped and GradScaler reduced scale {:.1e} -> {:.1e}.",
+                    float(gradient_norm),
                     scale_before_step,
-                    scale_after_update,
+                    self.grad_scaler.get_scale(),
                 )
         else:
             loss.backward()
-            clip_grad_norms_with_sparse(self.model.parameters(), max_norm=1.0)
-            self._orthogonalize_dense_gradients()
+            gradient_norm = clip_grad_norms_with_sparse(self.model.parameters(), max_norm=1.0)
+            if bool(torch.isfinite(gradient_norm)):
+                self._orthogonalize_dense_gradients()
+                self.dense_optimizer.step()
+                if self.sparse_optimizer is not None:
+                    self.sparse_optimizer.step()
+                optimizer_step_applied = True
+            else:
+                logger.warning(
+                    "Train step skipped: non-finite gradient norm {}; "
+                    "both dense and sparse optimizer steps were skipped.",
+                    float(gradient_norm),
+                )
 
-            self.dense_optimizer.step()
-            if self.sparse_optimizer is not None:
-                self.sparse_optimizer.step()
-
-        self.optim_step += 1
         if optimizer_step_applied:
+            self.optim_step += 1
             self._update_ema(self.optim_step)
 
         return loss.item()
@@ -566,7 +572,7 @@ class PCVRPointwiseTrainer(PCVRTrainerSupportMixin):
         *,
         label: str,
     ) -> tuple[float, float, dict[str, float | int]]:
-        valid_logit_mask = ~torch.isnan(logits)
+        valid_logit_mask = torch.isfinite(logits)
         valid_logits = logits[valid_logit_mask]
         valid_labels = labels[valid_logit_mask]
         if len(valid_logits) > 0:
@@ -576,13 +582,17 @@ class PCVRPointwiseTrainer(PCVRTrainerSupportMixin):
 
         probabilities = sigmoid_probabilities_numpy(logits)
         labels_np = labels.detach().cpu().numpy()
-        nan_mask = np.isnan(probabilities)
-        if nan_mask.any():
-            n_nan = int(nan_mask.sum())
-            logger.warning("[{}] {}/{} predictions are NaN, filtering them out", label, n_nan, len(probabilities))
-            valid_mask = ~nan_mask
-            probabilities = probabilities[valid_mask]
-            labels_np = labels_np[valid_mask]
+        invalid_logit_mask = ~valid_logit_mask.detach().cpu().numpy()
+        if invalid_logit_mask.any():
+            invalid_count = int(invalid_logit_mask.sum())
+            probabilities = probabilities.copy()
+            probabilities[invalid_logit_mask] = np.nan
+            logger.warning(
+                "[{}] {}/{} predictions have non-finite logits; excluding them from validation metrics",
+                label,
+                invalid_count,
+                len(probabilities),
+            )
 
         auc = binary_auc(labels_np, probabilities)
         diagnostics = binary_score_diagnostics(labels_np, probabilities)

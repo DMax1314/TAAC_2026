@@ -18,6 +18,7 @@ from taac2026.infrastructure.data.batches import (
 from taac2026.infrastructure.runtime.checkpoint_io import PCVRTrainerSupportMixin
 from taac2026.infrastructure.runtime.trainer import PCVRPointwiseTrainer
 from taac2026.infrastructure.optimization.muon import Muon
+from taac2026.infrastructure.optimization.sparse_adagrad import PCVRSparseAdagrad
 from taac2026.infrastructure.runtime.execution import (
     EarlyStopping,
     PCVRLossConfig,
@@ -161,6 +162,27 @@ class _SparseProbeDummyModel(torch.nn.Module):
     def predict(self, model_input):
         logits = self.forward(model_input)
         return logits, torch.empty(0)
+
+
+class _SparseEmbeddingDummyModel(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.embedding = torch.nn.Embedding(4, 1, sparse=True)
+        self.bias = torch.nn.Parameter(torch.zeros(1))
+
+    def forward(self, model_input):
+        values = model_input.user.int_values[:, 0]
+        return self.embedding(values) + self.bias
+
+    def predict(self, model_input):
+        logits = self.forward(model_input)
+        return logits, torch.empty(0)
+
+    def get_sparse_params(self):
+        return [self.embedding.weight]
+
+    def get_dense_params(self):
+        return [self.bias]
 
 
 class _AuxLossDummyModel(_DummyModel):
@@ -433,6 +455,67 @@ def test_logical_train_sweep_steps_uses_dataset_without_calling_dataloader_len()
         train_loader = LoaderWithFailingLen()
 
     assert TrainerSupport()._logical_train_sweep_steps() == 7
+
+
+def test_gradient_clipping_materializes_parameter_iterators() -> None:
+    model = torch.nn.Linear(1, 1, bias=False)
+    model.weight.grad = torch.tensor([[10.0]])
+
+    total_norm = trainer_module.clip_grad_norms_with_sparse(
+        model.parameters(),
+        max_norm=1.0,
+    )
+
+    assert total_norm.item() == pytest.approx(10.0)
+    assert model.weight.grad.item() == pytest.approx(1.0)
+
+
+def test_sparse_optimizer_rebuild_preserves_unchanged_parameter_state() -> None:
+    class ReinitializableModel(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.low = torch.nn.Embedding(4, 2, sparse=True)
+            self.high = torch.nn.Embedding(8, 2, sparse=True)
+
+        def get_sparse_params(self):
+            return [self.low.weight, self.high.weight]
+
+        def get_dense_params(self):
+            return []
+
+        def reinit_high_cardinality_params(self, cardinality_threshold: int = 4):
+            del cardinality_threshold
+            with torch.no_grad():
+                self.high.weight.zero_()
+            return {self.high.weight.data_ptr()}
+
+    class TrainerSupport(PCVRTrainerSupportMixin):
+        pass
+
+    model = ReinitializableModel()
+    optimizer = PCVRSparseAdagrad(model.get_sparse_params(), lr=0.1)
+    for parameter in model.get_sparse_params():
+        parameter.grad = torch.ones_like(parameter)
+    optimizer.step()
+    low_state_before = optimizer.state[model.low.weight]["sum"].clone()
+
+    trainer = TrainerSupport()
+    trainer.model = model
+    trainer.sparse_optimizer = optimizer
+    trainer.sparse_lr = 0.1
+    trainer.sparse_weight_decay = 0.0
+    trainer.runtime_execution = RuntimeExecutionConfig()
+    trainer.device = "cpu"
+    trainer.reinit_cardinality_threshold = 4
+
+    trainer._rebuild_sparse_optimizer(total_step=10)
+
+    assert model.low.weight in trainer.sparse_optimizer.state
+    torch.testing.assert_close(
+        trainer.sparse_optimizer.state[model.low.weight]["sum"],
+        low_state_before,
+    )
+    assert model.high.weight not in trainer.sparse_optimizer.state
 
 
 def test_infinite_train_batches_advances_step_window_sampler() -> None:
@@ -939,6 +1022,23 @@ def test_evaluate_uses_ema_weights_and_restores_raw_model(tmp_path) -> None:
     assert trainer.model.bias.item() == pytest.approx(10.0)
 
 
+def test_validation_metrics_exclude_all_nonfinite_logits() -> None:
+    logits = torch.tensor([float("-inf"), 0.0, float("inf")])
+    labels = torch.tensor([0, 0, 1])
+
+    auc, logloss, diagnostics = PCVRPointwiseTrainer._compute_validation_metrics(
+        None,
+        logits,
+        labels,
+        label="test",
+    )
+
+    assert auc == pytest.approx(0.5)
+    assert logloss == pytest.approx(math.log(2.0))
+    assert diagnostics["sample_count"] == 1
+    assert diagnostics["invalid_count"] == 2
+
+
 class _NaNProducingModel(torch.nn.Module):
     """Model that produces NaN logits to test training NaN detection."""
 
@@ -1094,3 +1194,52 @@ def test_train_step_does_not_update_ema_when_loss_is_nan(tmp_path) -> None:
     assert math.isnan(loss)
     assert trainer.optim_step == 0
     assert torch.equal(trainer.ema.state_dict()["bias"], initial_ema)
+
+
+def test_grad_scaler_overflow_skips_dense_and_sparse_optimizers_atomically(
+    tmp_path,
+    log_capture,
+) -> None:
+    model = _SparseEmbeddingDummyModel()
+    trainer = _make_trainer(
+        model=model,
+        train_loader=[],
+        valid_loader=[],
+        lr=0.1,
+        max_steps=1,
+        device="cpu",
+        save_dir=tmp_path / "checkpoints",
+        early_stopping=EarlyStopping(
+            tmp_path / "best" / "model.safetensors",
+            patience_steps=2,
+        ),
+        schema_path=_schema_fixture(tmp_path),
+        train_config=_train_config(),
+    )
+    trainer.sparse_optimizer = torch.optim.Adagrad(
+        model.get_sparse_params(),
+        lr=0.1,
+    )
+    trainer.grad_scaler = torch.amp.GradScaler(device="cpu", init_scale=2.0)
+
+    def overflow_sparse_gradient(gradient: torch.Tensor) -> torch.Tensor:
+        return torch.sparse_coo_tensor(
+            gradient._indices(),
+            torch.full_like(gradient._values(), float("inf")),
+            gradient.shape,
+            check_invariants=True,
+        )
+
+    model.embedding.weight.register_hook(overflow_sparse_gradient)
+    dense_before = model.bias.detach().clone()
+    sparse_before = model.embedding.weight.detach().clone()
+
+    with log_capture.at_level(logging.WARNING):
+        loss = trainer._train_step(_sparse_probe_batch())
+
+    assert math.isfinite(loss)
+    assert trainer.optim_step == 0
+    assert torch.equal(model.bias.detach(), dense_before)
+    assert torch.equal(model.embedding.weight.detach(), sparse_before)
+    assert trainer.grad_scaler.get_scale() == pytest.approx(1.0)
+    assert "both dense and sparse optimizer steps were skipped" in log_capture.text
