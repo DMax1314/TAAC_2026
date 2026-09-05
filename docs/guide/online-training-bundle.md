@@ -187,8 +187,8 @@ zip 写入逻辑在 `src/taac2026/infrastructure/bundles/zip_writer.py`。它会
 检查命令：
 
 ```bash
-python -m zipfile -l outputs/bundles/baseline_training/code_package.zip | sed -n '1,80p'
-unzip -p outputs/bundles/baseline_training/code_package.zip project/.taac_training_manifest.json | python -m json.tool
+uv run python -m zipfile -l outputs/bundles/baseline_training/code_package.zip | sed -n '1,80p'
+unzip -p outputs/bundles/baseline_training/code_package.zip project/.taac_training_manifest.json | uv run python -m json.tool
 ```
 
 重点看：

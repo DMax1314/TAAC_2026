@@ -70,6 +70,18 @@ uv run --python 3.13 zensical build --strict --clean
 
 所以判断“文档会不会部署”时，看 workflow 事件路径，不要只看本地 `site/` 有没有变化。
 
+## Workflow 修改的验证
+
+修改 `.github/workflows/deploy-docs.yml` 或 `ci.yml` 时，按上面的事件表核对路径过滤、job 条件和 checkout ref。尤其检查混合代码 / 文档推送是否等待 CI，以及 `workflow_run` 是否检出完成 CI 的 `head_sha`。
+
+工作流静态检查可以使用 [actionlint](https://github.com/rhysd/actionlint)。它是独立工具，当前项目依赖不包含它；环境已经提供时，在仓库根目录运行：
+
+```bash
+actionlint .github/workflows/ci.yml .github/workflows/deploy-docs.yml
+```
+
+工具不可用时，继续核对事件分支和 YAML，并在验证结果中注明未运行 workflow 静态检查。Ruff 检查 Python，不检查这些 YAML；严格站点构建也只验证本地构建。确认线上部署结果还需要对应 commit 的 Actions 记录。
+
 ## 改页面的落点
 
 - 改正文：只动对应 `docs/...md`。

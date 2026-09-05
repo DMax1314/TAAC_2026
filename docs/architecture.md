@@ -10,7 +10,7 @@ icon: lucide/blocks
 
 ```text
 TAAC_2026/
-├── .agents/                  # Codex skill，给模型提供读代码方向
+├── .agents/                  # 按任务加载的 agent skills 与工具参考
 ├── .github/workflows/         # CI 与 GitHub Pages 部署
 ├── docker/                    # 本地容器镜像与入口脚本
 ├── docs/                      # 文档源文件，Zensical 从这里构建站点

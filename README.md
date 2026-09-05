@@ -93,7 +93,7 @@
 
 **AI 辅助与文档**
 
-- **5 个 Agent Skills** — 覆盖环境配置、实验集成、文档构建、平台 API 和容器清理
+- **Agent Skills** — 按需支持实验集成、环境与 bundle 排障、Pages 部署、平台指标、Actions 日志和容器清理
 - **全站技术文档** — Zensical 构建，涵盖架构、实验、论文、指南与诊断，`zensical serve` 本地预览
 
 </td>

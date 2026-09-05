@@ -1,75 +1,46 @@
 # AGENTS.md
 
-This file defines repository-wide operating constraints for coding agents in
-the TAAC 2026 experiment workspace. It is not a project manual. Put workflows,
-commands, design explanations, and experiment-specific knowledge in `docs/`.
+Keep repository-wide decision boundaries here, task-specific workflows in
+skills, and commands and implementation details in `docs/`. Add instructions
+only when they change a decision and are not already expressed or enforced.
 
-Keep this file lean. Add a rule only when every agent needs it, the rule cannot
-be enforced by code or tooling, and an existing rule cannot express it.
+## Scope And Completion
 
-## Sources Of Truth
+- Use the source and tests relevant to the requested behavior. Consult docs
+  when their topic matters; these are routing points, not a reading list:
+  - `README.md` and `docs/getting-started.md`: setup and entrypoints.
+  - `docs/architecture.md`: ownership and runtime contracts.
+  - `docs/guide/contributing.md`: experiment integration.
+  - `docs/guide/testing.md`: test selection and authoritative commands.
+  - `docs/guide/online-training-bundle.md`: bundle format and platform execution.
+  - `docs/experiments/`: experiment intent, defaults, and validation.
+- Treat `docs/archive/` as historical reference, not the live runtime contract.
+  Resolve discrepancies using current requirements and tests, then update the
+  affected code, tests, and docs together.
+- Complete the requested change and its required validation. Fix failures
+  caused by the change without asking for approval at each local iteration.
+  Once checks pass, expand or repeat them only for new changes, failures, or
+  unresolved concerns. Report the result, verification, and remaining limits.
+- Keep changes scoped. A contract change includes every affected repository
+  consumer; a narrow task does not justify unrelated cleanup.
+- Do not preserve backward compatibility. Remove replaced implementations,
+  callers, flags, fallbacks, and tests together. Leave one working path, with
+  no architectural TODOs, disabled replacements, or placeholder branches.
+- Choose the simplest complete implementation with durable ownership
+  boundaries. Reuse declared dependencies before adding infrastructure or a
+  package; inspect their capabilities first. Avoid speculative abstractions.
 
-Read the relevant source and tests before changing code. Do not infer current
-behavior from filenames, comments, or stale documentation.
+## Environment
 
-Use these documents as routing points instead of duplicating their content
-here:
+- This is a Linux project managed by `uv`. Run local Python, pytest, and console
+  scripts through `uv run`; system `python`/`python3` may be absent.
+- `bash run.sh train|val|eval|infer` dispatches through `uv` locally. Generated
+  online bundles use platform Python and must not require `uv`, dev extras,
+  `uv.lock`, or repository-only paths. Bare Python is appropriate when testing
+  or documenting that platform execution path.
+- Use `uv` to update dependencies and lock state. Do not hand-edit `uv.lock`.
 
-- `README.md`: project overview, setup, and entrypoints.
-- `docs/architecture.md`: layering, ownership, runtime flow, and contracts.
-- `docs/guide/testing.md`: test selection, CI, GPU validation, and smoke tests.
-- `docs/guide/online-training-bundle.md`: bundle format and platform behavior.
-- `docs/experiments/index.md` and the relevant experiment page: experiment
-  intent, defaults, and validation.
-
-When documentation and implementation disagree, establish the intended
-behavior from tests and current requirements, then update all three together.
-
-## Engineering Principles
-
-- Do not preserve backward compatibility. Replace obsolete contracts and
-  remove their implementations, callers, flags, fallbacks, and tests in the
-  same change. Do not maintain old and new paths in parallel.
-- Choose the simplest implementation that fully meets the current
-  requirements. Avoid speculative abstractions, configuration, registries,
-  extension points, and indirection.
-- Grow the system in working layers. Start with the smallest end-to-end slice,
-  verify it, and add the next capability on top. Never trade a working product
-  for unfinished complexity.
-- Make architectural boundaries for the long term, while implementing only
-  what the current change needs. Do not accept code intended to be replaced
-  later.
-- Keep components modular, with one clear responsibility and explicit inputs
-  and outputs. Prefer composition over condition-heavy shared code.
-- Use established, well-maintained libraries when they reduce total complexity
-  or improve reliability. Do not reimplement common functionality without a
-  concrete reason.
-- Inspect existing dependencies, their documentation, and their types before
-  writing new infrastructure or adding a package. Do not assume an installed
-  library lacks a capability.
-- Keep changes coherent and scoped. A narrow request does not justify unrelated
-  cleanup; a contract change does require updating every affected in-repository
-  consumer.
-
-## Work Method
-
-1. Inspect the working tree, relevant implementation, tests, and documentation.
-2. State the current behavior, required behavior, ownership boundary, and the
-   smallest end-to-end change that satisfies the requirement.
-3. Implement one path. Remove the path it replaces instead of adding adapters,
-   compatibility shims, or fallback behavior.
-4. Validate the narrowest affected contract first, then broaden validation in
-   proportion to the change's blast radius.
-5. Review the final diff for duplication, dead code, accidental generated
-   files, silent fallback, and documentation drift.
-6. Report what changed, what was verified, and any remaining risk.
-
-Do not leave architectural TODOs, placeholder branches, disabled replacement
-code, or two competing sources of truth. If the complete coherent change is too
-large for the current task, reduce the feature scope rather than landing a
-temporary architecture.
-
-## Architecture Boundaries
+## Architecture
 
 Respect this dependency direction:
 
@@ -81,95 +52,57 @@ infrastructure -> domain
 domain -> standard library and lightweight type dependencies
 ```
 
-- `domain/` owns pure contracts, validated configuration, schema, requests,
-  metrics, and sidecar models. It must not perform CLI parsing, filesystem IO,
-  environment probing, or framework-specific execution.
-- `application/` owns train, evaluation, inference, packaging, and bootstrap
-  use-case orchestration. It coordinates domain contracts and infrastructure.
-- `infrastructure/` owns data access, IO, runtime, modeling primitives,
+- `domain/` owns pure contracts, configuration, schema, requests, metrics, and
+  sidecars. No CLI parsing, filesystem IO, environment probing, or framework
+  execution belongs here.
+- `application/` orchestrates training, evaluation, inference, packaging, and
+  bootstrap use cases.
+- `infrastructure/` owns IO, data access, runtime, modeling primitives,
   optimization, accelerators, bundles, and platform adapters. It must not
   select experiments or encode experiment policy.
-- `experiments/` owns experiment identity, defaults, model composition, and
-  genuinely private model code. It must not copy shared data, training,
-  checkpoint, evaluation, inference, or packaging workflows.
+- `experiments/` owns identity, defaults, model composition, and private model
+  code. It must not copy shared data, training, checkpoint, evaluation,
+  inference, or packaging workflows. Expose shared capabilities to experiments
+  through `taac2026.api` only when intentionally public.
+- Keep generic data and schema model-agnostic. Feature selection, grouping,
+  tokenization, and interpretation belong with model composition.
+- Share behavior only with a stable, experiment-independent contract and an
+  actual shared consumer; similar-looking code alone is insufficient.
 
-Experiment packages should depend on the stable `taac2026.api` facade. Add to
-that facade only when a capability is intentionally public to experiments.
+## Boundary Contracts
 
-Keep generic data and schema code model-agnostic. It may expose canonical
-values, masks, timestamps, and structural metadata; model-specific feature
-selection, grouping, tokenization, and interpretation belong with model
-composition. Do not add experiment-specific flags or feature semantics to a
-shared data contract.
-
-Move behavior into shared framework code only when it has a stable,
-experiment-independent contract and an actual shared consumer. Similar-looking
-code is not sufficient evidence for a shared abstraction.
-
-## Contracts And Configuration
-
-- Treat checkpoint sidecars, schema serialization, manifests, model inputs,
-  and package metadata as explicit boundaries. Change producers and consumers
-  atomically across training, evaluation, inference, and bundles.
-- Use structured, typed configuration. Reject unknown fields at serialized or
-  plugin boundaries instead of silently ignoring them.
-- Use Pydantic models derived from `TAACBoundaryModel` for JSON, manifest,
-  sidecar, platform, and plugin payloads. Use dataclasses or dedicated tensor
-  carriers for internal immutable configuration and hot-path data.
-- Keep one authoritative representation of each setting. Do not mirror the
-  same option across flat dictionaries, constructor introspection, custom hooks,
-  and documentation.
-- Fail early on invalid schema, shape, dtype, configuration, or unsupported
-  capability. Do not silently drop arguments or synthesize fallback behavior.
-- Prefer `pathlib.Path`, structured parsers, and repository IO helpers over raw
-  path manipulation or ad hoc string parsing.
-
-## Dependencies And Environment
-
-This is a Linux project managed by `uv`.
-
-- Use the dependencies already declared in `pyproject.toml` before adding new
-  ones.
-- Add a dependency only when it makes the complete implementation simpler or
-  more reliable, not merely shorter at one call site.
-- Use `uv` to change dependency and lock state. Do not hand-edit `uv.lock`.
-- Keep local development assumptions separate from platform bundle behavior.
-  Platform execution must not depend on undeclared local tools or paths.
+- Change producers and consumers of checkpoint sidecars, schema serialization,
+  manifests, model inputs, and package metadata atomically across training,
+  evaluation, inference, and bundles.
+- Use `TAACBoundaryModel` subclasses for JSON, manifest, sidecar, platform, and
+  plugin payloads, rejecting unknown fields. Use dataclasses or dedicated
+  tensor carriers for internal immutable configuration and hot-path data.
+- Keep one authoritative representation of each setting. Fail early on invalid
+  schema, shape, dtype, configuration, or unsupported capability; do not drop
+  arguments or synthesize silent fallbacks.
 
 ## Validation
 
-Follow `docs/guide/testing.md` for authoritative commands and test selection.
+Select commands from `docs/guide/testing.md` and test observable contracts.
 
-- Test observable behavior and boundary contracts, not private implementation
-  details.
-- Run focused tests first. Run the full CPU-safe gate when shared behavior or a
-  cross-layer contract changes.
-- A model or training-contract change requires an end-to-end CPU smoke run when
-  feasible.
-- CPU results do not establish CUDA, TileLang, Triton, or accelerator behavior.
-  Verify accelerator changes on available GPU hardware and report the exact
-  environment and command.
-- Packaging changes require tests plus inspection of actual generated archive
-  contents.
+- Start with affected tests. Shared behavior or cross-layer contract changes
+  require the full CPU-safe gate; model or training-contract changes also
+  require an end-to-end CPU smoke run when feasible.
+- Accelerator changes require available GPU validation with the environment
+  and command reported. CPU results do not establish CUDA, TileLang, or Triton
+  behavior. State precisely what could not be verified and why.
+- Packaging changes require tests and inspection of generated archive contents.
 - Documentation changes require a strict site build. Edit `docs/` and
   `zensical.toml`, never generated `site/` output.
-- Do not hide runtime warnings through global filters, environment variables,
-  pytest configuration, or blanket command-line ignores. Fix their cause or
-  leave them visible unless the task explicitly requires a narrow exception.
-- If a required validation cannot run, state why and identify the unverified
-  behavior precisely.
+- Keep runtime warnings visible. Do not use global filters, environment flags,
+  pytest settings, or blanket ignores to hide them; any narrow exception must
+  be explicitly required by the task.
 
 ## Repository Safety
 
-Assume the working tree contains user work.
-
-- Preserve changes you did not make. Work with overlapping edits and ignore
-  unrelated ones.
-- Do not run destructive Git commands or broad delete operations unless the
-  user explicitly requests them and the exact target has been verified.
-- Do not commit generated caches, `outputs/`, `.venv/`, `site/`, coverage data,
-  benchmark artifacts, or `__pycache__/`.
-- Do not hand-edit generated artifacts when their source or generator can be
-  changed instead.
-- Keep comments short and limited to decisions or constraints the code cannot
-  express clearly.
+- Preserve user edits, including overlapping work. Do not run destructive Git
+  commands or broad deletions unless explicitly requested and the exact target
+  has been verified.
+- Do not commit caches, `outputs/`, `.venv/`, `site/`, coverage, benchmark
+  artifacts, or `__pycache__/`. Change a generated artifact's source or generator
+  instead of editing the output.

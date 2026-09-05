@@ -93,7 +93,7 @@ EXPERIMENT = create_pcvr_experiment(
 优先复用共享建模组件：
 
 ```python
-from taac2026.infrastructure.modeling import (
+from taac2026.api import (
     EmbeddingParameterMixin,
     FeatureEmbeddingBank,
     NonSequentialTokenizer,
@@ -125,7 +125,7 @@ global_step*/
 - `resolve_schema_path` 的 schema 来源语义（显式路径必须存在，否则使用唯一 fallback）
 - checkpoint 目录命名和最新 checkpoint 解析规则
 
-## 本地验证顺序
+## 本地验证
 
 先看能否发现并加载：
 
@@ -133,45 +133,9 @@ global_step*/
 uv run python -c "from taac2026.application.experiments.registry import load_experiment_package; print(load_experiment_package('experiments/my_experiment').name)"
 ```
 
-再跑最小 smoke：
+然后按 [测试指南](testing.md) 选择实验契约、CPU smoke 和训练到推理的 roundtrip 检查。新增模型要确认它进入现有契约测试覆盖范围；修改共享契约还需要完整 CPU 门禁。
 
-```bash
-bash run.sh train \
-  --experiment experiments/my_experiment \
-  --run-dir outputs/my_experiment_smoke \
-  --optimizer.device cpu \
-  --data.num_workers 0 \
-  --data.batch_size 8 \
-  --optimizer.max_steps 1
-```
-
-最后跑契约测试：
-
-```bash
-uv run pytest tests/contract/experiments/test_packages.py -q
-uv run pytest tests/contract/experiments/test_runtime_contract_matrix.py -q
-uv run pytest tests/unit/application/experiments -q
-```
-
-涉及 bundle 时再加：
-
-```bash
-uv run pytest tests/integration/application/packaging -q
-uv run pytest tests/unit/application/bootstrap tests/integration/application/bootstrap -q
-```
-
-如果要确认打包内容，直接看 zip：
-
-```bash
-uv run taac-package-train \
-  --experiment experiments/my_experiment \
-  --output-dir outputs/bundles/my_experiment_training \
-  --json
-
-python -m zipfile -l outputs/bundles/my_experiment_training/code_package.zip | sed -n '1,120p'
-```
-
-zip 里应该包含 `project/src/taac2026/**`、当前实验包、必要的父级 `__init__.py`、`pyproject.toml` 和 manifest；不应该把整个 `outputs/`、`tests/` 或其他无关实验包打进去。
+涉及 bundle 时，按 [Bundle 指南](online-training-bundle.md) 生成并检查受影响的上传物，验证选中实验和共享框架都已打包。平台入口应在脱离仓库 import 上下文的条件下验证。
 
 ## 提交前检查
 
@@ -180,4 +144,4 @@ zip 里应该包含 `project/src/taac2026/**`、当前实验包、必要的父�
 - 本地 PCVR smoke 默认不需要 `--dataset-path`；调试自定义 parquet 时可以显式传本地路径和 schema。
 - `forward()` 和 `predict()` 输出形状符合契约。
 - 训练后能生成 `global_step*/model.safetensors`、`schema.json` 和 `train_config.json`。
-- 如果改了共享 runtime，至少跑过相关 unit test，而不是只跑自己的实验。
+- 测试范围符合 [测试指南](testing.md)，包含受影响的共享契约。
