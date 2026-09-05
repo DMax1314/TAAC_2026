@@ -22,7 +22,6 @@ icon: lucide/rocket
 git clone https://github.com/Puiching-Memory/TAAC_2026.git
 cd TAAC_2026
 
-uv python install 3.12.13
 uv sync --locked --extra cuda132
 ```
 
@@ -35,10 +34,11 @@ uv sync --locked --extra dev --extra cuda132
 说明：
 
 - `cuda132` 是当前仓库支持的本地 CUDA profile。
+- `uv sync` 按 `.python-version` 选择 Python，缺少对应版本时自动安装。
 - `dev` 包含 Ruff、Vulture、Pytest、Coverage 和 Zensical。
 - 线上 bundle 不依赖 `uv`，见 [线上 Bundle 上传](guide/online-training-bundle.md)。
 
-本地 Docker 镜像从 `.python-version` 安装 Python，依赖由 `pyproject.toml` 和 `uv.lock` 锁定。
+本地 Docker 镜像使用相同的 `uv sync` 流程，固定启用 `cuda132`；基础镜像默认值只在 `docker/Dockerfile` 声明。
 入口脚本默认同步依赖，以适配开发容器挂载的仓库，然后执行传入命令；设置 `AUTO_SYNC=0` 可跳过同步。
 编译 CUDA 扩展需要与该 profile 匹配的 Toolkit，本地 Docker 镜像已包含它。
 

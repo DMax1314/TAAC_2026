@@ -34,7 +34,7 @@ def test_entrypoint_syncs_before_forwarding_command(
         f"exit {sync_exit}\n"
     )
     uv.chmod(0o755)
-    env = {"PATH": f"{tmp_path}:{os.defpath}", "UV_EXTRA": "cuda132"}
+    env = {"PATH": f"{tmp_path}:{os.defpath}"}
     if auto_sync is not None:
         env["AUTO_SYNC"] = auto_sync
 

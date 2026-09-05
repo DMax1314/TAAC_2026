@@ -1,29 +1,21 @@
 name: taac2026
 
-x-gpu-build: &gpu-build
-  context: .
-  dockerfile: docker/Dockerfile
-  target: app
-  args:
-    BASE_IMAGE: ${BASE_IMAGE:-docker.1ms.run/nvidia/cuda:13.2.0-devel-ubuntu22.04}
-
 x-gpu-env: &gpu-env
   TAAC_SKIP_UV_SYNC: "1"
 
 x-gpu-service: &gpu-service
-  build: *gpu-build
+  build:
+    context: .
+    dockerfile: docker/Dockerfile
   ipc: host
   init: true
   gpus: all
-  working_dir: /workspace
-  environment: *gpu-env
   volumes:
     - hf-cache:/root/.cache/huggingface
     - uv-cache:/root/.cache/uv
     - train-outputs:/workspace/outputs
   tmpfs:
     - /tmp
-  restart: "no"
 
 services:
   dev:
@@ -39,7 +31,6 @@ services:
       - hf-cache:/root/.cache/huggingface
       - uv-cache:/root/.cache/uv
       - train-outputs:/workspace/outputs
-    command: ["/bin/bash"]
 
   train:
     <<: *gpu-service
