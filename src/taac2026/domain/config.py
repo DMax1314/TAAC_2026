@@ -257,7 +257,6 @@ class PCVRSparseOptimizerConfig(TAACBoundaryModel):
     model_config = ConfigDict(frozen=True)
 
     sparse_lr: float = 0.05
-    sparse_weight_decay: float = 0.0
     reinit_sparse_every_n_steps: int = 0
     reinit_cardinality_threshold: int = 0
 

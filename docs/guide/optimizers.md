@@ -57,9 +57,11 @@ CLI 参数会覆盖实验默认值。线上训练 bundle 也会走同一套训�
 - `get_dense_params()` 返回的非 embedding 参数交给 `dense_optimizer_type` 指定的 dense optimizer。
 - 如果模型没有暴露 sparse 参数，所有模型参数都会被视为 dense 参数。
 
-切到 `dense_optimizer_type="muon"` 只会改变 dense 参数的 optimizer。Sparse Adagrad 使用独立的 `sparse_lr`；`sparse_weight_decay` 必须为零，非零值会在构造时被拒绝。
+切到 `dense_optimizer_type="muon"` 只会改变 dense 参数的 optimizer。Sparse Adagrad 使用独立的 `sparse_lr`，不支持 weight decay，也不提供相应配置字段。
 
-fp16 AMP 的 `GradScaler` 通过优化器的 `param_groups` 反缩放梯度，再调用 `step()`，与普通精度共用同一套 Sparse Adagrad。训练器统一检查梯度范数；发现非有限值时同时跳过 dense / sparse 更新，也不推进优化步数或 EMA。
+fp16 AMP 的 `GradScaler` 通过优化器的 `param_groups` 反缩放梯度，再调用 `step()`，与普通精度共用同一套 Sparse Adagrad。训练器先合并 COO 梯度中的重复行，再计算并裁剪 dense / sparse 的联合范数；同一行的梯度按求和后的实际值参与范数计算。发现非有限范数时同时跳过 dense / sparse 更新，也不推进优化步数或 EMA。
+
+Sparse Adagrad 复用裁剪阶段合并后的梯度，通过 `index_add_` / `index_select` 更新对应行，不再按表大小选择合并策略或分配全表临时梯度。累积量仍按参数元素保存，更新公式为 `sum += grad²`、`param -= lr * grad / (sqrt(sum) + eps)`。模型提供的 dense embedding 梯度使用相同公式。
 
 启用 `reinit_sparse_every_n_steps` 后，模型原地重置高基数 embedding，并返回这些参数的数据指针。训练器只清除对应的 Adagrad 累积状态；其他参数状态与优化器实例保持不变，下一次更新按初始状态重新累积。
 

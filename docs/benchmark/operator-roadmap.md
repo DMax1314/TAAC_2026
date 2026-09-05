@@ -62,9 +62,8 @@ loss/AUC 曲线完全一致。Baseline+ 已不再作为独立模型维护；这�
 | --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 14  | `Muon` 的 1D/0D AdamW 分支 foreach 化 + 2D 参数按形状分组做 batched Newton-Schulz（`bmm`）                                                                                                                                                         | `Muon.step` GPU 94ms → 40ms（-57%），数学与逐参数实现完全等价                                                                                                                   |
 | 15  | 全部 `nn.Embedding` 开启 `sparse=True`；`FeatureEmbeddingBank` 的 bag-mean 包 `SparseEmbeddingBagMean`（forward 保留多后端加速器，backward 构造 COO 稀疏梯度）                                                                                     | embedding backward 278ms → 28ms（-90%）；每 step dense 梯度从 ~2.2GB 降到 ~MB 级（H20 19.6GiB 显存下避免 OOM 的关键）                                                           |
-| 16  | 自定义 `PCVRSparseAdagrad`（`src/taac2026/infrastructure/optimization/sparse_adagrad.py`）：用 `scatter_reduce` 合并重复行 + `index_add`/`index_select` 更新，完全绕开 torch sparse 原语（`coalesce`/`sparse_mask`/`_make_sparse`/invariant 检查） | 消除 ~165 次/step 的 `coalesce` kernel（~78ms）与 ~640 次/step 的 sparse 张量构造；数值与 `torch.optim.Adagrad` 逐位一致（1e-8 级）；当前 fp16 GradScaler 也使用此实现 |
-| 21  | Adagrad 行合并双策略：大表（vocab > 100K）改排序分段（`unique` + `index_add_`，全部操作保持在 nnz 规模），小表保留全表 scatter+any（固定 kernel 开销占优）                                                                                         | 165 参数模拟训练场景 GPU step 58ms → 41ms（-30%）；大表单独 3.4x；与旧实现及 torch Adagrad 数学完全一致（1e-8 级）                                                              |
-| 17  | `clip_grad_norms_with_sparse`：torch 2.13 的 `clip_grad_norm_` 已移除 sparse 分支，对 SparseCUDA 直接抛 `NotImplementedError`                                                                                                                      | 兼容稀疏梯度裁剪（`_values()` 范数），旧语义不变                                                                                                                                |
+| 16  | 自定义 `PCVRSparseAdagrad`（`src/taac2026/infrastructure/optimization/sparse_adagrad.py`）：合并重复行后用 `index_add_` / `index_select` 更新 | 避免 `sparse_mask` 和更新用的稀疏张量构造；当前实现复用梯度裁剪的合并结果，普通精度与 fp16 GradScaler 共用 |
+| 17  | `clip_grad_norms_with_sparse` 支持 COO 梯度裁剪 | 当前实现先合并重复行，再按实际梯度计算联合范数；CPU / CUDA 测试与等价 dense 梯度裁剪对照 |
 
 复现命令（默认 tilelang 后端即可，无需 `--rms_norm_backend torch`）：
 
@@ -79,7 +78,8 @@ uv run python tools/profile_train_step.py \
 剩余热点（按收益排序）：Muon NS 迭代的 `ns_steps=5`（~40ms/step，调小需先验证训练
 质量）、DataLoader CPU 等待（~170ms/step，本地小数据集固有）。原始 roadmap 中的
 Fused SwiGLU / BCE 在真实 profile 中不是热点（`mm`/`addmm` 合计仅 ~30ms/step），
-优先级低于优化器路径。Adagrad 行合并已通过双策略优化（见 #21）。
+优先级低于优化器路径。2026-09 的简化移除了 Adagrad 全表 scatter 和大小表双策略，
+统一复用裁剪阶段的 COO 合并结果；上述历史性能数字不代表当前实现。
 
 ### 附带发现
 
@@ -102,7 +102,7 @@ Fused SwiGLU / BCE 在真实 profile 中不是热点（`mm`/`addmm` 合计仅 ~3
 
 1. 优化器热路径（已部分完成，见上表 #14-17）：真实 profile 显示 Muon/Adagrad 占训练
    step GPU 时间 ~60%。剩余项：Muon NS 迭代 fused kernel（`ns_steps` 迭代的 gemm 链）、
-   自定义 Adagrad 的 `scatter_reduce`+`any` 合并步骤融合。
+   Adagrad 后续优化应先对当前合并与索引更新路径重新 profiling。
 2. FlashAttention Triton backend，先补齐文档曾经宣称但源码缺失的 backend。
 3. LayerNorm Triton / TileLang，优先覆盖高频模型路径（tilelang rms_norm 的非 2 幂
    dim 已通过 pad 解决、动态行数复用已解决，见附带发现 #18/#19）。

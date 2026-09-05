@@ -6,7 +6,7 @@ icon: lucide/trending-up
 
 共享 PCVR 训练器已经支持 dense optimizer 的学习率 warmup 和调度器。它们可以在实验默认配置里写死，也可以通过训练 CLI 覆盖。
 
-这套调度只作用在 dense optimizer 的参数组上。Sparse embedding optimizer 使用 `sparse_lr` / `sparse_weight_decay` 等单独配置，不会被这里的 `scheduler_type`、`warmup_steps` 或 `min_lr_ratio` 影响。
+这套调度只作用在 dense optimizer 的参数组上。Sparse embedding optimizer 使用独立的 `sparse_lr`，不会被这里的 `scheduler_type`、`warmup_steps` 或 `min_lr_ratio` 影响。
 
 ## 快速配置
 

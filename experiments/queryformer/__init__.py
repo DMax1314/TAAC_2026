@@ -68,7 +68,6 @@ TRAIN_DEFAULTS = QueryFormerTrainConfig(
     ),
     sparse_optimizer=PCVRSparseOptimizerConfig(
         sparse_lr=0.05,
-        sparse_weight_decay=0.0,
         reinit_sparse_every_n_steps=0,
         reinit_cardinality_threshold=0,
     ),

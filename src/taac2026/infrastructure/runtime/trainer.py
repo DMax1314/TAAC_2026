@@ -47,45 +47,27 @@ def clip_grad_norms_with_sparse(
     max_norm: float,
     norm_type: float = 2.0,
 ) -> torch.Tensor:
-    """Gradient norm clipping that supports sparse COO gradients.
-
-    ``torch.nn.utils.clip_grad_norm_`` in torch 2.13 no longer special-cases
-    sparse gradients and calls ``linalg_vector_norm`` on them directly, which
-    raises ``NotImplementedError`` for the SparseCUDA backend. This mirrors the
-    classic behavior: norms are computed over ``_values()`` for sparse tensors,
-    and clipping scales ``_values()`` in place for coalesced sparse gradients.
-    """
-    resolved_parameters = tuple(parameters)
-    norms: list[torch.Tensor] = []
-    for parameter in resolved_parameters:
+    """Clip the actual gradient norm, summing duplicate sparse rows first."""
+    gradients: list[torch.Tensor] = []
+    for parameter in parameters:
         gradient = parameter.grad
         if gradient is None:
             continue
         if gradient.is_sparse:
-            # L2 norm over stored values (including duplicates for uncoalesced
-            # gradients) matches the classic torch clip_grad_norm_ behavior.
-            norms.append(gradient._values().norm(norm_type))
-        else:
-            norms.append(gradient.norm(norm_type))
-    if not norms:
+            parameter.grad = gradient.coalesce()
+            gradient = parameter.grad.values()
+        gradients.append(gradient)
+    if not gradients:
         return torch.zeros((), dtype=torch.float32)
+    norms = [gradient.norm(norm_type) for gradient in gradients]
     total_norm = torch.linalg.vector_norm(torch.stack(norms), norm_type)
     total_norm_value = float(total_norm)
     if not math.isfinite(total_norm_value):
         return total_norm
     clip_coef = float(max_norm) / (total_norm_value + 1e-6)
     if clip_coef < 1.0:
-        for parameter in resolved_parameters:
-            gradient = parameter.grad
-            if gradient is None:
-                continue
-            if gradient.is_sparse:
-                if not gradient.is_coalesced():
-                    parameter.grad = gradient.coalesce()
-                    gradient = parameter.grad
-                gradient._values().mul_(clip_coef)
-            else:
-                gradient.mul_(clip_coef)
+        for gradient in gradients:
+            gradient.mul_(clip_coef)
     return total_norm
 
 
@@ -139,7 +121,6 @@ class PCVRPointwiseTrainer(PCVRTrainerSupportMixin):
             self.sparse_optimizer = PCVRSparseAdagrad(
                 sparse_params,
                 lr=sparse_config.sparse_lr,
-                weight_decay=sparse_config.sparse_weight_decay,
             )
             logger.info(
                 "Sparse params: {} tensors, {} parameters (Adagrad lr={})",

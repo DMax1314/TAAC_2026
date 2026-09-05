@@ -111,9 +111,11 @@ def test_validate_complete_config_accepts_sequence_entries_with_extra_items() ->
     assert len(rebuilt.loss.terms) == 1
 
 
-def test_validate_complete_config_rejects_unknown_fields() -> None:
+@pytest.mark.parametrize("section", [None, "sparse_optimizer"])
+def test_validate_complete_config_rejects_unknown_fields(section) -> None:
     payload = PCVRTrainConfig().model_dump(mode="json")
-    payload["unknown_section"] = {"x": 1}
+    target = payload if section is None else payload[section]
+    target["unknown_field"] = 1
 
     with pytest.raises(ValueError):
         validate_complete_config(payload, PCVRTrainConfig)

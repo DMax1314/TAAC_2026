@@ -248,7 +248,7 @@ def _make_trainer(**kwargs):
         config = config.model_copy(update={"ema": config.ema.model_copy(update=ema_updates)})
 
     sparse_updates = {}
-    for key in ("sparse_lr", "sparse_weight_decay", "reinit_sparse_every_n_steps", "reinit_cardinality_threshold"):
+    for key in ("sparse_lr", "reinit_sparse_every_n_steps", "reinit_cardinality_threshold"):
         if key in kwargs:
             sparse_updates[key] = kwargs.pop(key)
     if sparse_updates:
@@ -468,6 +468,35 @@ def test_gradient_clipping_materializes_parameter_iterators() -> None:
 
     assert total_norm.item() == pytest.approx(10.0)
     assert model.weight.grad.item() == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=pytest.mark.gpu)])
+@pytest.mark.parametrize("values", [[1.0, 1.0], [1.0, -1.0], [0.1, 0.2]])
+def test_sparse_gradient_clipping_matches_dense_gradient(device, values) -> None:
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    sparse_parameter = torch.nn.Parameter(torch.zeros(2, 1, device=device))
+    sparse_parameter.grad = torch.sparse_coo_tensor(
+        torch.tensor([[0, 0]], device=device),
+        torch.tensor(values, device=device).unsqueeze(1),
+        sparse_parameter.shape,
+        check_invariants=True,
+    )
+    dense_reference = torch.nn.Parameter(torch.zeros_like(sparse_parameter))
+    dense_reference.grad = sparse_parameter.grad.to_dense()
+    bias = torch.nn.Parameter(torch.zeros(1, device=device))
+    bias.grad = torch.tensor([0.25], device=device)
+    bias_reference = torch.nn.Parameter(torch.zeros_like(bias))
+    bias_reference.grad = bias.grad.clone()
+
+    expected_norm = torch.nn.utils.clip_grad_norm_([dense_reference, bias_reference], max_norm=1.0)
+    actual_norm = trainer_module.clip_grad_norms_with_sparse(
+        iter([sparse_parameter, bias]), max_norm=1.0,
+    )
+
+    torch.testing.assert_close(actual_norm, expected_norm)
+    torch.testing.assert_close(sparse_parameter.grad.to_dense(), dense_reference.grad)
+    torch.testing.assert_close(bias.grad, bias_reference.grad)
 
 
 def test_sparse_reinitialization_preserves_other_state_and_resets_accumulation() -> None:
@@ -1274,17 +1303,3 @@ def test_nonfinite_gradients_skip_optimizers_and_ema_then_recover(
     assert trainer.dense_optimizer.state
     assert trainer.sparse_optimizer.state
     assert not torch.equal(trainer.ema.state_dict()["bias"], ema_before["bias"])
-
-
-def test_trainer_rejects_sparse_weight_decay(tmp_path) -> None:
-    with pytest.raises(ValueError, match="does not support weight_decay"):
-        _make_trainer(
-            model=_SparseEmbeddingDummyModel(),
-            train_loader=[],
-            valid_loader=[],
-            device="cpu",
-            sparse_weight_decay=0.1,
-            save_dir=tmp_path / "checkpoints",
-            schema_path=_schema_fixture(tmp_path),
-            train_config=_train_config(),
-        )
