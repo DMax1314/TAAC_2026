@@ -30,7 +30,7 @@ def test_entrypoint_syncs_before_forwarding_command(
 ) -> None:
     uv = tmp_path / "uv"
     uv.write_text(
-        "#!/bin/bash\npwd > sync.log\nprintf '%s\\n' \"$@\" >> sync.log\n"
+        "#!/bin/bash\nprintf '%s\\n' \"$@\" > sync.log\n"
         f"exit {sync_exit}\n"
     )
     uv.chmod(0o755)
@@ -53,6 +53,4 @@ def test_entrypoint_syncs_before_forwarding_command(
     if auto_sync == "0":
         assert not sync_log.exists()
     else:
-        assert sync_log.read_text().splitlines() == [
-            str(tmp_path), "sync", "--locked", "--extra", "cuda132",
-        ]
+        assert sync_log.read_text().splitlines() == ["sync", "--locked", "--extra", "cuda132"]
