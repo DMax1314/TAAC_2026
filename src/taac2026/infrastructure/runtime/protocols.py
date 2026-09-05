@@ -20,7 +20,7 @@ class SparseParameterModel(Protocol):
 @runtime_checkable
 class ReinitializableSparseParameterModel(SparseParameterModel, Protocol):
     def reinit_high_cardinality_params(self, cardinality_threshold: int = 10000) -> set[int]:
-        ...
+        """Reinitialize parameters in place and return their data pointers."""
 
 
 __all__ = ["ReinitializableSparseParameterModel", "SparseParameterModel"]

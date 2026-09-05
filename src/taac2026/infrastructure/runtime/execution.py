@@ -51,34 +51,6 @@ def runtime_grad_scaler_enabled(runtime_execution: RuntimeExecutionConfig, devic
     return runtime_amp_enabled(runtime_execution, device) and runtime_torch_amp_dtype(runtime_execution) == torch.float16
 
 
-def build_sparse_optimizer(
-    sparse_params: list[nn.Parameter],
-    *,
-    sparse_lr: float,
-    sparse_weight_decay: float,
-    runtime_execution: RuntimeExecutionConfig,
-    device: str | torch.device,
-) -> torch.optim.Optimizer:
-    """Construct the embedding-table optimizer.
-
-    ``weight_decay`` is incompatible with sparse gradient updates and is
-    validated up front. The custom index-based Adagrad (which avoids torch's
-    sparse primitives) is used when no GradScaler is active; the torch
-    optimizer is required when a GradScaler is present because it relies on the
-    torch optimizer unscale protocol.
-    """
-    if sparse_weight_decay != 0.0:
-        raise ValueError(
-            "sparse_weight_decay is not compatible with sparse embedding gradients; "
-            "set sparse_weight_decay=0.0"
-        )
-    if runtime_grad_scaler_enabled(runtime_execution, device):
-        return torch.optim.Adagrad(sparse_params, lr=sparse_lr, weight_decay=0.0)
-    from taac2026.infrastructure.optimization.sparse_adagrad import PCVRSparseAdagrad
-
-    return PCVRSparseAdagrad(sparse_params, lr=sparse_lr)
-
-
 def runtime_autocast_context(
     runtime_execution: RuntimeExecutionConfig,
     device: str | torch.device,
@@ -340,7 +312,6 @@ __all__ = [
     "RuntimeExecutionConfig",
     "amp_dtype_to_torch_dtype",
     "binary_pairwise_auc_loss",
-    "build_sparse_optimizer",
     "compute_pcvr_loss",
     "create_grad_scaler",
     "create_logger",

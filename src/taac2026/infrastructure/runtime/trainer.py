@@ -25,11 +25,11 @@ from taac2026.domain.config import (
 from taac2026.infrastructure.data.batches import PCVRBatch
 from taac2026.infrastructure.logging import logger
 from taac2026.infrastructure.modeling.tensors import sigmoid_probabilities_numpy
+from taac2026.infrastructure.optimization.sparse_adagrad import PCVRSparseAdagrad
 from taac2026.infrastructure.runtime.checkpoint_io import PCVRTrainerSupportMixin
 from taac2026.infrastructure.runtime.ema import ExponentialMovingAverage
 from taac2026.infrastructure.runtime.execution import (
     EarlyStopping,
-    build_sparse_optimizer,
     compute_pcvr_loss,
     create_grad_scaler,
     maybe_compile_callable,
@@ -132,49 +132,31 @@ class PCVRPointwiseTrainer(PCVRTrainerSupportMixin):
         self.base_dense_lr = float(optimizer_config.lr)
         self.current_dense_lr = self.base_dense_lr
         self.optim_step = 0
-        self.dense_params: list[nn.Parameter] = []
-
-        self.sparse_optimizer: torch.optim.Optimizer | None
-        if isinstance(model, SparseParameterModel):
-            sparse_params = model.get_sparse_params()
-            dense_params = model.get_dense_params()
-            if not sparse_params:
-                logger.info(
-                    "Model exposes get_sparse_params but has no embedding parameters; using {} for all params",
-                    self._dense_optimizer_display_name(),
-                )
-                self.sparse_optimizer = None
-                self.dense_params = list(model.parameters())
-                self.dense_optimizer = self._build_dense_optimizer(self.dense_params, self.base_dense_lr)
-            else:
-                self.dense_params = list(dense_params)
-                sparse_param_count = sum(parameter.numel() for parameter in sparse_params)
-                dense_param_count = sum(parameter.numel() for parameter in dense_params)
-                logger.info(
-                    "Sparse params: {} tensors, {} parameters (Adagrad lr={})",
-                    len(sparse_params),
-                    f"{sparse_param_count:,}",
-                    sparse_config.sparse_lr,
-                )
-                logger.info(
-                    "Dense params: {} tensors, {} parameters ({} lr={})",
-                    len(dense_params),
-                    f"{dense_param_count:,}",
-                    self._dense_optimizer_display_name(),
-                    self.base_dense_lr,
-                )
-                self.sparse_optimizer = build_sparse_optimizer(
-                    sparse_params,
-                    sparse_lr=sparse_config.sparse_lr,
-                    sparse_weight_decay=sparse_config.sparse_weight_decay,
-                    runtime_execution=config.runtime,
-                    device=self.device,
-                )
-                self.dense_optimizer: torch.optim.Optimizer = self._build_dense_optimizer(self.dense_params, self.base_dense_lr)
+        self.sparse_optimizer: PCVRSparseAdagrad | None = None
+        sparse_params = model.get_sparse_params() if isinstance(model, SparseParameterModel) else ()
+        if sparse_params:
+            self.dense_params = list(model.get_dense_params())
+            self.sparse_optimizer = PCVRSparseAdagrad(
+                sparse_params,
+                lr=sparse_config.sparse_lr,
+                weight_decay=sparse_config.sparse_weight_decay,
+            )
+            logger.info(
+                "Sparse params: {} tensors, {} parameters (Adagrad lr={})",
+                len(sparse_params),
+                f"{sum(parameter.numel() for parameter in sparse_params):,}",
+                sparse_config.sparse_lr,
+            )
         else:
-            self.sparse_optimizer = None
             self.dense_params = list(model.parameters())
-            self.dense_optimizer = self._build_dense_optimizer(self.dense_params, self.base_dense_lr)
+        self.dense_optimizer = self._build_dense_optimizer(self.dense_params, self.base_dense_lr)
+        logger.info(
+            "Dense params: {} tensors, {} parameters ({} lr={})",
+            len(self.dense_params),
+            f"{sum(parameter.numel() for parameter in self.dense_params):,}",
+            self._dense_optimizer_display_name(),
+            self.base_dense_lr,
+        )
 
         self.max_steps = int(optimizer_config.max_steps)
         self.save_dir = Path(save_dir).expanduser().resolve()
@@ -218,8 +200,6 @@ class PCVRPointwiseTrainer(PCVRTrainerSupportMixin):
         self.last_train_loss_components: dict[str, float] = {}
         self.reinit_sparse_every_n_steps = sparse_config.reinit_sparse_every_n_steps
         self.reinit_cardinality_threshold = sparse_config.reinit_cardinality_threshold
-        self.sparse_lr = sparse_config.sparse_lr
-        self.sparse_weight_decay = sparse_config.sparse_weight_decay
         self.eval_every_n_steps = config.data.eval_every_n_steps
         self.early_stopping_metric = config.validation.early_stopping_metric
         if self.early_stopping_metric not in PCVR_EARLY_STOPPING_METRIC_CHOICES:
@@ -308,7 +288,7 @@ class PCVRPointwiseTrainer(PCVRTrainerSupportMixin):
                 )
 
             if self.reinit_sparse_every_n_steps > 0 and total_step % self.reinit_sparse_every_n_steps == 0:
-                self._rebuild_sparse_optimizer(total_step)
+                self._reinitialize_sparse_parameters(total_step)
 
             if total_step % eval_interval != 0 and total_step != total_train_steps:
                 continue
@@ -369,9 +349,9 @@ class PCVRPointwiseTrainer(PCVRTrainerSupportMixin):
         label = device_batch.label.float()
         self._set_dense_learning_rate(self.optim_step + 1)
 
-        self.dense_optimizer.zero_grad()
-        if self.sparse_optimizer is not None:
-            self.sparse_optimizer.zero_grad()
+        optimizers = (self.dense_optimizer,) if self.sparse_optimizer is None else (self.dense_optimizer, self.sparse_optimizer)
+        for optimizer in optimizers:
+            optimizer.zero_grad()
 
         collect_model_scalars = self._should_collect_train_model_scalars(self.optim_step + 1)
         self._set_model_training_diagnostics_enabled(collect_model_scalars)
@@ -410,50 +390,35 @@ class PCVRPointwiseTrainer(PCVRTrainerSupportMixin):
             self.last_train_model_scalars = {}
         self._set_model_training_diagnostics_enabled(False)
 
-        optimizer_step_applied = False
         if self.grad_scaler is not None:
             self.grad_scaler.scale(loss).backward()
-            self.grad_scaler.unscale_(self.dense_optimizer)
-            if self.sparse_optimizer is not None:
-                self.grad_scaler.unscale_(self.sparse_optimizer)
-
-            scale_before_step = self.grad_scaler.get_scale()
-            gradient_norm = clip_grad_norms_with_sparse(self.model.parameters(), max_norm=1.0)
-            if bool(torch.isfinite(gradient_norm)):
-                self._orthogonalize_dense_gradients()
-                self.grad_scaler.step(self.dense_optimizer)
-                if self.sparse_optimizer is not None:
-                    self.grad_scaler.step(self.sparse_optimizer)
-                self.grad_scaler.update()
-                optimizer_step_applied = True
-            else:
-                self.grad_scaler.update()
-                logger.warning(
-                    "Train step skipped: non-finite gradient norm {}; "
-                    "both dense and sparse optimizer steps were skipped and GradScaler reduced scale {:.1e} -> {:.1e}.",
-                    float(gradient_norm),
-                    scale_before_step,
-                    self.grad_scaler.get_scale(),
-                )
+            for optimizer in optimizers:
+                self.grad_scaler.unscale_(optimizer)
         else:
             loss.backward()
-            gradient_norm = clip_grad_norms_with_sparse(self.model.parameters(), max_norm=1.0)
-            if bool(torch.isfinite(gradient_norm)):
-                self._orthogonalize_dense_gradients()
-                self.dense_optimizer.step()
-                if self.sparse_optimizer is not None:
-                    self.sparse_optimizer.step()
-                optimizer_step_applied = True
-            else:
-                logger.warning(
-                    "Train step skipped: non-finite gradient norm {}; "
-                    "both dense and sparse optimizer steps were skipped.",
-                    float(gradient_norm),
-                )
 
-        if optimizer_step_applied:
-            self.optim_step += 1
-            self._update_ema(self.optim_step)
+        gradient_norm = clip_grad_norms_with_sparse(self.model.parameters(), max_norm=1.0)
+        if not bool(torch.isfinite(gradient_norm)):
+            if self.grad_scaler is not None:
+                self.grad_scaler.update()
+            logger.warning(
+                "Train step skipped: non-finite gradient norm {}; "
+                "both dense and sparse optimizer steps were skipped.",
+                float(gradient_norm),
+            )
+            return loss.item()
+
+        self._orthogonalize_dense_gradients()
+        for optimizer in optimizers:
+            if self.grad_scaler is None:
+                optimizer.step()
+            else:
+                self.grad_scaler.step(optimizer)
+        if self.grad_scaler is not None:
+            self.grad_scaler.update()
+
+        self.optim_step += 1
+        self._update_ema(self.optim_step)
 
         return loss.item()
 

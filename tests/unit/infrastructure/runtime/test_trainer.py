@@ -470,7 +470,7 @@ def test_gradient_clipping_materializes_parameter_iterators() -> None:
     assert model.weight.grad.item() == pytest.approx(1.0)
 
 
-def test_sparse_optimizer_rebuild_preserves_unchanged_parameter_state() -> None:
+def test_sparse_reinitialization_preserves_other_state_and_resets_accumulation() -> None:
     class ReinitializableModel(torch.nn.Module):
         def __init__(self) -> None:
             super().__init__()
@@ -502,20 +502,24 @@ def test_sparse_optimizer_rebuild_preserves_unchanged_parameter_state() -> None:
     trainer = TrainerSupport()
     trainer.model = model
     trainer.sparse_optimizer = optimizer
-    trainer.sparse_lr = 0.1
-    trainer.sparse_weight_decay = 0.0
-    trainer.runtime_execution = RuntimeExecutionConfig()
-    trainer.device = "cpu"
     trainer.reinit_cardinality_threshold = 4
 
-    trainer._rebuild_sparse_optimizer(total_step=10)
+    trainer._reinitialize_sparse_parameters(total_step=10)
 
+    assert trainer.sparse_optimizer is optimizer
     assert model.low.weight in trainer.sparse_optimizer.state
     torch.testing.assert_close(
         trainer.sparse_optimizer.state[model.low.weight]["sum"],
         low_state_before,
     )
     assert model.high.weight not in trainer.sparse_optimizer.state
+    assert torch.count_nonzero(model.high.weight) == 0
+
+    optimizer.step()
+
+    torch.testing.assert_close(optimizer.state[model.low.weight]["sum"], low_state_before + 1)
+    torch.testing.assert_close(optimizer.state[model.high.weight]["sum"], torch.ones_like(model.high.weight))
+    torch.testing.assert_close(model.high.weight, torch.full_like(model.high.weight, -0.1))
 
 
 def test_infinite_train_batches_advances_step_window_sampler() -> None:
@@ -1196,18 +1200,30 @@ def test_train_step_does_not_update_ema_when_loss_is_nan(tmp_path) -> None:
     assert torch.equal(trainer.ema.state_dict()["bias"], initial_ema)
 
 
-def test_grad_scaler_overflow_skips_dense_and_sparse_optimizers_atomically(
+@pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=pytest.mark.gpu)])
+@pytest.mark.parametrize("use_scaler", [False, True])
+@pytest.mark.parametrize("gradient_target", ["dense", "sparse"])
+@pytest.mark.parametrize("invalid_value", [float("inf"), float("nan")], ids=["inf", "nan"])
+def test_nonfinite_gradients_skip_optimizers_and_ema_then_recover(
     tmp_path,
     log_capture,
+    device,
+    use_scaler,
+    gradient_target,
+    invalid_value,
 ) -> None:
-    model = _SparseEmbeddingDummyModel()
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    torch.manual_seed(7)
+    model = _SparseEmbeddingDummyModel().to(device)
     trainer = _make_trainer(
         model=model,
         train_loader=[],
         valid_loader=[],
         lr=0.1,
         max_steps=1,
-        device="cpu",
+        device=device,
+        ema_enabled=True,
         save_dir=tmp_path / "checkpoints",
         early_stopping=EarlyStopping(
             tmp_path / "best" / "model.safetensors",
@@ -1216,23 +1232,24 @@ def test_grad_scaler_overflow_skips_dense_and_sparse_optimizers_atomically(
         schema_path=_schema_fixture(tmp_path),
         train_config=_train_config(),
     )
-    trainer.sparse_optimizer = torch.optim.Adagrad(
-        model.get_sparse_params(),
-        lr=0.1,
-    )
-    trainer.grad_scaler = torch.amp.GradScaler(device="cpu", init_scale=2.0)
+    assert isinstance(trainer.sparse_optimizer, PCVRSparseAdagrad)
+    trainer.grad_scaler = torch.amp.GradScaler(device=device, init_scale=2.0) if use_scaler else None
 
-    def overflow_sparse_gradient(gradient: torch.Tensor) -> torch.Tensor:
+    def invalidate_gradient(gradient: torch.Tensor) -> torch.Tensor:
+        if not gradient.is_sparse:
+            return torch.full_like(gradient, invalid_value)
         return torch.sparse_coo_tensor(
             gradient._indices(),
-            torch.full_like(gradient._values(), float("inf")),
+            torch.full_like(gradient._values(), invalid_value),
             gradient.shape,
             check_invariants=True,
         )
 
-    model.embedding.weight.register_hook(overflow_sparse_gradient)
+    parameter = model.embedding.weight if gradient_target == "sparse" else model.bias
+    hook = parameter.register_hook(invalidate_gradient)
     dense_before = model.bias.detach().clone()
     sparse_before = model.embedding.weight.detach().clone()
+    ema_before = trainer.ema.state_dict()
 
     with log_capture.at_level(logging.WARNING):
         loss = trainer._train_step(_sparse_probe_batch())
@@ -1241,5 +1258,33 @@ def test_grad_scaler_overflow_skips_dense_and_sparse_optimizers_atomically(
     assert trainer.optim_step == 0
     assert torch.equal(model.bias.detach(), dense_before)
     assert torch.equal(model.embedding.weight.detach(), sparse_before)
-    assert trainer.grad_scaler.get_scale() == pytest.approx(1.0)
+    assert not trainer.dense_optimizer.state
+    assert not trainer.sparse_optimizer.state
+    for name, value in trainer.ema.state_dict().items():
+        torch.testing.assert_close(value, ema_before[name], rtol=0, atol=0)
+    if use_scaler:
+        assert trainer.grad_scaler.get_scale() == pytest.approx(1.0)
     assert "both dense and sparse optimizer steps were skipped" in log_capture.text
+
+    hook.remove()
+    assert math.isfinite(trainer._train_step(_sparse_probe_batch()))
+    assert trainer.optim_step == 1
+    assert not torch.equal(model.bias.detach(), dense_before)
+    assert not torch.equal(model.embedding.weight.detach(), sparse_before)
+    assert trainer.dense_optimizer.state
+    assert trainer.sparse_optimizer.state
+    assert not torch.equal(trainer.ema.state_dict()["bias"], ema_before["bias"])
+
+
+def test_trainer_rejects_sparse_weight_decay(tmp_path) -> None:
+    with pytest.raises(ValueError, match="does not support weight_decay"):
+        _make_trainer(
+            model=_SparseEmbeddingDummyModel(),
+            train_loader=[],
+            valid_loader=[],
+            device="cpu",
+            sparse_weight_decay=0.1,
+            save_dir=tmp_path / "checkpoints",
+            schema_path=_schema_fixture(tmp_path),
+            train_config=_train_config(),
+        )

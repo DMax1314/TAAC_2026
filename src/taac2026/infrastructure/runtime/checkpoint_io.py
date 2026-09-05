@@ -147,7 +147,7 @@ class PCVRTrainerSupportMixin:
         except TypeError:
             return 1
 
-    def _rebuild_sparse_optimizer(self, total_step: int) -> None:
+    def _reinitialize_sparse_parameters(self, total_step: int) -> None:
         if self.sparse_optimizer is None:
             return
         if not isinstance(self.model, ReinitializableSparseParameterModel):
@@ -155,40 +155,19 @@ class PCVRTrainerSupportMixin:
                 "sparse optimizer reinitialization requires get_sparse_params() "
                 "and reinit_high_cardinality_params()"
             )
-        old_state: dict[int, Any] = {}
-        for group in self.sparse_optimizer.param_groups:
-            for parameter in group["params"]:
-                if parameter in self.sparse_optimizer.state:
-                    old_state[parameter.data_ptr()] = self.sparse_optimizer.state[parameter]
-
         reinit_ptrs = self.model.reinit_high_cardinality_params(self.reinit_cardinality_threshold)
-        sparse_params = self.model.get_sparse_params()
-        from taac2026.infrastructure.runtime.execution import build_sparse_optimizer
-
-        self.sparse_optimizer = build_sparse_optimizer(
-            sparse_params,
-            sparse_lr=self.sparse_lr,
-            sparse_weight_decay=self.sparse_weight_decay,
-            runtime_execution=self.runtime_execution,
-            device=self.device,
-        )
-        restored = 0
-        for parameter in sparse_params:
-            if parameter.data_ptr() not in reinit_ptrs and parameter.data_ptr() in old_state:
-                self.sparse_optimizer.state[parameter] = old_state[parameter.data_ptr()]
-                restored += 1
+        for parameter in self.model.get_sparse_params():
+            if parameter.data_ptr() in reinit_ptrs:
+                self.sparse_optimizer.state.pop(parameter, None)
         logger.info(
-            "Reinitialized sparse optimizer at step {} ({} params reset, {} preserved)",
+            "Reinitialized sparse parameters at step {} ({} params reset, {} optimizer states preserved)",
             total_step,
             len(reinit_ptrs),
-            restored,
+            len(self.sparse_optimizer.state),
         )
         sync_ema = getattr(self, "_sync_ema_after_model_reinit", None)
         if callable(sync_ema):
             sync_ema()
-
-    def _write_eval_diagnostics(self, total_step: int) -> None:
-        del total_step
 
 
 __all__ = ["PCVRTrainerSupportMixin"]

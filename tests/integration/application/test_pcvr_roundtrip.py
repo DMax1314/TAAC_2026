@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
+import torch
 
 from taac2026.application.experiments.experiment import create_pcvr_experiment
 from taac2026.application.experiments.registry import load_experiment_package
@@ -64,7 +66,7 @@ def _write_tiny_pcvr_dataset(root: Path) -> tuple[Path, Path]:
     return dataset_path, schema_path
 
 
-def _tiny_baseline_experiment():
+def _tiny_baseline_experiment(device: str):
     baseline = load_experiment_package("experiments/baseline")
     defaults = PCVRTrainConfig(
         data=PCVRDataConfig(
@@ -83,10 +85,11 @@ def _tiny_baseline_experiment():
             max_steps=1,
             patience_steps=2,
             seed=7,
-            device="cpu",
+            device=device,
         ),
         runtime=RuntimeExecutionConfig(
-            amp=False,
+            amp=device == "cuda",
+            amp_dtype="float16",
             compile=False,
             progress_log_interval_steps=1,
         ),
@@ -120,11 +123,14 @@ def _tiny_baseline_experiment():
     )
 
 
-def test_real_pcvr_cpu_training_checkpoint_and_inference_round_trip(tmp_path: Path) -> None:
+@pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=pytest.mark.gpu)])
+def test_real_pcvr_training_checkpoint_and_inference_round_trip(tmp_path: Path, device: str) -> None:
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
     dataset_path, schema_path = _write_tiny_pcvr_dataset(tmp_path)
     run_dir = tmp_path / "run"
     result_dir = tmp_path / "inference"
-    experiment = _tiny_baseline_experiment()
+    experiment = _tiny_baseline_experiment(device)
 
     train_summary = experiment.train(
         TrainRequest(
@@ -141,6 +147,7 @@ def test_real_pcvr_cpu_training_checkpoint_and_inference_round_trip(tmp_path: Pa
     assert (checkpoint.parent / "train_config.json").is_file()
     assert (run_dir / "training_summary.json").is_file()
     assert train_summary["row_group_split"]["is_disjoint"] is True
+    assert train_summary["telemetry"]["steps"] == 1
 
     inference = experiment.infer(
         InferRequest(
@@ -150,8 +157,8 @@ def test_real_pcvr_cpu_training_checkpoint_and_inference_round_trip(tmp_path: Pa
             result_dir=result_dir,
             batch_size=2,
             num_workers=0,
-            device="cpu",
-            amp=False,
+            device=device,
+            amp=device == "cuda",
             compile=False,
         )
     )

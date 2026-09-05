@@ -39,6 +39,35 @@ def test_sparse_step_matches_torch_adagrad_on_cpu() -> None:
     torch.testing.assert_close(candidate.detach(), reference, atol=1e-6, rtol=1e-6)
 
 
+@pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=pytest.mark.gpu)])
+def test_grad_scaler_updates_match_torch_adagrad(device) -> None:
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    torch.manual_seed(7)
+    candidate = torch.nn.Parameter(torch.randn(16, 4, device=device))
+    reference = torch.nn.Parameter(candidate.detach().clone())
+    optimizer = PCVRSparseAdagrad([candidate], lr=0.05)
+    reference_optimizer = torch.optim.Adagrad([reference], lr=0.05)
+    scaler = torch.amp.GradScaler(device=device, init_scale=8.0, growth_interval=2)
+    rows = torch.tensor([1, 1, 3, 5, 3], device=device)
+
+    for _ in range(3):
+        values = torch.randn(5, 4, device=device)
+        optimizer.zero_grad()
+        reference_optimizer.zero_grad()
+        loss = (torch.nn.functional.embedding(rows, candidate, sparse=True) * values).sum()
+        scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
+        scaler.step(optimizer)
+        scaler.update()
+        (torch.nn.functional.embedding(rows, reference, sparse=True) * values).sum().backward()
+        reference_optimizer.step()
+        torch.testing.assert_close(candidate, reference)
+        torch.testing.assert_close(optimizer.state[candidate]["sum"], reference_optimizer.state[reference]["sum"])
+
+    assert scaler.get_scale() == 16.0
+
+
 def test_sparse_step_sums_duplicate_rows_before_squaring() -> None:
     # Duplicate rows are summed first (g1+g2), then squared: state_sum += (g1+g2)^2.
     vocab, dim, eps = 4, 2, 1e-10
