@@ -9,7 +9,6 @@
   <a href="https://puiching-memory.github.io/TAAC_2026/"><img src="https://img.shields.io/website?label=Docs&up_message=Online&down_message=Offline&up_color=0A7B83&url=https%3A%2F%2Fpuiching-memory.github.io%2FTAAC_2026%2F" alt="Online Docs Status"></a>
   <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License">
   <img src="https://img.shields.io/badge/Python-3.12--3.14-blue.svg" alt="Python">
-  <img src="https://img.shields.io/badge/PyTorch-2.7.1-EE4C2C.svg" alt="PyTorch">
   <img src="https://img.shields.io/badge/Task-Recommendation-brightgreen.svg" alt="Task">
 </p>
 

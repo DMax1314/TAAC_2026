@@ -3,8 +3,6 @@
 ARG BASE_IMAGE=docker.1ms.run/nvidia/cuda:13.2.0-devel-ubuntu22.04
 FROM ${BASE_IMAGE} AS base
 
-ARG BASE_IMAGE
-ARG PYTHON_VERSION=3.12.13
 ARG UV_EXTRA=cuda132
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -12,9 +10,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
     UV_PROJECT_ENVIRONMENT=/opt/venv \
     UV_LINK_MODE=copy \
     HF_HOME=/root/.cache/huggingface \
-    BASE_IMAGE=${BASE_IMAGE} \
-    IMAGE_BASE_NAME=${BASE_IMAGE} \
-    PYTHON_VERSION=${PYTHON_VERSION} \
     UV_EXTRA=${UV_EXTRA}
 
 WORKDIR /workspace
@@ -31,7 +26,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN git lfs install --system
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-RUN uv python install ${PYTHON_VERSION}
+COPY .python-version ./
+RUN uv python install
 
 FROM base AS deps
 

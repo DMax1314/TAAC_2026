@@ -6,17 +6,9 @@ x-gpu-build: &gpu-build
   target: app
   args:
     BASE_IMAGE: ${BASE_IMAGE:-docker.1ms.run/nvidia/cuda:13.2.0-devel-ubuntu22.04}
-    PYTHON_VERSION: "3.12.13"
-    UV_EXTRA: cuda132
 
 x-gpu-env: &gpu-env
-  UV_EXTRA: cuda132
-  HF_HOME: /root/.cache/huggingface
-  TAAC_OUTPUT_DIR: /workspace/outputs
   TAAC_SKIP_UV_SYNC: "1"
-  EXPECTED_BASE_IMAGE: docker.1ms.run/nvidia/cuda:13.2.0-devel-ubuntu22.04
-  EXPECTED_PYTHON_VERSION: "3.12.13"
-  EXPECTED_UV_EXTRA: cuda132
 
 x-gpu-service: &gpu-service
   build: *gpu-build
@@ -57,7 +49,6 @@ services:
       TRAIN_DATA_PATH: ${TRAIN_DATA_PATH:-}
       TAAC_SCHEMA_PATH: ${TAAC_SCHEMA_PATH:-}
       TAAC_EXPERIMENT: experiments/${EXPERIMENT:-baseline}
-      EXPERIMENT: ${EXPERIMENT:-baseline}
       TRAIN_ARGS: ${TRAIN_ARGS:-}
     command:
       - /bin/bash
@@ -74,7 +65,6 @@ services:
       TRAIN_DATA_PATH: ${TRAIN_DATA_PATH:-}
       TAAC_SCHEMA_PATH: ${TAAC_SCHEMA_PATH:-}
       TAAC_EXPERIMENT: experiments/${EXPERIMENT:-baseline}
-      EXPERIMENT: ${EXPERIMENT:-baseline}
       EVAL_ARGS: ${EVAL_ARGS:-}
     command:
       - /bin/bash

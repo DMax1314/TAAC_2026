@@ -21,8 +21,6 @@ REPO_ROOT = locate_repo_root(Path(__file__))
 
 # Text patterns that embed the declared support range.
 _README_BADGE_PATTERN = re.compile(r"Python-(\d+\.\d+)--(\d+\.\d+)")
-_DOCKER_PIN_PATTERN = re.compile(r'(?:PYTHON_VERSION|EXPECTED_PYTHON_VERSION):\s*"?(\d+\.\d+\.\d+)"?')
-_CI_MATRIX_PATTERN = re.compile(r"python-version:\s*\[\s*([^\]]+)\s*\]")
 
 
 def _pyproject() -> dict:
@@ -98,22 +96,12 @@ def test_docs_version_statements_match_requires_python() -> None:
     assert f"Python {min_version} 到 {max_version}" in testing
 
 
-@pytest.mark.parametrize(
-    ("path", "pattern"),
-    [
-        (".python-version", re.compile(r"(\d+\.\d+\.\d+)")),
-        ("docker-compose.yml", _DOCKER_PIN_PATTERN),
-    ],
-)
-def test_local_pinned_versions_within_requires_python(path: str, pattern: re.Pattern[str]) -> None:
+def test_local_python_version_within_requires_python() -> None:
     spec = _support_spec()
-    text = (REPO_ROOT / path).read_text()
-    pins = pattern.findall(text)
-    assert pins, f"no Python pin found in {path}"
-    for pin in pins:
-        assert spec.contains(pin), (
-            f"{path} pins Python {pin}, outside requires-python {spec!s}"
-        )
+    pin = (REPO_ROOT / ".python-version").read_text().strip()
+    assert spec.contains(pin), (
+        f".python-version pins Python {pin}, outside requires-python {spec!s}"
+    )
 
 
 def test_docs_workflow_python_within_requires_python() -> None:
